@@ -36,22 +36,26 @@ Built on **Next.js 16** (a single process: UI + `/api/v1` + an in-process job sc
 ## Install on Unraid (Docker template)
 
 > media-box ships an Unraid Docker template at
-> [`unraid/media-box.xml`](unraid/media-box.xml). The container image is published to the project's
-> **Gitea container registry** (`git.ncatechsolutions.org/nickanton/media-box`).
+> [`unraid/media-box.xml`](unraid/media-box.xml). The container image is published to the
+> **GitHub Container Registry** (`ghcr.io/devblaze/media-box`).
 
 ### 1. Publish the image (once, and on each update)
 
-The image must be built for **linux/amd64** (Unraid's arch). From a machine with Docker + Buildx,
-logged in to the registry (`docker login git.ncatechsolutions.org`):
+**Let CI do it (recommended).** The included **GitHub Actions** workflow
+([`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml)) builds `linux/amd64`
+and pushes to `ghcr.io/devblaze/media-box` on every commit to `main` — no secrets to configure, it uses
+the built-in `GITHUB_TOKEN`.
+
+> **One-time:** after the first successful run, the ghcr package is **private**. Open
+> [the package settings](https://github.com/users/devblaze/packages/container/media-box/settings) →
+> *Change visibility* → **Public** so Unraid can pull it without a `docker login`.
+
+Or build and push it yourself (`docker login ghcr.io` with a PAT that has `write:packages`):
 
 ```bash
 docker buildx build --platform linux/amd64 \
-  -t git.ncatechsolutions.org/nickanton/media-box:latest --push .
+  -t ghcr.io/devblaze/media-box:latest --push .
 ```
-
-Or let CI do it: the included **Gitea Actions** workflow ([`.gitea/workflows/docker-publish.yml`](.gitea/workflows/docker-publish.yml))
-builds and pushes on every commit to `main`. Enable **Actions** on the repo and add a repo secret
-`REGISTRY_TOKEN` (a Gitea token with `package:write`).
 
 ### 2. Install the template in Unraid
 
@@ -62,7 +66,7 @@ SSH into your Unraid server (or open the web terminal) and fetch the template st
 
 ```bash
 wget -O "/boot/config/plugins/dockerMan/templates-user/my-media-box.xml" \
-  https://git.ncatechsolutions.org/nickanton/media-box/raw/branch/main/unraid/media-box.xml
+  https://raw.githubusercontent.com/devblaze/media-box/main/unraid/media-box.xml
 ```
 
 Then in the Unraid GUI: **Docker** tab → **Add Container** → set **Template** to *media-box* and fill
@@ -113,7 +117,7 @@ available or request the rest.
 
 media-box applies its database migrations automatically on boot, so updating is just pulling a newer image:
 
-1. **Rebuild & push** a new image (step 1 above) — or let the Gitea Actions CI publish it on push to `main`.
+1. **Rebuild & push** a new image (step 1 above) — or let the GitHub Actions CI publish it on push to `main`.
 2. In Unraid: **Docker tab → media-box → Force update** (or *Check for Updates* → *Update*). Unraid pulls
    the new `:latest` and recreates the container; `/config` (your DB) is preserved.
 

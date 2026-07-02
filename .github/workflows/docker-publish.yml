@@ -1,13 +1,16 @@
-# Build + publish the media-box container image to the Gitea container registry.
+# Build + publish the media-box container image to the GitHub Container Registry.
 #
 # Publishes linux/amd64 (Unraid's arch) so the image runs natively there — a bare
 # `docker build` on an Apple-Silicon Mac produces an arm64 image that fails on
 # amd64 Unraid with "exec format error". better-sqlite3 + sharp compile per-arch,
 # so building for the target arch is what makes them load correctly.
 #
-# Requires a repo secret REGISTRY_TOKEN: a Gitea access token (or the package
-# owner's password) with package:write scope. The image is pushed to
-# git.ncatechsolutions.org/nickanton/media-box.
+# Auth: no manual secret needed. The job's built-in GITHUB_TOKEN pushes to
+# ghcr.io/devblaze/media-box thanks to `permissions: packages: write` below.
+#
+# NOTE: after the first successful run, the ghcr package defaults to PRIVATE.
+# Make it public (github.com/users/devblaze/packages/container/media-box/settings
+# → Change visibility → Public) so Unraid can pull it without a docker login.
 name: docker-publish
 
 on:
@@ -15,6 +18,10 @@ on:
     branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build-and-push:
@@ -29,18 +36,18 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Gitea registry
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: git.ncatechsolutions.org
-          username: ${{ gitea.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Docker metadata (tags + labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: git.ncatechsolutions.org/nickanton/media-box
+          images: ghcr.io/devblaze/media-box
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag

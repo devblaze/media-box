@@ -1,13 +1,13 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>media-box</Name>
-  <Repository>git.ncatechsolutions.org/nickanton/media-box:latest</Repository>
-  <Registry>https://git.ncatechsolutions.org/nickanton/-/packages/container/media-box</Registry>
+  <Repository>ghcr.io/devblaze/media-box:latest</Repository>
+  <Registry>https://github.com/devblaze/media-box/pkgs/container/media-box</Registry>
   <Network>bridge</Network>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
-  <Support>https://git.ncatechsolutions.org/nickanton/media-box/issues</Support>
-  <Project>https://git.ncatechsolutions.org/nickanton/media-box</Project>
+  <Support>https://github.com/devblaze/media-box/issues</Support>
+  <Project>https://github.com/devblaze/media-box</Project>
   <Overview>
     All-in-one series and movie PVR: a self-hosted Sonarr + Radarr + request-management replacement.
     Monitors your libraries, searches Torznab indexers, grabs via qBittorrent or TorBox, imports and
@@ -20,8 +20,8 @@
   </Overview>
   <Category>MediaApp:Video MediaServer:Video Downloaders:</Category>
   <WebUI>http://[IP]:[PORT:7878]</WebUI>
-  <TemplateURL>https://git.ncatechsolutions.org/nickanton/media-box/raw/branch/main/unraid/media-box.xml</TemplateURL>
-  <Icon>https://git.ncatechsolutions.org/nickanton/media-box/raw/branch/main/public/icon.png</Icon>
+  <TemplateURL>https://raw.githubusercontent.com/devblaze/media-box/main/unraid/media-box.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/devblaze/media-box/main/public/icon.png</Icon>
   <ExtraParams/>
   <PostArgs/>
   <DonateText/>

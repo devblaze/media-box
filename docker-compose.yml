@@ -7,7 +7,7 @@
 # downloads + movies + tv on the SAME filesystem (e.g. subfolders of one mount).
 services:
   media-box:
-    image: git.ncatechsolutions.org/nickanton/media-box:latest
+    image: ghcr.io/devblaze/media-box:latest
     container_name: media-box
     ports:
       - "7878:7878"
