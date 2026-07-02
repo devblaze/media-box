@@ -35,7 +35,7 @@ Built on **Next.js 16** (a single process: UI + `/api/v1` + an in-process job sc
 
 ## Install on Unraid (Docker template)
 
-> media-box ships an Unraid Community Applications template at
+> media-box ships an Unraid Docker template at
 > [`unraid/media-box.xml`](unraid/media-box.xml). The container image is published to the project's
 > **Gitea container registry** (`git.ncatechsolutions.org/nickanton/media-box`).
 
@@ -53,19 +53,24 @@ Or let CI do it: the included **Gitea Actions** workflow ([`.gitea/workflows/doc
 builds and pushes on every commit to `main`. Enable **Actions** on the repo and add a repo secret
 `REGISTRY_TOKEN` (a Gitea token with `package:write`).
 
-### 2. Add the template in Unraid
+### 2. Install the template in Unraid
 
-**Community Applications (recommended)** — in *Apps → Settings → Manage Template Repositories*, add:
+Unraid reads user templates from `/boot/config/plugins/dockerMan/templates-user/`. Drop
+`unraid/media-box.xml` in there and it shows up in the **Add Container → Template** dropdown.
 
+SSH into your Unraid server (or open the web terminal) and fetch the template straight from the repo:
+
+```bash
+wget -O "/boot/config/plugins/dockerMan/templates-user/my-media-box.xml" \
+  https://git.ncatechsolutions.org/nickanton/media-box/raw/branch/main/unraid/media-box.xml
 ```
-https://git.ncatechsolutions.org/nickanton/media-box
-```
 
-media-box then appears in CA and can be installed like any app.
+Then in the Unraid GUI: **Docker** tab → **Add Container** → set **Template** to *media-box* and fill
+in the paths below.
 
-**Or add it manually** — copy `unraid/media-box.xml` to
-`/boot/config/plugins/dockerMan/templates-user/my-media-box.xml`, then *Docker → Add Container →
-Template: media-box*.
+> No SSH? Download [`unraid/media-box.xml`](unraid/media-box.xml), then upload it to
+> `/boot/config/plugins/dockerMan/templates-user/my-media-box.xml` with any SMB/SFTP client (the
+> `flash` share maps to `/boot`).
 
 ### 3. Configure the container
 

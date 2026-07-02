@@ -8,18 +8,109 @@ import { VideoPlayerModal } from "@/components/media-player";
 // Type-only import: the route is a server module, erased from the client bundle.
 import type { DiscoverItem } from "@/app/api/v1/discover/route";
 
+/** How long each title stays on screen before crossfading to the next. */
+const ROTATE_MS = 7000;
+
 /**
- * Full-bleed Netflix hero. The backdrop covers the section; a left-to-right and a
- * bottom-to-top #141414 gradient keep the bottom-left content readable and blend
- * the hero into the rows below. Actions mirror PosterCard's availability logic.
+ * Full-bleed Netflix hero that rotates through a list of candidates, crossfading
+ * the backdrop every {@link ROTATE_MS}. Every candidate's backdrop is layered and
+ * only the current one is opaque, so advancing the index fades the new one in over
+ * the old. The foreground (logo/meta/actions) is a child keyed by the current
+ * title, so its per-item state — status, logo fetch, request/play — resets cleanly
+ * on each change, exactly mirroring the old single-item behavior.
+ *
+ * The parent passes a non-empty list (it renders a gradient fallback when there are
+ * no candidates), so we can safely assume `items.length >= 1`.
  */
-export function HeroBillboard({ item }: { item: DiscoverItem }) {
+export function HeroBillboard({ items }: { items: DiscoverItem[] }) {
+  const [index, setIndex] = useState(0);
+
+  // Advance on a timer. Reset to the first slide and rebuild the interval whenever
+  // the candidate list identity changes (e.g. availableOnly toggled). A single
+  // candidate never rotates.
+  useEffect(() => {
+    setIndex(0);
+    if (items.length <= 1) return;
+    const id = setInterval(() => {
+      setIndex((i) => (i + 1) % items.length);
+    }, ROTATE_MS);
+    return () => clearInterval(id);
+  }, [items]);
+
+  // Clamp so a shrinking list can never index out of range for a render.
+  const current = index < items.length ? index : items.length - 1;
+  const item = items[current];
+
+  return (
+    <section className="relative h-[80vh] min-h-[500px] w-full bg-zinc-900">
+      {/* Crossfading backdrops: every candidate is layered; only the current is
+          opaque, so index changes fade the new backdrop in over the old. */}
+      {items.map((it, i) =>
+        it.backdrop ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            key={`${it.mediaType}-${it.tmdbId}`}
+            src={it.backdrop}
+            alt=""
+            aria-hidden={i !== current}
+            className={
+              "absolute inset-0 h-full w-full object-cover object-top transition-opacity duration-700 ease-in-out " +
+              (i === current ? "opacity-100" : "opacity-0")
+            }
+          />
+        ) : null
+      )}
+
+      {/* Readability gradients */}
+      <div className="absolute inset-0 bg-gradient-to-r from-[#141414] via-[#141414]/60 to-transparent" />
+      <div className="absolute inset-0 bg-gradient-to-t from-[#141414] to-transparent" />
+
+      {/* Foreground content, keyed so all per-item state resets on rotation. */}
+      <HeroContent key={`${item.mediaType}-${item.tmdbId}`} item={item} />
+
+      {/* Dot indicators, clickable to jump to a title. */}
+      {items.length > 1 && (
+        <div className="absolute bottom-28 right-4 z-10 flex items-center gap-2 md:bottom-36 md:right-12">
+          {items.map((it, i) => (
+            <button
+              key={`${it.mediaType}-${it.tmdbId}`}
+              type="button"
+              aria-label={`Show ${it.title}`}
+              aria-current={i === current}
+              onClick={() => setIndex(i)}
+              className={
+                "h-1.5 rounded-full transition-all " +
+                (i === current ? "w-6 bg-white" : "w-3 bg-white/40 hover:bg-white/70")
+              }
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * The bottom-left content for one hero title: branded logo (fetched per tmdbId,
+ * falling back to text), meta, overview, and the Play/Request/More Info actions.
+ * Mounted with a fresh key per title, so `status`, `logo`, `requesting`, and
+ * `playing` all re-initialize for the shown item. Actions mirror PosterCard's
+ * availability logic.
+ */
+function HeroContent({ item }: { item: DiscoverItem }) {
   const toast = useToast();
   const [status, setStatus] = useState(item.status);
   const [requesting, setRequesting] = useState(false);
   const [playing, setPlaying] = useState(false);
   // Branded title-logo (transparent PNG) fetched on mount; falls back to text.
   const [logo, setLogo] = useState<string | null>(null);
+  // Fade the text in on mount so each rotation swap is a soft cross-fade.
+  const [shown, setShown] = useState(false);
+
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -80,34 +171,13 @@ export function HeroBillboard({ item }: { item: DiscoverItem }) {
     "inline-flex items-center gap-2 rounded bg-white px-6 py-2 text-base font-semibold text-black transition-colors hover:bg-white/80";
 
   return (
-    <section className="relative h-[80vh] min-h-[500px] w-full">
-      {/* Background */}
-      {item.backdrop ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={item.backdrop}
-          alt=""
-          className="absolute inset-0 h-full w-full object-cover object-top"
-        />
-      ) : item.poster ? (
-        <div className="absolute inset-0 flex items-center justify-end bg-zinc-900">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={item.poster}
-            alt=""
-            className="h-full w-auto max-w-[55%] object-cover opacity-70"
-          />
-        </div>
-      ) : (
-        <div className="absolute inset-0 bg-zinc-900" />
-      )}
-
-      {/* Readability gradients */}
-      <div className="absolute inset-0 bg-gradient-to-r from-[#141414] via-[#141414]/60 to-transparent" />
-      <div className="absolute inset-0 bg-gradient-to-t from-[#141414] to-transparent" />
-
-      {/* Content */}
-      <div className="absolute bottom-28 left-0 w-full max-w-2xl px-4 md:bottom-36 md:px-12">
+    <>
+      <div
+        className={
+          "absolute bottom-28 left-0 w-full max-w-2xl px-4 transition-opacity duration-500 md:bottom-36 md:px-12 " +
+          (shown ? "opacity-100" : "opacity-0")
+        }
+      >
         {logo ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
@@ -192,6 +262,6 @@ export function HeroBillboard({ item }: { item: DiscoverItem }) {
           onClose={() => setPlaying(false)}
         />
       )}
-    </section>
+    </>
   );
 }

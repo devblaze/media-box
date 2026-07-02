@@ -37,6 +37,18 @@ html {
   border-radius: 9999px;
 }
 
+/* Netflix-style pre-auth backdrop (login / setup). Layered radial + linear
+   gradients over #141414 with a subtle red glow and vignette. No external
+   images — these pages render before authentication. */
+.auth-bg {
+  background-color: #141414;
+  background-image:
+    radial-gradient(120% 90% at 50% -10%, rgba(229, 9, 20, 0.28), transparent 55%),
+    radial-gradient(90% 70% at 85% 110%, rgba(229, 9, 20, 0.14), transparent 60%),
+    radial-gradient(140% 120% at 50% 45%, transparent 38%, rgba(0, 0, 0, 0.78) 100%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.15) 45%, rgba(0, 0, 0, 0.85));
+}
+
 /* Netflix rows: hide the scrollbar entirely. Unlayered + class/pseudo
    specificity so it beats the global `*` scrollbar rules above. */
 .no-scrollbar {

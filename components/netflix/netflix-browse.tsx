@@ -14,11 +14,8 @@ import type { DiscoverItem } from "@/app/api/v1/discover/route";
 
 export type BrowseRow = { title: string; category: string };
 
-/** First title with a backdrop + overview, else any backdrop, else first. */
-function pickHero(items: DiscoverItem[] | undefined): DiscoverItem | null {
-  if (!items || items.length === 0) return null;
-  return items.find((i) => i.backdrop && i.overview) ?? items.find((i) => i.backdrop) ?? items[0];
-}
+/** How many titles the hero billboard rotates through. */
+const HERO_COUNT = 8;
 
 /**
  * A full Netflix browse view driven by a config: a hero billboard picked from
@@ -53,10 +50,14 @@ export function NetflixBrowse({ heroCategory, rows }: { heroCategory: string; ro
     searching ? `/discover?category=search&q=${encodeURIComponent(debounced)}` : null
   );
   const heroFeed = useApi<DiscoverItem[]>(searching ? null : `/discover?category=${heroCategory}`);
-  const hero = useMemo(() => {
+  // Rotating hero candidates: the hero feed (respecting availableOnly) narrowed to
+  // titles with a backdrop, capped at HERO_COUNT. Memoized so the list keeps a
+  // stable identity across renders and the billboard's rotation timer isn't reset.
+  const heroItems = useMemo(() => {
     const data = heroFeed.data;
     const filtered = data && availableOnly ? data.filter((i) => i.status === "available") : data;
-    return pickHero(filtered);
+    if (!filtered) return [];
+    return filtered.filter((i) => i.backdrop).slice(0, HERO_COUNT);
   }, [heroFeed.data, availableOnly]);
 
   if (searching) {
@@ -97,8 +98,8 @@ export function NetflixBrowse({ heroCategory, rows }: { heroCategory: string; ro
         </div>
       )}
 
-      {hero ? (
-        <HeroBillboard item={hero} />
+      {heroItems.length > 0 ? (
+        <HeroBillboard items={heroItems} />
       ) : (
         <div className="h-[40vh] w-full bg-gradient-to-b from-zinc-900 to-[#141414]" />
       )}
