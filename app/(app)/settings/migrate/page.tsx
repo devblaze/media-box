@@ -39,6 +39,13 @@ interface Preview {
   skippedClients: string[];
 }
 
+interface BazarrImport {
+  languages: string[];
+  provider: string;
+  imported: boolean;
+  note?: string;
+}
+
 export default function MigratePage() {
   const toast = useToast();
   const [app, setApp] = useState<App>("sonarr");
@@ -55,6 +62,12 @@ export default function MigratePage() {
   const [importIndexers, setImportIndexers] = useState(true);
   const [importClients, setImportClients] = useState(true);
   const [rootFolderId, setRootFolderId] = useState<number | null>(null);
+
+  // Bazarr subtitle import (maps to Settings → Subtitles, separate from the arr flow above).
+  const [bazarrUrl, setBazarrUrl] = useState("");
+  const [bazarrApiKey, setBazarrApiKey] = useState("");
+  const [bazarrBusy, setBazarrBusy] = useState(false);
+  const [bazarrResult, setBazarrResult] = useState<BazarrImport | null>(null);
 
   const { data: profiles } = useApi<QualityProfile[]>("/qualityprofiles");
   const { data: rootFolders } = useApi<RootFolder[]>("/rootfolders");
@@ -105,6 +118,23 @@ export default function MigratePage() {
       toast.error(err instanceof Error ? err.message : "Migration failed to start");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function importBazarr() {
+    setBazarrBusy(true);
+    setBazarrResult(null);
+    try {
+      const res = await apiFetch<BazarrImport>("/migrate/bazarr", {
+        method: "POST",
+        body: JSON.stringify({ url: bazarrUrl, apiKey: bazarrApiKey }),
+      });
+      setBazarrResult(res);
+      toast.success(`Imported ${res.languages.length} subtitle language(s)`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Bazarr import failed");
+    } finally {
+      setBazarrBusy(false);
     }
   }
 
@@ -348,6 +378,71 @@ export default function MigratePage() {
           </p>
         </Callout>
       )}
+
+      <div className="mt-10 border-t border-zinc-800 pt-8">
+        <h2 className="text-lg font-semibold">Bazarr (subtitles)</h2>
+        <p className="mt-2 text-sm text-zinc-400">
+          Imports your wanted subtitle languages and OpenSubtitles credentials from an existing
+          Bazarr instance into <strong>Settings → Subtitles</strong>. This is separate from the
+          library migration above and does not touch your movies or series.
+        </p>
+
+        <HowTo title="Importing from Bazarr" className="mt-4">
+          <ol>
+            <li>
+              Point media-box at the running Bazarr: enter its <strong>URL</strong> (e.g.{" "}
+              <code>http://localhost:6767</code>) and its <strong>API key</strong> (in Bazarr under{" "}
+              <strong>Settings → General → Security</strong>).
+            </li>
+            <li>
+              Press <strong>Import</strong>. media-box reads Bazarr&apos;s enabled languages and, when
+              available, its OpenSubtitles.com credentials, and writes them to{" "}
+              <strong>Settings → Subtitles</strong>.
+            </li>
+          </ol>
+        </HowTo>
+
+        <Card className="mt-4">
+          <CardBody>
+            <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-3">
+              <Field label="Bazarr URL" htmlFor="bazarr-url">
+                <Input
+                  id="bazarr-url"
+                  value={bazarrUrl}
+                  onChange={(e) => setBazarrUrl(e.target.value)}
+                  placeholder="http://localhost:6767"
+                />
+              </Field>
+              <Field label="API key" htmlFor="bazarr-apikey">
+                <Input
+                  id="bazarr-apikey"
+                  type="password"
+                  value={bazarrApiKey}
+                  onChange={(e) => setBazarrApiKey(e.target.value)}
+                />
+              </Field>
+              <Button
+                onClick={importBazarr}
+                loading={bazarrBusy}
+                disabled={bazarrBusy || !bazarrUrl || !bazarrApiKey}
+              >
+                {bazarrBusy ? "Importing…" : "Import"}
+              </Button>
+            </div>
+          </CardBody>
+        </Card>
+
+        {bazarrResult && (
+          <Callout tone="tip" title="Subtitle settings imported" className="mt-4">
+            <p>
+              Imported {bazarrResult.languages.length} language(s)
+              {bazarrResult.languages.length > 0 ? `: ${bazarrResult.languages.join(", ")}` : ""}.{" "}
+              {bazarrResult.note ??
+                "OpenSubtitles credentials were migrated — review them under Settings → Subtitles."}
+            </p>
+          </Callout>
+        )}
+      </div>
     </div>
   );
 }

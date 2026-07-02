@@ -163,6 +163,28 @@ export const movieFiles = sqliteTable("movie_files", {
   mediaInfo: text("media_info", { mode: "json" }),
 });
 
+// ---------- Subtitles (Bazarr-style sidecar files) ----------
+
+export const subtitleFiles = sqliteTable(
+  "subtitle_files",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    // Exactly one of movieId / episodeId is set.
+    movieId: integer("movie_id").references(() => movies.id, { onDelete: "cascade" }),
+    episodeId: integer("episode_id").references(() => episodes.id, { onDelete: "cascade" }),
+    language: text("language").notNull(), // ISO 639-1, e.g. "en"
+    // Sidecar path relative to the movie.path / series.path root (e.g. "Movie (2020).en.srt").
+    relativePath: text("relative_path").notNull(),
+    provider: text("provider").notNull(),
+    hearingImpaired: integer("hearing_impaired", { mode: "boolean" }).notNull().default(false),
+    addedAt: integer("added_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [
+    index("subtitle_movie_idx").on(t.movieId, t.language),
+    index("subtitle_episode_idx").on(t.episodeId, t.language),
+  ]
+);
+
 // ---------- Configuration ----------
 
 export const qualityProfiles = sqliteTable("quality_profiles", {

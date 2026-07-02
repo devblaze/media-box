@@ -124,6 +124,18 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
     }
   }
 
+  async function searchSubtitles() {
+    try {
+      await apiFetch("/subtitles/search", {
+        method: "POST",
+        body: JSON.stringify({ movieId: id }),
+      });
+      toast.success("Subtitle search queued");
+    } catch {
+      toast.error("Failed to queue subtitle search");
+    }
+  }
+
   async function remove() {
     if (
       !(await confirm({
@@ -183,6 +195,9 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
                 </Button>
                 <Button variant="secondary" size="sm" onClick={rescan}>
                   Rescan disk
+                </Button>
+                <Button variant="secondary" size="sm" onClick={searchSubtitles}>
+                  Search subtitles
                 </Button>
                 <Button variant="danger" size="sm" onClick={remove}>
                   Remove

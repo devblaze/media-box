@@ -10,6 +10,7 @@ const NAV = [
   { label: "Dashboard", href: "/settings" },
   { label: "Media Management", href: "/settings/media-management" },
   { label: "Quality Profiles", href: "/settings/profiles" },
+  { label: "Subtitles", href: "/settings/subtitles" },
   { label: "Indexers", href: "/settings/indexers" },
   { label: "Download Clients", href: "/settings/download-clients" },
   { label: "Library Import", href: "/settings/library-import" },

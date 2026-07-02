@@ -20,6 +20,13 @@ export const appSettingsSchema = z.object({
   maxTranscodeSessions: z.coerce.number().int().min(1).max(10).default(3),
   // Max releases the 24h backlog search grabs per run (slow backfill; 0 = unlimited).
   maxBacklogGrabsPerRun: z.coerce.number().int().min(0).max(50).default(3),
+  // Subtitles (Bazarr-style). Wanted languages = comma-separated ISO 639-1 codes ("en,es").
+  subtitleLanguages: z.string().default(""),
+  subtitleProvider: z.enum(["none", "opensubtitles"]).default("none"),
+  subtitleHearingImpaired: z.coerce.boolean().default(false),
+  openSubtitlesApiKey: z.string().default(""),
+  openSubtitlesUsername: z.string().default(""),
+  openSubtitlesPassword: z.string().default(""),
 });
 
 export type AppSettings = z.infer<typeof appSettingsSchema>;

@@ -40,6 +40,7 @@ export interface ScheduledTaskDef {
 export const SCHEDULED_TASKS: ScheduledTaskDef[] = [
   { name: "RssSync", intervalMinutes: 15 },
   { name: "WantedSearch", intervalMinutes: 1440 },
+  { name: "SubtitleSearch", intervalMinutes: 1440 },
   { name: "QueueMonitor", intervalMinutes: 1 },
   { name: "RefreshSeries", intervalMinutes: 720 },
   { name: "RefreshMovies", intervalMinutes: 720 },

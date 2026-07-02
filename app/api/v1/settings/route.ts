@@ -25,6 +25,13 @@ const patchSchema = z.object({
   transcodeHwAccel: z.enum(["none", "vaapi", "qsv", "nvenc"]).optional(),
   transcodeVaapiDevice: z.string().optional(),
   maxTranscodeSessions: z.coerce.number().int().min(1).max(10).optional(),
+  maxBacklogGrabsPerRun: z.coerce.number().int().min(0).max(50).optional(),
+  subtitleLanguages: z.string().optional(),
+  subtitleProvider: z.enum(["none", "opensubtitles"]).optional(),
+  subtitleHearingImpaired: z.coerce.boolean().optional(),
+  openSubtitlesApiKey: z.string().optional(),
+  openSubtitlesUsername: z.string().optional(),
+  openSubtitlesPassword: z.string().optional(),
 });
 
 export async function PUT(request: NextRequest) {

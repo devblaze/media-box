@@ -8,6 +8,7 @@ import { queueMonitorHandler } from "./queue-monitor";
 import { fetchTorboxHandler } from "./fetch-torbox";
 import { wantedSearchHandler } from "./wanted-search";
 import { rssSyncHandler } from "./rss-sync";
+import { subtitleSearchHandler } from "./subtitle-search";
 import { importDownload } from "@/server/library/importer";
 
 registerHandler("Housekeeping", housekeeping);
@@ -16,6 +17,7 @@ registerHandler("RefreshMovies", refreshMoviesHandler);
 registerHandler("DiskScan", diskScanHandler);
 registerHandler("RssSync", rssSyncHandler);
 registerHandler("WantedSearch", wantedSearchHandler);
+registerHandler("SubtitleSearch", subtitleSearchHandler);
 registerHandler("QueueMonitor", queueMonitorHandler, "monitor");
 registerHandler("FetchTorboxFiles", async (payload) => {
   return fetchTorboxHandler(payload);
