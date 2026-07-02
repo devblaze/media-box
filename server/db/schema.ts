@@ -35,6 +35,10 @@ export const series = sqliteTable(
       .notNull()
       .references(() => qualityProfiles.id),
     monitored: integer("monitored", { mode: "boolean" }).notNull().default(true),
+    // which episodes to monitor: all, future (unaired/next) only, or none
+    monitorMode: text("monitor_mode", { enum: ["all", "future", "none"] })
+      .notNull()
+      .default("all"),
     seasonFolder: integer("season_folder", { mode: "boolean" }).notNull().default(true),
     addedAt: integer("added_at", { mode: "timestamp" }).notNull(),
     lastRefreshAt: integer("last_refresh_at", { mode: "timestamp" }),

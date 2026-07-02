@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, schema } from "@/server/db";
-import { deleteSeries } from "@/server/library/series-service";
+import { deleteSeries, applyMonitorMode } from "@/server/library/series-service";
 import { badRequest, notFound, ok, serverError } from "@/lib/http";
 import { emitEvent } from "@/server/events/bus";
 
@@ -38,6 +38,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext<"/api/v1/series/[
 
 const patchSchema = z.object({
   monitored: z.boolean().optional(),
+  monitorMode: z.enum(["all", "future", "none"]).optional(),
   qualityProfileId: z.number().int().positive().optional(),
   seasonFolder: z.boolean().optional(),
   seasons: z
@@ -55,10 +56,19 @@ export async function PUT(request: NextRequest, ctx: RouteContext<"/api/v1/serie
     if (!existing) return notFound("Series not found");
 
     const patch = patchSchema.parse(await request.json());
-    const { seasons: seasonPatches, episodes: episodePatches, ...seriesPatch } = patch;
+    const {
+      seasons: seasonPatches,
+      episodes: episodePatches,
+      monitorMode,
+      ...seriesPatch
+    } = patch;
 
     if (Object.keys(seriesPatch).length > 0) {
       db.update(schema.series).set(seriesPatch).where(eq(schema.series.id, seriesId)).run();
+    }
+    // Changing the monitor mode re-derives every episode/season monitored flag.
+    if (monitorMode) {
+      applyMonitorMode(seriesId, monitorMode);
     }
     for (const sp of seasonPatches ?? []) {
       db.update(schema.seasons)

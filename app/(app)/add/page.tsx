@@ -143,14 +143,22 @@ function AddDialog({
   const [rootFolderId, setRootFolderId] = useState(rootFolders[0]?.id ?? 0);
   const [qualityProfileId, setQualityProfileId] = useState(profiles[0]?.id ?? 0);
   const [monitored, setMonitored] = useState(true);
+  const [monitorMode, setMonitorMode] = useState<"all" | "future" | "none">("all");
   const [busy, setBusy] = useState(false);
 
   async function add() {
     setBusy(true);
     try {
+      const body: Record<string, unknown> = {
+        tmdbId: item.tmdbId,
+        rootFolderId,
+        qualityProfileId,
+        monitored,
+      };
+      if (mediaType === "series") body.monitorMode = monitorMode;
       const row = await apiFetch<{ id: number }>(mediaType === "series" ? "/series" : "/movies", {
         method: "POST",
-        body: JSON.stringify({ tmdbId: item.tmdbId, rootFolderId, qualityProfileId, monitored }),
+        body: JSON.stringify(body),
       });
       onAdded(row.id);
     } catch (err) {
@@ -213,6 +221,25 @@ function AddDialog({
             <Checkbox checked={monitored} onChange={(e) => setMonitored(e.target.checked)} />
             Monitored (search for missing automatically)
           </label>
+          {mediaType === "series" && (
+            <Field
+              label="Monitor"
+              htmlFor="add-monitor-mode"
+              description="Future = only monitor upcoming/next episodes."
+            >
+              <Select
+                id="add-monitor-mode"
+                value={monitorMode}
+                onChange={(e) =>
+                  setMonitorMode(e.target.value as "all" | "future" | "none")
+                }
+              >
+                <option value="all">All episodes</option>
+                <option value="future">Future episodes only</option>
+                <option value="none">None</option>
+              </Select>
+            </Field>
+          )}
         </div>
       )}
     </Modal>

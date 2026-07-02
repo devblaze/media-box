@@ -15,6 +15,13 @@
       "when": 1783021767545,
       "tag": "0001_wise_silver_fox",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1783031359250,
+      "tag": "0002_steady_loa",
+      "breakpoints": true
     }
   ]
 }

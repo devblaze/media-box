@@ -18,6 +18,8 @@ export const appSettingsSchema = z.object({
   transcodeHwAccel: z.enum(["none", "vaapi", "qsv", "nvenc"]).default("none"),
   transcodeVaapiDevice: z.string().default("/dev/dri/renderD128"),
   maxTranscodeSessions: z.coerce.number().int().min(1).max(10).default(3),
+  // Max releases the 24h backlog search grabs per run (slow backfill; 0 = unlimited).
+  maxBacklogGrabsPerRun: z.coerce.number().int().min(0).max(50).default(3),
 });
 
 export type AppSettings = z.infer<typeof appSettingsSchema>;

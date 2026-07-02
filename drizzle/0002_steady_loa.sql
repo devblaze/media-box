@@ -1,0 +1,1 @@
+ALTER TABLE `series` ADD `monitor_mode` text DEFAULT 'all' NOT NULL;

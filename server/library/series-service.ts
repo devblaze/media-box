@@ -13,6 +13,8 @@ export interface AddSeriesInput {
   qualityProfileId: number;
   monitored?: boolean;
   seasonFolder?: boolean;
+  /** Which episodes to monitor: all / future (next) only / none. */
+  monitorMode?: "all" | "future" | "none";
   /** Import an existing on-disk folder in place instead of deriving the path from the naming template. */
   path?: string;
 }
@@ -49,6 +51,7 @@ export async function addSeries(input: AddSeriesInput) {
       rootFolderId: rootFolder.id,
       qualityProfileId: input.qualityProfileId,
       monitored: input.monitored ?? true,
+      monitorMode: input.monitorMode ?? "all",
       seasonFolder: input.seasonFolder ?? true,
       addedAt: new Date(),
     })
@@ -57,6 +60,7 @@ export async function addSeries(input: AddSeriesInput) {
 
   await fs.mkdir(seriesPath, { recursive: true });
   await syncSeasonsAndEpisodes(row.id, input.tmdbId, details.seasons);
+  applyMonitorMode(row.id, input.monitorMode ?? "all");
 
   db.update(schema.series)
     .set({ lastRefreshAt: new Date() })
@@ -64,6 +68,60 @@ export async function addSeries(input: AddSeriesInput) {
     .run();
   emitEvent({ type: "series.updated", seriesId: row.id });
   return row;
+}
+
+/**
+ * Set which episodes of a series are monitored, per the chosen mode:
+ * - `all`    — every regular (non-special) episode is monitored.
+ * - `future` — only unaired / upcoming episodes are monitored (the "next episodes".)
+ * - `none`   — nothing is monitored (and the series itself is unmonitored).
+ *
+ * Seasons are marked monitored when they contain at least one monitored episode,
+ * and `series.monitored` follows the mode. Season 0 (specials) is never auto-monitored.
+ */
+export function applyMonitorMode(seriesId: number, mode: "all" | "future" | "none") {
+  const db = getDb();
+  const now = Date.now();
+
+  const eps = db
+    .select({
+      id: schema.episodes.id,
+      seasonNumber: schema.episodes.seasonNumber,
+      airDateUtc: schema.episodes.airDateUtc,
+    })
+    .from(schema.episodes)
+    .where(eq(schema.episodes.seriesId, seriesId))
+    .all();
+
+  const monitoredSeasons = new Set<number>();
+  for (const ep of eps) {
+    let monitored: boolean;
+    if (mode === "none" || ep.seasonNumber === 0) monitored = false;
+    else if (mode === "all") monitored = true;
+    else monitored = !ep.airDateUtc || ep.airDateUtc.getTime() >= now; // future: unaired/upcoming
+    db.update(schema.episodes).set({ monitored }).where(eq(schema.episodes.id, ep.id)).run();
+    if (monitored) monitoredSeasons.add(ep.seasonNumber);
+  }
+
+  const seasonRows = db
+    .select({ seasonNumber: schema.seasons.seasonNumber })
+    .from(schema.seasons)
+    .where(eq(schema.seasons.seriesId, seriesId))
+    .all();
+  for (const s of seasonRows) {
+    db.update(schema.seasons)
+      .set({ monitored: monitoredSeasons.has(s.seasonNumber) })
+      .where(
+        and(eq(schema.seasons.seriesId, seriesId), eq(schema.seasons.seasonNumber, s.seasonNumber))
+      )
+      .run();
+  }
+
+  db.update(schema.series)
+    .set({ monitored: mode !== "none", monitorMode: mode })
+    .where(eq(schema.series.id, seriesId))
+    .run();
+  emitEvent({ type: "series.updated", seriesId });
 }
 
 // Pull season/episode lists from TMDB and upsert; never deletes files' episodes.

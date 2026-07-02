@@ -3,6 +3,7 @@ import { getDb, schema } from "@/server/db";
 import { searchReleases } from "@/server/indexers/release-search";
 import { episodeTarget, movieTarget, seasonTarget } from "@/server/indexers/search-targets";
 import { grab } from "@/server/download/download-service";
+import { getSettings } from "@/server/settings/settings-service";
 
 const INDEXER_DELAY_MS = 2_000;
 
@@ -21,6 +22,14 @@ export async function wantedSearchHandler(payload: unknown): Promise<string> {
   const p = payload as { seriesId?: number; movieId?: number } | null;
   let grabbed = 0;
   let searched = 0;
+
+  // The scheduled 24h backlog scan (no specific target) grabs at most N releases per
+  // run so a large backlog fills gradually ("slowly") instead of all at once. Targeted
+  // searches — a specific series/movie, e.g. from a request approval — are never capped.
+  const isBacklog = !p?.seriesId && !p?.movieId;
+  const maxGrabs = getSettings().maxBacklogGrabsPerRun;
+  const cap = isBacklog && maxGrabs > 0 ? maxGrabs : Infinity;
+  const capped = () => `searched ${searched} targets, grabbed ${grabbed} (backlog cap reached)`;
 
   // ---- movies ----
   const now = new Date();
@@ -45,6 +54,7 @@ export async function wantedSearchHandler(payload: unknown): Promise<string> {
       console.warn(`[wanted-search] movie ${movie.id} failed:`, err);
     }
     await sleep(INDEXER_DELAY_MS);
+    if (grabbed >= cap) return capped();
   }
 
   // ---- episodes ----
@@ -98,6 +108,7 @@ export async function wantedSearchHandler(payload: unknown): Promise<string> {
         if (await searchAndGrab(seasonTarget(group.seriesId, group.seasonNumber, false))) {
           grabbed++;
           await sleep(INDEXER_DELAY_MS);
+          if (grabbed >= cap) return capped();
           continue;
         }
       }
@@ -106,6 +117,7 @@ export async function wantedSearchHandler(payload: unknown): Promise<string> {
         searched++;
         if (await searchAndGrab(episodeTarget(episodeId, false))) grabbed++;
         await sleep(INDEXER_DELAY_MS);
+        if (grabbed >= cap) return capped();
       }
     } catch (err) {
       console.warn(

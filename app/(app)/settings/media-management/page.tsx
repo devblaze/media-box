@@ -154,6 +154,7 @@ interface LibraryPaths {
   moviesPath: string;
   seriesPath: string;
   importMode: "auto" | "hardlink" | "copy" | "move";
+  maxBacklogGrabsPerRun: number;
 }
 
 type PathKey = "downloadsPath" | "moviesPath" | "seriesPath";
@@ -172,6 +173,7 @@ function PathsSection() {
         moviesPath: data.moviesPath ?? "",
         seriesPath: data.seriesPath ?? "",
         importMode: data.importMode ?? "auto",
+        maxBacklogGrabsPerRun: data.maxBacklogGrabsPerRun ?? 0,
       });
     }
   }, [data, form]);
@@ -187,6 +189,7 @@ function PathsSection() {
           moviesPath: form.moviesPath,
           seriesPath: form.seriesPath,
           importMode: form.importMode,
+          maxBacklogGrabsPerRun: form.maxBacklogGrabsPerRun,
         }),
       });
       await mutate();
@@ -280,6 +283,23 @@ function PathsSection() {
                 <option value="copy">copy</option>
                 <option value="move">move</option>
               </Select>
+            </Field>
+
+            <Field
+              label="Backlog grabs per run"
+              htmlFor="maxBacklogGrabsPerRun"
+              description="How many missing releases the daily backlog search grabs each run. Keeps automatic back-filling slow. 0 = unlimited."
+            >
+              <Input
+                id="maxBacklogGrabsPerRun"
+                type="number"
+                min={0}
+                max={50}
+                value={form.maxBacklogGrabsPerRun}
+                onChange={(e) =>
+                  setForm({ ...form, maxBacklogGrabsPerRun: Number(e.target.value) })
+                }
+              />
             </Field>
 
             <div>

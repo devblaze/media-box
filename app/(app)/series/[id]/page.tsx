@@ -15,6 +15,7 @@ import {
   CardHeader,
   CardTitle,
   EmptyState,
+  Select,
   Skeleton,
   TBody,
   TD,
@@ -41,6 +42,7 @@ interface SeriesDetail {
   posterPath: string | null;
   path: string;
   monitored: boolean;
+  monitorMode: "all" | "future" | "none";
   seasons: Season[];
   episodes: Episode[];
   files: EpisodeFileLite[];
@@ -113,6 +115,19 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
       body: JSON.stringify({ monitored: !data!.monitored }),
     });
     await mutate();
+  }
+
+  async function changeMonitorMode(value: "all" | "future" | "none") {
+    try {
+      await apiFetch(`/series/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({ monitorMode: value }),
+      });
+      await mutate();
+      toast.success("Monitoring updated");
+    } catch {
+      toast.error("Failed to update monitoring");
+    }
   }
 
   async function toggleSeasonMonitored(season: Season) {
@@ -199,6 +214,22 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
               >
                 {data.monitored ? "Monitored" : "Unmonitored"}
               </Button>
+              <label className="flex items-center gap-2 text-sm text-zinc-400">
+                <span>Monitoring</span>
+                <div className="w-44">
+                  <Select
+                    aria-label="Monitoring"
+                    value={data.monitorMode}
+                    onChange={(e) =>
+                      changeMonitorMode(e.target.value as "all" | "future" | "none")
+                    }
+                  >
+                    <option value="all">All episodes</option>
+                    <option value="future">Future episodes</option>
+                    <option value="none">None</option>
+                  </Select>
+                </div>
+              </label>
               <Button variant="secondary" size="sm" onClick={refresh}>
                 Refresh metadata
               </Button>

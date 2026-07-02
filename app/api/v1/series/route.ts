@@ -39,6 +39,7 @@ const addSchema = z.object({
   rootFolderId: z.number().int().positive(),
   qualityProfileId: z.number().int().positive(),
   monitored: z.boolean().optional(),
+  monitorMode: z.enum(["all", "future", "none"]).optional(),
   seasonFolder: z.boolean().optional(),
 });
 
