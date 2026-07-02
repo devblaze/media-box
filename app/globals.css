@@ -36,3 +36,15 @@ html {
   background: var(--color-zinc-700);
   border-radius: 9999px;
 }
+
+/* Netflix rows: hide the scrollbar entirely. Unlayered + class/pseudo
+   specificity so it beats the global `*` scrollbar rules above. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}

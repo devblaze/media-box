@@ -1,84 +1,142 @@
-# media-box
+<p align="center">
+  <img src="public/icon.png" width="112" alt="media-box" />
+</p>
 
-Self-hosted, all-in-one **series + movies PVR** — a single app that replaces Sonarr, Radarr, and
-Jellyseerr-style request management:
+<h1 align="center">media-box</h1>
 
-- **Two libraries, one app** — TV series and movies, both metadata-driven via TMDB.
-- **Full PVR loop** — monitor → RSS sync → search Torznab indexers → grab via **qBittorrent** or
-  **TorBox** (debrid) → track the queue → import with **hardlinks**, renaming per your templates →
-  history & upgrades.
-- **Requests** — invite users; they browse TMDB and request media, you approve from the queue, and
-  the request flips to *available* the moment the file is imported.
-- **One-click migration** from existing Sonarr and Radarr instances (library, monitored flags,
-  quality profiles, Torznab indexers, qBittorrent clients).
-- **Unraid-first packaging** — single container, `/config` volume, PUID/PGID, hardlink-aware.
+<p align="center">
+  Self-hosted, all-in-one <b>movies + series PVR</b> with a built-in Netflix-style player —
+  one container that replaces Sonarr, Radarr, Jellyseerr, and (for basic playback) Jellyfin.
+</p>
 
-## Quick start (Docker)
+---
+
+## What it does
+
+- **Two libraries, one app** — movies and series, metadata via TMDB.
+- **Full PVR loop** — monitor → RSS sync → search **Torznab** indexers → grab via **qBittorrent** or
+  **TorBox** (debrid) → import (hardlink / copy / move) with template renaming → history & upgrades.
+- **Release preferences** — per quality profile, prefer specific groups (e.g. YIFY/YTS for movies, an
+  anime group for anime) with automatic fallback; plus required / ignored terms (substring or `/regex/`).
+- **Netflix-style Discover** for everyday users — hero billboards, hover rows, Movies / Series / **Anime**
+  categories, search with type filters, an "available only" toggle. Available titles **play in-browser**;
+  the rest can be **requested**.
+- **In-app player** — direct-play with HTTP-range seeking, plus an **HLS transcoder** (Intel QSV/VAAPI,
+  AMD VAAPI, NVIDIA NVENC) for anything the browser can't decode. ffprobe-populated media info.
+- **Library Import** — scan existing movie/series folders, auto-match to TMDB, and resolve the uncertain
+  ones from a manual review panel.
+- **Requests + roles** — admins manage everything; normal users browse & request.
+- **One-click migration** from existing Sonarr / Radarr (library, monitored flags, quality profiles,
+  Torznab indexers, qBittorrent clients).
+
+Built on **Next.js 16** (a single process: UI + `/api/v1` + an in-process job scheduler) with **SQLite/Drizzle**.
+
+---
+
+## Install on Unraid (Docker template)
+
+> media-box ships an Unraid Community Applications template at
+> [`unraid/media-box.xml`](unraid/media-box.xml). The container image is published to the project's
+> **Gitea container registry** (`git.ncatechsolutions.org/nickanton/media-box`).
+
+### 1. Publish the image (once, and on each update)
+
+The image must be built for **linux/amd64** (Unraid's arch). From a machine with Docker + Buildx,
+logged in to the registry (`docker login git.ncatechsolutions.org`):
 
 ```bash
-docker build -t media-box .
-docker run -d --name media-box \
-  -p 7878:7878 \
-  -v /mnt/user/appdata/media-box:/config \
-  -v /mnt/user/data:/data \
-  -e PUID=99 -e PGID=100 -e TZ=Europe/Athens \
-  media-box
+docker buildx build --platform linux/amd64 \
+  -t git.ncatechsolutions.org/nickanton/media-box:latest --push .
 ```
 
-Open `http://<host>:7878`, create the admin account, then:
+Or let CI do it: the included **Gitea Actions** workflow ([`.gitea/workflows/docker-publish.yml`](.gitea/workflows/docker-publish.yml))
+builds and pushes on every commit to `main`. Enable **Actions** on the repo and add a repo secret
+`REGISTRY_TOKEN` (a Gitea token with `package:write`).
+
+### 2. Add the template in Unraid
+
+**Community Applications (recommended)** — in *Apps → Settings → Manage Template Repositories*, add:
+
+```
+https://git.ncatechsolutions.org/nickanton/media-box
+```
+
+media-box then appears in CA and can be installed like any app.
+
+**Or add it manually** — copy `unraid/media-box.xml` to
+`/boot/config/plugins/dockerMan/templates-user/my-media-box.xml`, then *Docker → Add Container →
+Template: media-box*.
+
+### 3. Configure the container
+
+The template exposes these; adjust the host paths to your shares:
+
+| Setting | Container path | Notes |
+|---|---|---|
+| **WebUI Port** | `7878` | change the host side if it clashes |
+| **Config** | `/config` | app config + SQLite DB — **persist this** (`/mnt/user/appdata/media-box`) |
+| **Downloads** | `/downloads` | your download client's output share |
+| **Movies** | `/movies` | movie library share |
+| **TV** | `/tv` | series library share |
+| **PUID / PGID / UMASK / TZ** | env | Unraid defaults `99 / 100 / 022` |
+| **Intel/AMD GPU** *(optional)* | `/dev/dri` | for hardware transcoding — then set *Settings → Transcoding* |
+
+> **Hardlinks vs copy:** if Downloads is on a *different* filesystem than Movies/TV, imports **copy**
+> (slower, needs free space). Point all three at subfolders of **one** share for instant, space-free
+> **hardlink** imports (the [trash-guides](https://trash-guides.info/File-and-Folder-Structure/) layout).
+> For **NVIDIA**, install the Unraid *Nvidia-Driver* plugin and add Extra Parameters `--runtime=nvidia`
+> plus `NVIDIA_VISIBLE_DEVICES=all` instead of the `/dev/dri` device.
+
+### 4. First run
+
+Open `http://<unraid-ip>:7878`, create the **admin** account, then:
 
 1. **Settings → General** — paste a free [TMDB API key](https://www.themoviedb.org/settings/api).
-2. **Settings → Media Management** — add root folders, e.g. `/data/media/tv` and `/data/media/movies`.
-3. **Settings → Indexers** — add your Torznab endpoints (Prowlarr/Jackett work great).
+2. **Settings → Media Management** — set your downloads / movies / series paths (or they seed from the
+   `DOWNLOADS_DIR` / `MOVIES_DIR` / `SERIES_DIR` env vars) and add root folders.
+3. **Settings → Indexers** — add Torznab endpoints (Prowlarr/Jackett).
 4. **Settings → Download Clients** — add qBittorrent and/or TorBox.
-5. Optionally **Settings → Migrate** — point at your Sonarr/Radarr URL + API key, review the
-   mapping, and import everything.
+5. **Settings → Library Import** — import media you already have on disk.
+6. Optionally **Settings → Migrate** — import from an existing Sonarr/Radarr.
 
-For Unraid, a Community Applications template is provided in `unraid/media-box.xml`.
+Normal (non-admin) users you create land on the Netflix-style **Discover** page and can play what's
+available or request the rest.
 
-## The /data layout (hardlinks!)
+---
 
-Follow the [trash-guides layout](https://trash-guides.info/File-and-Folder-Structure/): downloads and
-media must live on the **same filesystem** for instant, space-free imports:
+## Updating
 
-```
-/data
-├── torrents/     <- qBittorrent's save path (category: media-box)
-├── torbox/       <- TorBox staging dir (fetched files land here)
-└── media/
-    ├── tv/       <- series root folder
-    └── movies/   <- movie root folder
-```
+media-box applies its database migrations automatically on boot, so updating is just pulling a newer image:
 
-- qBittorrent must mount the same `/data` share. If its container sees a different path (e.g.
-  `/downloads`), add a **remote path mapping** under Settings → Media Management.
-- When source and destination are on the same device media-box hardlinks (torrent keeps seeding,
-  zero extra space); otherwise it falls back to a safe copy-then-rename.
+1. **Rebuild & push** a new image (step 1 above) — or let the Gitea Actions CI publish it on push to `main`.
+2. In Unraid: **Docker tab → media-box → Force update** (or *Check for Updates* → *Update*). Unraid pulls
+   the new `:latest` and recreates the container; `/config` (your DB) is preserved.
 
-## TorBox
+`docker compose` users: `docker compose pull && docker compose up -d`.
 
-TorBox downloads happen on TorBox's servers. media-box adds the torrent, polls until it's finished
-remotely, then streams the files down into the staging dir (`/data/torbox` by default, configurable
-per client) and imports from there. TorBox items don't seed, so they're removed after import.
+---
+
+## Non-Unraid (docker compose)
+
+A [`docker-compose.yml`](docker-compose.yml) mirrors the Unraid mapping (separate downloads/movies/tv
+shares, optional `/dev/dri`). Edit the volume paths, then `docker compose up -d`.
+
+---
 
 ## API
 
-Everything the UI does goes through `GET/POST/PUT/DELETE /api/v1/*`. External tools authenticate
-with the `X-Api-Key` header — the key is shown under Settings → General. `GET /api/v1/health` is
-unauthenticated for container health checks.
-
-## Users & requests
-
-- **Admins** manage the libraries, settings, and the request approval queue.
-- **Users** see the libraries and a Requests page: they search TMDB and request; approving a request
-  auto-adds it (monitored, default profile/root folder) and triggers a search immediately.
+Everything the UI does goes through `GET/POST/PUT/DELETE /api/v1/*`. External tools authenticate with the
+`X-Api-Key` header (shown under Settings → General). `GET /api/v1/health` is unauthenticated for the
+container healthcheck.
 
 ## Development
 
 ```bash
 yarn install
 yarn dev       # config + SQLite DB land in ./.config-dev
-yarn test      # parser/naming test suite
+yarn test      # parser / naming / scoring test suite
+yarn typecheck
 ```
 
-Built with Next.js 16 (single process: UI + API + in-process job scheduler), SQLite via Drizzle.
+> **Note:** this repo tracks a modified Next.js 16 — read `node_modules/next/dist/docs/` before changing
+> framework-facing code (see `AGENTS.md`).

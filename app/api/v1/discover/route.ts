@@ -7,9 +7,17 @@ import {
   getTrending,
   getPopularMovies,
   getPopularTv,
+  getTrendingMovies,
+  getTrendingTv,
+  getTopRatedMovies,
+  getTopRatedTv,
+  discoverAnimeTv,
+  discoverAnimeMovies,
   searchMovie,
   searchTv,
   posterUrl,
+  backdropUrl,
+  isAnimeMeta,
   type TmdbTrendingItem,
   type TmdbMovieSummary,
   type TmdbTvSummary,
@@ -34,6 +42,10 @@ export interface DiscoverItem {
   poster: string | null;
   /** Raw TMDB poster path (e.g. "/abc.jpg") — stored when creating a request. */
   posterPath: string | null;
+  /** Wide backdrop URL for hero billboards / landscape cards. */
+  backdrop: string | null;
+  /** Japanese-language Animation (genre 16) — used by the search type filter. */
+  isAnime: boolean;
   overview: string;
   status: AvailabilityStatus;
   mediaId: number | null;
@@ -53,6 +65,8 @@ function fromMovie(r: TmdbMovieSummary): BaseItem {
     year: yearFrom(r.release_date),
     poster: posterUrl(r.poster_path),
     posterPath: r.poster_path ?? null,
+    backdrop: backdropUrl(r.backdrop_path),
+    isAnime: isAnimeMeta(r.genre_ids, r.original_language),
     overview: r.overview ?? "",
   };
 }
@@ -65,6 +79,8 @@ function fromTv(r: TmdbTvSummary): BaseItem {
     year: yearFrom(r.first_air_date),
     poster: posterUrl(r.poster_path),
     posterPath: r.poster_path ?? null,
+    backdrop: backdropUrl(r.backdrop_path),
+    isAnime: isAnimeMeta(r.genre_ids, r.original_language),
     overview: r.overview ?? "",
   };
 }
@@ -78,6 +94,8 @@ function fromTrending(r: TmdbTrendingItem): BaseItem | null {
       year: yearFrom(r.release_date),
       poster: posterUrl(r.poster_path),
       posterPath: r.poster_path ?? null,
+      backdrop: backdropUrl(r.backdrop_path),
+      isAnime: isAnimeMeta(r.genre_ids, r.original_language),
       overview: r.overview ?? "",
     };
   }
@@ -89,6 +107,8 @@ function fromTrending(r: TmdbTrendingItem): BaseItem | null {
       year: yearFrom(r.first_air_date),
       poster: posterUrl(r.poster_path),
       posterPath: r.poster_path ?? null,
+      backdrop: backdropUrl(r.backdrop_path),
+      isAnime: isAnimeMeta(r.genre_ids, r.original_language),
       overview: r.overview ?? "",
     };
   }
@@ -115,6 +135,7 @@ function recentlyAdded(): DiscoverItem[] {
       title: schema.movies.title,
       year: schema.movies.year,
       posterPath: schema.movies.posterPath,
+      backdropPath: schema.movies.backdropPath,
       overview: schema.movies.overview,
       dateAdded: schema.movieFiles.dateAdded,
     })
@@ -131,6 +152,7 @@ function recentlyAdded(): DiscoverItem[] {
       title: schema.series.title,
       year: schema.series.year,
       posterPath: schema.series.posterPath,
+      backdropPath: schema.series.backdropPath,
       overview: schema.series.overview,
       dateAdded: schema.episodeFiles.dateAdded,
     })
@@ -158,6 +180,8 @@ function recentlyAdded(): DiscoverItem[] {
     year: r.year,
     poster: posterUrl(r.posterPath),
     posterPath: r.posterPath,
+    backdrop: backdropUrl(r.backdropPath),
+    isAnime: false,
     overview: r.overview ?? "",
     status: "available" as const,
     mediaId: r.id,
@@ -186,14 +210,24 @@ export async function GET(request: NextRequest) {
       return ok(annotate(base));
     }
 
-    if (category === "popular-movies") {
-      const res = await getPopularMovies();
-      return ok(annotate(res.results.map(fromMovie)));
-    }
+    // TMDB list feeds -> BaseItem[]. Movies / Series / Anime categories.
+    const feeds: Record<string, () => Promise<BaseItem[]>> = {
+      "popular-movies": async () => (await getPopularMovies()).results.map(fromMovie),
+      "movies-popular": async () => (await getPopularMovies()).results.map(fromMovie),
+      "movies-trending": async () => (await getTrendingMovies()).results.map(fromMovie),
+      "movies-top": async () => (await getTopRatedMovies()).results.map(fromMovie),
+      "popular-series": async () => (await getPopularTv()).results.map(fromTv),
+      "series-popular": async () => (await getPopularTv()).results.map(fromTv),
+      "series-trending": async () => (await getTrendingTv()).results.map(fromTv),
+      "series-top": async () => (await getTopRatedTv()).results.map(fromTv),
+      "anime-popular": async () => (await discoverAnimeTv("popularity.desc")).results.map(fromTv),
+      "anime-new": async () => (await discoverAnimeTv("first_air_date.desc")).results.map(fromTv),
+      "anime-top": async () => (await discoverAnimeTv("vote_average.desc")).results.map(fromTv),
+      "anime-movies": async () => (await discoverAnimeMovies("popularity.desc")).results.map(fromMovie),
+    };
 
-    if (category === "popular-series") {
-      const res = await getPopularTv();
-      return ok(annotate(res.results.map(fromTv)));
+    if (feeds[category]) {
+      return ok(annotate(await feeds[category]()));
     }
 
     // default: trending (mixed movies + TV)

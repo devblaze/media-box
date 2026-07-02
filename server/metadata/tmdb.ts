@@ -70,6 +70,8 @@ export interface TmdbTvSummary {
   overview?: string;
   poster_path?: string | null;
   backdrop_path?: string | null;
+  genre_ids?: number[];
+  original_language?: string;
 }
 
 export interface TmdbMovieSummary {
@@ -79,6 +81,13 @@ export interface TmdbMovieSummary {
   overview?: string;
   poster_path?: string | null;
   backdrop_path?: string | null;
+  genre_ids?: number[];
+  original_language?: string;
+}
+
+/** Anime ≈ a Japanese-language Animation (genre 16) title. */
+export function isAnimeMeta(genreIds?: number[], originalLanguage?: string): boolean {
+  return (genreIds?.includes(16) ?? false) && originalLanguage === "ja";
 }
 
 export interface TmdbTvDetails extends TmdbTvSummary {
@@ -132,6 +141,11 @@ export function posterUrl(path: string | null | undefined, size = "w342"): strin
   return path ? `${TMDB_IMAGE_BASE}/${size}${path}` : null;
 }
 
+/** Wide backdrop image (for hero billboards / landscape cards). */
+export function backdropUrl(path: string | null | undefined, size = "w1280"): string | null {
+  return path ? `${TMDB_IMAGE_BASE}/${size}${path}` : null;
+}
+
 // ---------- discover / trending ----------
 
 export interface TmdbTrendingItem {
@@ -144,6 +158,8 @@ export interface TmdbTrendingItem {
   overview?: string;
   poster_path?: string | null;
   backdrop_path?: string | null;
+  genre_ids?: number[];
+  original_language?: string;
 }
 
 /** Trending movies + TV for the week (mixed; `person` results are filtered by callers). */
@@ -154,3 +170,56 @@ export const getPopularMovies = () =>
   tmdb<TmdbSearchResult<TmdbMovieSummary>>("/movie/popular");
 
 export const getPopularTv = () => tmdb<TmdbSearchResult<TmdbTvSummary>>("/tv/popular");
+
+export const getTrendingMovies = () =>
+  tmdb<TmdbSearchResult<TmdbMovieSummary>>("/trending/movie/week");
+
+export const getTrendingTv = () => tmdb<TmdbSearchResult<TmdbTvSummary>>("/trending/tv/week");
+
+export const getTopRatedMovies = () =>
+  tmdb<TmdbSearchResult<TmdbMovieSummary>>("/movie/top_rated");
+
+export const getTopRatedTv = () => tmdb<TmdbSearchResult<TmdbTvSummary>>("/tv/top_rated");
+
+// Anime = Japanese animation (genre 16). TMDB has no native "anime" endpoint,
+// so we discover Japanese-language Animation titles.
+export const discoverAnimeTv = (sort = "popularity.desc") =>
+  tmdb<TmdbSearchResult<TmdbTvSummary>>("/discover/tv", {
+    with_genres: 16,
+    with_original_language: "ja",
+    sort_by: sort,
+    "vote_count.gte": 50,
+  });
+
+export const discoverAnimeMovies = (sort = "popularity.desc") =>
+  tmdb<TmdbSearchResult<TmdbMovieSummary>>("/discover/movie", {
+    with_genres: 16,
+    with_original_language: "ja",
+    sort_by: sort,
+    "vote_count.gte": 50,
+  });
+
+// ---------- title logo artwork (transparent PNG) for hero billboards ----------
+
+export interface TmdbImages {
+  logos?: { file_path: string; iso_639_1: string | null; width?: number }[];
+}
+
+export const getMovieImages = (id: number) =>
+  tmdb<TmdbImages>(`/movie/${id}/images`, { include_image_language: "en,null" });
+
+export const getTvImages = (id: number) =>
+  tmdb<TmdbImages>(`/tv/${id}/images`, { include_image_language: "en,null" });
+
+export function logoUrl(path: string | null | undefined, size = "w500"): string | null {
+  return path ? `${TMDB_IMAGE_BASE}/${size}${path}` : null;
+}
+
+/** Pick the best title logo: prefer an English one, else the widest available. */
+export function pickLogo(images: TmdbImages): string | null {
+  const logos = images.logos ?? [];
+  if (logos.length === 0) return null;
+  const en = logos.filter((l) => l.iso_639_1 === "en").sort((a, b) => (b.width ?? 0) - (a.width ?? 0));
+  const chosen = en[0] ?? logos[0];
+  return logoUrl(chosen.file_path);
+}

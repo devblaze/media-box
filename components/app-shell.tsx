@@ -4,14 +4,55 @@ import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { cn } from "@/lib/cn";
+import { useApi } from "@/lib/api";
 import { Sidebar } from "@/components/sidebar";
+import { NetflixHeader } from "@/components/netflix/netflix-header";
+import { SearchProvider } from "@/components/netflix/search-context";
+
+interface Me {
+  id: number;
+  username: string;
+  role: "admin" | "user";
+}
 
 /**
- * Responsive application frame: the sidebar is static on desktop (md+) and a
- * slide-over drawer on mobile, toggled from a fixed top bar. The drawer closes
- * automatically on navigation.
+ * Role-aware application frame.
+ *   admin → the management sidebar shell (unchanged).
+ *   user  → a Netflix-style shell: a fixed <NetflixHeader/> over a full-bleed,
+ *           near-black <main>. Discover is edge-to-edge and sits under the
+ *           transparent header; other pages get top room to clear it.
+ * While /auth/me is loading we render a black screen so the sidebar never
+ * flashes for normal users.
  */
 export function AppShell({ children }: { children: React.ReactNode }) {
+  const { data: me } = useApi<Me>("/auth/me");
+  const pathname = usePathname();
+
+  if (!me) return <div className="min-h-screen bg-black" />;
+
+  if (me.role === "admin") return <SidebarShell>{children}</SidebarShell>;
+
+  return (
+    <SearchProvider>
+      <NetflixHeader />
+      <main
+        className={cn(
+          "min-h-screen bg-[#141414] text-white",
+          pathname === "/discover" || pathname.startsWith("/discover/") ? "" : "pt-16"
+        )}
+      >
+        {children}
+      </main>
+    </SearchProvider>
+  );
+}
+
+/**
+ * The original responsive management frame: a static sidebar on desktop (md+)
+ * and a slide-over drawer on mobile, toggled from a fixed top bar. The drawer
+ * closes automatically on navigation.
+ */
+function SidebarShell({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
 
