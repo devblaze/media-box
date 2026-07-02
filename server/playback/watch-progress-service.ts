@@ -1,0 +1,359 @@
+/**
+ * Per-user playback progress: resume points, watched flags, and the
+ * "continue watching" / "recently watched" feeds.
+ */
+import { and, asc, desc, eq, gt, isNotNull } from "drizzle-orm";
+import { getDb, schema } from "@/server/db";
+import { posterUrl, backdropUrl } from "@/server/metadata/tmdb";
+
+const WATCHED_PCT = 0.9;
+
+export interface ProgressInput {
+  movieId?: number | null;
+  episodeId?: number | null;
+  seriesId?: number | null;
+  positionSeconds: number;
+  durationSeconds: number;
+}
+
+export interface ContinueItem {
+  kind: "movie" | "episode";
+  title: string;
+  subtitle: string | null;
+  poster: string | null;
+  backdrop: string | null;
+  movieId: number | null;
+  seriesId: number | null;
+  episodeId: number | null;
+  seasonNumber: number | null;
+  episodeNumber: number | null;
+  positionSeconds: number;
+  durationSeconds: number;
+  progressPct: number;
+  watched: boolean;
+  updatedAt: number;
+}
+
+function pct(position: number, duration: number): number {
+  if (duration <= 0) return 0;
+  return Math.min(100, Math.round((position / duration) * 100));
+}
+
+/** Insert or update the resume point for a movie/episode. */
+export function upsertProgress(userId: number, input: ProgressInput): void {
+  const db = getDb();
+  const now = new Date();
+  const watched =
+    input.durationSeconds > 0 && input.positionSeconds / input.durationSeconds >= WATCHED_PCT;
+
+  // Derive seriesId for episode progress so "continue watching" can group by series
+  // without the caller (the player) having to know it.
+  let seriesId = input.seriesId ?? null;
+  if (input.episodeId && seriesId == null) {
+    seriesId =
+      db
+        .select({ seriesId: schema.episodes.seriesId })
+        .from(schema.episodes)
+        .where(eq(schema.episodes.id, input.episodeId))
+        .get()?.seriesId ?? null;
+  }
+
+  const existing = input.movieId
+    ? db
+        .select()
+        .from(schema.watchProgress)
+        .where(and(eq(schema.watchProgress.userId, userId), eq(schema.watchProgress.movieId, input.movieId)))
+        .get()
+    : input.episodeId
+      ? db
+          .select()
+          .from(schema.watchProgress)
+          .where(
+            and(eq(schema.watchProgress.userId, userId), eq(schema.watchProgress.episodeId, input.episodeId))
+          )
+          .get()
+      : null;
+
+  if (existing) {
+    db.update(schema.watchProgress)
+      .set({
+        positionSeconds: input.positionSeconds,
+        durationSeconds: input.durationSeconds || existing.durationSeconds,
+        watched: existing.watched || watched,
+        updatedAt: now,
+      })
+      .where(eq(schema.watchProgress.id, existing.id))
+      .run();
+    return;
+  }
+
+  db.insert(schema.watchProgress)
+    .values({
+      userId,
+      movieId: input.movieId ?? null,
+      episodeId: input.episodeId ?? null,
+      seriesId,
+      positionSeconds: input.positionSeconds,
+      durationSeconds: input.durationSeconds,
+      watched,
+      updatedAt: now,
+    })
+    .run();
+}
+
+function markOne(
+  userId: number,
+  target: { movieId?: number; episodeId?: number; seriesId?: number },
+  watched: boolean
+): void {
+  const db = getDb();
+  const now = new Date();
+  const existing = target.movieId
+    ? db
+        .select()
+        .from(schema.watchProgress)
+        .where(and(eq(schema.watchProgress.userId, userId), eq(schema.watchProgress.movieId, target.movieId)))
+        .get()
+    : db
+        .select()
+        .from(schema.watchProgress)
+        .where(
+          and(eq(schema.watchProgress.userId, userId), eq(schema.watchProgress.episodeId, target.episodeId!))
+        )
+        .get();
+
+  if (existing) {
+    db.update(schema.watchProgress)
+      .set({ watched, positionSeconds: watched ? existing.durationSeconds : 0, updatedAt: now })
+      .where(eq(schema.watchProgress.id, existing.id))
+      .run();
+    return;
+  }
+  db.insert(schema.watchProgress)
+    .values({
+      userId,
+      movieId: target.movieId ?? null,
+      episodeId: target.episodeId ?? null,
+      seriesId: target.seriesId ?? null,
+      positionSeconds: 0,
+      durationSeconds: 0,
+      watched,
+      updatedAt: now,
+    })
+    .run();
+}
+
+/** Mark a movie / episode / whole series watched or unwatched. */
+export function setWatched(
+  userId: number,
+  target: { movieId?: number; episodeId?: number; seriesId?: number },
+  watched: boolean
+): void {
+  const db = getDb();
+  if (target.movieId) return markOne(userId, { movieId: target.movieId }, watched);
+  if (target.episodeId) {
+    const seriesId = db
+      .select({ seriesId: schema.episodes.seriesId })
+      .from(schema.episodes)
+      .where(eq(schema.episodes.id, target.episodeId))
+      .get()?.seriesId;
+    return markOne(userId, { episodeId: target.episodeId, seriesId: seriesId ?? undefined }, watched);
+  }
+  if (target.seriesId) {
+    const eps = db
+      .select({ id: schema.episodes.id })
+      .from(schema.episodes)
+      .where(and(eq(schema.episodes.seriesId, target.seriesId), isNotNull(schema.episodes.episodeFileId)))
+      .all();
+    for (const ep of eps) markOne(userId, { episodeId: ep.id, seriesId: target.seriesId }, watched);
+  }
+}
+
+export function getProgress(
+  userId: number,
+  target: { movieId?: number; episodeId?: number }
+): { positionSeconds: number; durationSeconds: number; watched: boolean } | null {
+  const db = getDb();
+  const row = target.movieId
+    ? db
+        .select()
+        .from(schema.watchProgress)
+        .where(and(eq(schema.watchProgress.userId, userId), eq(schema.watchProgress.movieId, target.movieId)))
+        .get()
+    : target.episodeId
+      ? db
+          .select()
+          .from(schema.watchProgress)
+          .where(
+            and(eq(schema.watchProgress.userId, userId), eq(schema.watchProgress.episodeId, target.episodeId))
+          )
+          .get()
+      : null;
+  if (!row) return null;
+  return {
+    positionSeconds: row.positionSeconds,
+    durationSeconds: row.durationSeconds,
+    watched: row.watched,
+  };
+}
+
+type MovieRow = typeof schema.movies.$inferSelect;
+type SeriesRow = typeof schema.series.$inferSelect;
+type EpisodeRow = typeof schema.episodes.$inferSelect;
+type ProgressRow = typeof schema.watchProgress.$inferSelect;
+
+function movieItem(movie: MovieRow, prog: ProgressRow): ContinueItem {
+  return {
+    kind: "movie",
+    title: movie.title,
+    subtitle: movie.year ? String(movie.year) : null,
+    poster: posterUrl(movie.posterPath),
+    backdrop: backdropUrl(movie.backdropPath),
+    movieId: movie.id,
+    seriesId: null,
+    episodeId: null,
+    seasonNumber: null,
+    episodeNumber: null,
+    positionSeconds: prog.positionSeconds,
+    durationSeconds: prog.durationSeconds,
+    progressPct: pct(prog.positionSeconds, prog.durationSeconds),
+    watched: prog.watched,
+    updatedAt: prog.updatedAt.getTime(),
+  };
+}
+
+function episodeItem(
+  series: SeriesRow,
+  ep: EpisodeRow,
+  prog: ProgressRow | null,
+  activityAt: number
+): ContinueItem {
+  return {
+    kind: "episode",
+    title: series.title,
+    subtitle: `S${ep.seasonNumber} · E${ep.episodeNumber}${ep.title ? ` · ${ep.title}` : ""}`,
+    poster: posterUrl(series.posterPath),
+    backdrop: backdropUrl(series.backdropPath),
+    movieId: null,
+    seriesId: series.id,
+    episodeId: ep.id,
+    seasonNumber: ep.seasonNumber,
+    episodeNumber: ep.episodeNumber,
+    positionSeconds: prog?.positionSeconds ?? 0,
+    durationSeconds: prog?.durationSeconds ?? 0,
+    progressPct: prog ? pct(prog.positionSeconds, prog.durationSeconds) : 0,
+    watched: prog?.watched ?? false,
+    updatedAt: activityAt,
+  };
+}
+
+/** The next episode (with a file) after the given coordinates that the user hasn't watched. */
+function nextEpisode(
+  userId: number,
+  seriesId: number,
+  afterSeason: number,
+  afterEpisode: number
+): EpisodeRow | null {
+  const db = getDb();
+  const watchedIds = new Set(
+    db
+      .select({ episodeId: schema.watchProgress.episodeId })
+      .from(schema.watchProgress)
+      .where(and(eq(schema.watchProgress.userId, userId), eq(schema.watchProgress.watched, true)))
+      .all()
+      .map((r) => r.episodeId)
+  );
+  const eps = db
+    .select()
+    .from(schema.episodes)
+    .where(
+      and(
+        eq(schema.episodes.seriesId, seriesId),
+        isNotNull(schema.episodes.episodeFileId),
+        gt(schema.episodes.seasonNumber, 0)
+      )
+    )
+    .orderBy(asc(schema.episodes.seasonNumber), asc(schema.episodes.episodeNumber))
+    .all();
+  for (const e of eps) {
+    const isAfter =
+      e.seasonNumber > afterSeason ||
+      (e.seasonNumber === afterSeason && e.episodeNumber > afterEpisode);
+    if (isAfter && !watchedIds.has(e.id)) return e;
+  }
+  return null;
+}
+
+/** In-progress movies + the next episode to watch per started series, newest activity first. */
+export function continueWatching(userId: number, limit = 20): ContinueItem[] {
+  const db = getDb();
+  const items: ContinueItem[] = [];
+
+  const movieRows = db
+    .select({ prog: schema.watchProgress, movie: schema.movies })
+    .from(schema.watchProgress)
+    .innerJoin(schema.movies, eq(schema.movies.id, schema.watchProgress.movieId))
+    .where(
+      and(
+        eq(schema.watchProgress.userId, userId),
+        eq(schema.watchProgress.watched, false),
+        gt(schema.watchProgress.positionSeconds, 0)
+      )
+    )
+    .all();
+  for (const r of movieRows) items.push(movieItem(r.movie, r.prog));
+
+  const epRows = db
+    .select({ prog: schema.watchProgress, ep: schema.episodes, series: schema.series })
+    .from(schema.watchProgress)
+    .innerJoin(schema.episodes, eq(schema.episodes.id, schema.watchProgress.episodeId))
+    .innerJoin(schema.series, eq(schema.series.id, schema.episodes.seriesId))
+    .where(and(eq(schema.watchProgress.userId, userId), isNotNull(schema.watchProgress.episodeId)))
+    .orderBy(desc(schema.watchProgress.updatedAt))
+    .all();
+  const seenSeries = new Set<number>();
+  for (const r of epRows) {
+    if (seenSeries.has(r.series.id)) continue;
+    seenSeries.add(r.series.id);
+    const activityAt = r.prog.updatedAt.getTime();
+    if (!r.prog.watched && r.prog.positionSeconds > 0) {
+      items.push(episodeItem(r.series, r.ep, r.prog, activityAt));
+    } else {
+      const next = nextEpisode(userId, r.series.id, r.ep.seasonNumber, r.ep.episodeNumber);
+      if (next) items.push(episodeItem(r.series, next, null, activityAt));
+    }
+  }
+
+  return items.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
+}
+
+/** Recently finished movies + episodes (watched), newest first, one entry per series. */
+export function recentlyWatched(userId: number, limit = 20): ContinueItem[] {
+  const db = getDb();
+  const items: ContinueItem[] = [];
+
+  const movieRows = db
+    .select({ prog: schema.watchProgress, movie: schema.movies })
+    .from(schema.watchProgress)
+    .innerJoin(schema.movies, eq(schema.movies.id, schema.watchProgress.movieId))
+    .where(and(eq(schema.watchProgress.userId, userId), eq(schema.watchProgress.watched, true)))
+    .all();
+  for (const r of movieRows) items.push(movieItem(r.movie, r.prog));
+
+  const epRows = db
+    .select({ prog: schema.watchProgress, ep: schema.episodes, series: schema.series })
+    .from(schema.watchProgress)
+    .innerJoin(schema.episodes, eq(schema.episodes.id, schema.watchProgress.episodeId))
+    .innerJoin(schema.series, eq(schema.series.id, schema.episodes.seriesId))
+    .where(and(eq(schema.watchProgress.userId, userId), eq(schema.watchProgress.watched, true)))
+    .orderBy(desc(schema.watchProgress.updatedAt))
+    .all();
+  const seenSeries = new Set<number>();
+  for (const r of epRows) {
+    if (seenSeries.has(r.series.id)) continue;
+    seenSeries.add(r.series.id);
+    items.push(episodeItem(r.series, r.ep, r.prog, r.prog.updatedAt.getTime()));
+  }
+
+  return items.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
+}

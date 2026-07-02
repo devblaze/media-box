@@ -143,6 +143,48 @@ export async function scanMovie(movieId: number): Promise<number> {
   return 1;
 }
 
+/**
+ * Register one SPECIFIC video file as a movie's file (used by library import when
+ * many movies share a category folder, so `scanMovie`'s "largest file in folder"
+ * heuristic would pick the wrong one). Replaces any existing movieFile.
+ */
+export async function importMovieFileAt(movieId: number, videoAbsPath: string): Promise<number> {
+  const db = getDb();
+  const m = db.select().from(schema.movies).where(eq(schema.movies.id, movieId)).get();
+  if (!m) return 0;
+
+  // Drop any previously-registered file for this movie.
+  if (m.movieFileId) {
+    db.update(schema.movies).set({ movieFileId: null }).where(eq(schema.movies.id, movieId)).run();
+    db.delete(schema.movieFiles).where(eq(schema.movieFiles.id, m.movieFileId)).run();
+  }
+
+  let size = 0;
+  try {
+    size = (await fs.stat(videoAbsPath)).size;
+  } catch {
+    // File missing/unreadable — register with size 0 rather than fail the import.
+  }
+
+  const name = path.basename(videoAbsPath);
+  const fileRow = db
+    .insert(schema.movieFiles)
+    .values({
+      movieId,
+      relativePath: path.relative(m.path, videoAbsPath),
+      size,
+      quality: parseQuality(name),
+      releaseGroup: parseReleaseGroup(name) ?? null,
+      sceneName: path.basename(videoAbsPath, path.extname(videoAbsPath)),
+      dateAdded: new Date(),
+    })
+    .returning({ id: schema.movieFiles.id })
+    .get();
+  db.update(schema.movies).set({ movieFileId: fileRow.id }).where(eq(schema.movies.id, movieId)).run();
+  emitEvent({ type: "movie.updated", movieId });
+  return 1;
+}
+
 export async function scanAll(): Promise<string> {
   const db = getDb();
   const allSeries = db.select({ id: schema.series.id }).from(schema.series).all();

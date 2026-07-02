@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Badge, Button, Callout, Modal, Spinner } from "@/components/ui";
+import { Badge, Button, Callout, Spinner } from "@/components/ui";
+import { cn } from "@/lib/cn";
 import type { MediaInfo } from "@/server/library/media-info";
 
 // Type-only import of the hls.js instance type. The runtime class is loaded via
@@ -121,11 +122,156 @@ function canDirectPlay(info: MediaInfo | null | undefined): boolean {
   return DIRECT_CONTAINERS.has(container) && DIRECT_VIDEO.has(vcodec) && DIRECT_AUDIO.has(acodec);
 }
 
+/** A downloaded subtitle sidecar, as served by `GET /api/v1/subtitles`. */
+type SubtitleTrack = { id: number; language: string; label: string; url: string };
+
+/** Shape of `GET /api/v1/watch-progress` (or `null` when nothing is stored). */
+type WatchProgress = { positionSeconds: number; durationSeconds: number; watched: boolean };
+
+// ---- fullscreen helpers (defensive against browsers without the promise API) ----
+
+function enterFullscreen(el: HTMLElement | null) {
+  try {
+    const p = el?.requestFullscreen?.();
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch {
+    /* fullscreen unsupported or rejected — keep playing windowed */
+  }
+}
+
+function exitFullscreen() {
+  try {
+    if (typeof document !== "undefined" && document.fullscreenElement) {
+      const p = document.exitFullscreen?.();
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 /**
- * Video modal that plays a title either by DIRECT play (native `<video>` on the
- * gated stream route) or by TRANSCODE (server-side HLS via ffmpeg, loaded with
- * hls.js). The initial mode is chosen from {@link MediaInfo}; a toggle lets the
- * user switch, and a failed direct play offers a one-click transcode fallback.
+ * Resume-on-open + throttled progress saving, shared by both player modes so the
+ * logic lives in one place and the hook order stays stable regardless of mode.
+ *
+ * On `loadedmetadata` it fetches the stored resume point and seeks to it (when
+ * it is past the intro and before the ~95% "finished" mark). It PUTs progress at
+ * most every ~15s during playback, once on `pause`, and once on unmount/close.
+ * Every network call fails silently — playback never depends on it.
+ */
+function useWatchProgress(
+  videoRef: React.RefObject<HTMLVideoElement | null>,
+  target: PlaybackTarget
+) {
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const key = target.type === "movie" ? "movieId" : "episodeId";
+    let disposed = false;
+    let resumed = false;
+    let lastSave = Date.now(); // defer the first throttled save ~15s so we never store 0
+
+    const save = () => {
+      const cur = video.currentTime;
+      const positionSeconds = Math.floor(cur);
+      if (!Number.isFinite(cur) || positionSeconds <= 0) return; // guard 0 / NaN
+      const dur = video.duration;
+      const durationSeconds = Math.floor(Number.isFinite(dur) && dur > 0 ? dur : 0);
+      lastSave = Date.now();
+      void apiFetch("/watch-progress", {
+        method: "PUT",
+        body: JSON.stringify({ [key]: target.id, positionSeconds, durationSeconds }),
+      }).catch(() => {});
+    };
+
+    const onLoadedMetadata = () => {
+      if (resumed) return; // resume at most once per mount
+      resumed = true;
+      void apiFetch<WatchProgress | null>(`/watch-progress?${key}=${target.id}`)
+        .then((p) => {
+          if (disposed || !p) return;
+          const dur = video.duration;
+          const beforeEnd = !Number.isFinite(dur) || p.positionSeconds < dur * 0.95;
+          if (p.positionSeconds > 5 && beforeEnd) {
+            try {
+              video.currentTime = p.positionSeconds;
+            } catch {
+              /* seek rejected (e.g. not seekable yet) — start from the top */
+            }
+          }
+        })
+        .catch(() => {});
+    };
+
+    const onTimeUpdate = () => {
+      if (Date.now() - lastSave >= 15_000) save();
+    };
+
+    video.addEventListener("loadedmetadata", onLoadedMetadata);
+    video.addEventListener("timeupdate", onTimeUpdate);
+    video.addEventListener("pause", save);
+    // Metadata may already be loaded before we attached (fast native playback).
+    if (video.readyState >= 1) onLoadedMetadata();
+
+    return () => {
+      disposed = true;
+      video.removeEventListener("loadedmetadata", onLoadedMetadata);
+      video.removeEventListener("timeupdate", onTimeUpdate);
+      video.removeEventListener("pause", save);
+      save(); // final flush on unmount / mode switch / close
+    };
+  }, [videoRef, target.type, target.id]);
+}
+
+/**
+ * Drives the `<video>`'s TextTrack modes from the selected subtitle index
+ * (`-1` = off). Runs after render so the `<track>` elements — and therefore the
+ * matching `video.textTracks` entries — already exist, and re-applies once the
+ * media loads because some browsers reset track modes on metadata load.
+ */
+function useSubtitleSelection(
+  videoRef: React.RefObject<HTMLVideoElement | null>,
+  tracks: SubtitleTrack[],
+  selectedIndex: number
+) {
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const apply = () => {
+      const list = video.textTracks;
+      for (let i = 0; i < list.length; i++) {
+        list[i].mode = i === selectedIndex ? "showing" : "disabled";
+      }
+    };
+    apply();
+    video.addEventListener("loadedmetadata", apply);
+    return () => video.removeEventListener("loadedmetadata", apply);
+  }, [videoRef, tracks, selectedIndex]);
+}
+
+/** Subtitle `<track>` children shared by both players (modes set imperatively). */
+function SubtitleTracks({ tracks }: { tracks: SubtitleTrack[] }) {
+  return (
+    <>
+      {tracks.map((t) => (
+        <track key={t.id} kind="subtitles" src={t.url} srcLang={t.language} label={t.label} />
+      ))}
+    </>
+  );
+}
+
+/**
+ * Immersive, Netflix-style player. It plays a title either by DIRECT play (native
+ * `<video>` on the gated stream route) or by TRANSCODE (server-side HLS via
+ * ffmpeg, loaded with hls.js). The initial mode is chosen from {@link MediaInfo};
+ * an overlay toggle lets the user switch, and a failed direct play offers a
+ * one-click transcode fallback.
+ *
+ * Presentation is a full-viewport black overlay that best-effort enters real
+ * fullscreen on open. A top control bar (title, subtitles, fullscreen toggle,
+ * Direct/Transcode toggle, close) auto-hides after a few seconds of no mouse
+ * movement. `F` toggles fullscreen; `Esc` exits fullscreen or closes.
  *
  * Mount it only while a title is selected so state resets between plays.
  */
@@ -143,71 +289,309 @@ export function VideoPlayerModal({
   const [mode, setMode] = useState<"direct" | "transcode">(() =>
     canDirectPlay(mediaInfo) ? "direct" : "transcode"
   );
+  const containerRef = useRef<HTMLDivElement>(null);
+  const hideTimer = useRef<number | null>(null);
+
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const [ccOpen, setCcOpen] = useState(false);
+  const [tracks, setTracks] = useState<SubtitleTrack[]>([]);
+  const [selectedSub, setSelectedSub] = useState(-1); // -1 = off (default)
+
+  const barVisible = controlsVisible || ccOpen;
+
+  // Best-effort real fullscreen on open.
+  useEffect(() => {
+    enterFullscreen(containerRef.current);
+  }, []);
+
+  // Fetch available subtitle tracks once on open (silent on failure).
+  useEffect(() => {
+    const key = target.type === "movie" ? "movieId" : "episodeId";
+    let active = true;
+    void apiFetch<{ tracks: SubtitleTrack[] }>(`/subtitles?${key}=${target.id}`)
+      .then((res) => {
+        if (active) setTracks(res.tracks ?? []);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [target.type, target.id]);
+
+  // Keep the max/min icon in sync with the actual fullscreen state.
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(!!document.fullscreenElement);
+    onChange();
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  const showControls = useCallback(() => {
+    setControlsVisible(true);
+    if (hideTimer.current) window.clearTimeout(hideTimer.current);
+    hideTimer.current = window.setTimeout(() => setControlsVisible(false), 3000);
+  }, []);
+
+  useEffect(() => {
+    showControls();
+    return () => {
+      if (hideTimer.current) window.clearTimeout(hideTimer.current);
+    };
+  }, [showControls]);
+
+  const handleClose = useCallback(() => {
+    exitFullscreen();
+    onClose();
+  }, [onClose]);
+
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) exitFullscreen();
+    else enterFullscreen(containerRef.current);
+    showControls();
+  }, [showControls]);
+
+  // F toggles fullscreen; Esc exits fullscreen first, otherwise closes.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "f" || e.key === "F") {
+        e.preventDefault();
+        toggleFullscreen();
+      } else if (e.key === "Escape") {
+        if (document.fullscreenElement) exitFullscreen();
+        else handleClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [toggleFullscreen, handleClose]);
 
   return (
-    <Modal open onClose={onClose} title={title} size="lg">
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <span className="text-xs uppercase tracking-wide text-zinc-500">Playback</span>
-          <Button
-            variant={mode === "direct" ? "primary" : "secondary"}
-            size="sm"
-            onClick={() => setMode("direct")}
-          >
-            Direct
-          </Button>
-          <Button
-            variant={mode === "transcode" ? "primary" : "secondary"}
-            size="sm"
-            onClick={() => setMode("transcode")}
-          >
-            Transcode
-          </Button>
+    <div
+      ref={containerRef}
+      className={cn(
+        "fixed inset-0 z-[60] flex items-center justify-center bg-black",
+        !barVisible && "cursor-none"
+      )}
+      onMouseMove={showControls}
+    >
+      {mode === "direct" ? (
+        <DirectPlayer
+          target={target}
+          tracks={tracks}
+          selectedSub={selectedSub}
+          onFallback={() => setMode("transcode")}
+        />
+      ) : (
+        <TranscodePlayer target={target} tracks={tracks} selectedSub={selectedSub} />
+      )}
+
+      {/* Top control bar — auto-hides, reappears on mouse movement. */}
+      <div
+        className={cn(
+          "absolute inset-x-0 top-0 z-10 flex items-center gap-3 bg-gradient-to-b from-black/80 via-black/50 to-transparent px-4 py-3 transition-opacity duration-300",
+          barVisible ? "opacity-100" : "pointer-events-none opacity-0"
+        )}
+      >
+        <Button variant="ghost" size="icon" onClick={handleClose} aria-label="Close player">
+          <svg viewBox="0 0 24 24" className="size-5" fill="none" aria-hidden="true">
+            <path
+              d="M6 6l12 12M18 6L6 18"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+            />
+          </svg>
+        </Button>
+
+        <div className="min-w-0 flex-1 truncate text-base font-semibold text-white sm:text-lg">
+          {title}
         </div>
 
-        {mode === "direct" ? (
-          <DirectPlayer
-            src={`/api/v1/stream/${target.type}/${target.id}`}
-            onFallback={() => setMode("transcode")}
-          />
-        ) : (
-          <TranscodePlayer type={target.type} id={target.id} />
-        )}
+        {/* Direct / Transcode toggle */}
+        <div className="flex items-center overflow-hidden rounded-md border border-white/15">
+          <button
+            type="button"
+            onClick={() => {
+              setMode("direct");
+              showControls();
+            }}
+            className={cn(
+              "px-3 py-1.5 text-xs font-medium transition-colors",
+              mode === "direct"
+                ? "bg-amber-500 text-zinc-950"
+                : "text-zinc-200 hover:bg-white/10"
+            )}
+          >
+            Direct
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setMode("transcode");
+              showControls();
+            }}
+            className={cn(
+              "px-3 py-1.5 text-xs font-medium transition-colors",
+              mode === "transcode"
+                ? "bg-amber-500 text-zinc-950"
+                : "text-zinc-200 hover:bg-white/10"
+            )}
+          >
+            Transcode
+          </button>
+        </div>
+
+        {/* Subtitles (CC) */}
+        <div className="relative">
+          <Button
+            variant={selectedSub >= 0 ? "primary" : "ghost"}
+            size="icon"
+            onClick={() => {
+              setCcOpen((o) => !o);
+              showControls();
+            }}
+            aria-label="Subtitles"
+            aria-haspopup="menu"
+            aria-expanded={ccOpen}
+          >
+            <span className="text-xs font-bold tracking-tight">CC</span>
+          </Button>
+          {ccOpen && (
+            <div
+              role="menu"
+              className="absolute right-0 top-full mt-2 max-h-64 min-w-44 overflow-auto rounded-md border border-white/10 bg-zinc-900/95 py-1 shadow-xl backdrop-blur"
+            >
+              <SubtitleMenuItem
+                label="Off"
+                active={selectedSub === -1}
+                onSelect={() => {
+                  setSelectedSub(-1);
+                  setCcOpen(false);
+                  showControls();
+                }}
+              />
+              {tracks.length === 0 && (
+                <p className="px-3 py-2 text-xs text-zinc-500">No subtitles available</p>
+              )}
+              {tracks.map((t, i) => (
+                <SubtitleMenuItem
+                  key={t.id}
+                  label={t.label}
+                  active={selectedSub === i}
+                  onSelect={() => {
+                    setSelectedSub(i);
+                    setCcOpen(false);
+                    showControls();
+                  }}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Fullscreen toggle */}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={toggleFullscreen}
+          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            className="size-5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            {isFullscreen ? (
+              <path d="M8 3v3a2 2 0 0 1-2 2H3M16 3v3a2 2 0 0 0 2 2h3M8 21v-3a2 2 0 0 0-2-2H3M16 21v-3a2 2 0 0 1 2-2h3" />
+            ) : (
+              <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
+            )}
+          </svg>
+        </Button>
       </div>
-    </Modal>
+    </div>
+  );
+}
+
+function SubtitleMenuItem({
+  label,
+  active,
+  onSelect,
+}: {
+  label: string;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-checked={active}
+      onClick={onSelect}
+      className={cn(
+        "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-white/10",
+        active ? "text-amber-400" : "text-zinc-200"
+      )}
+    >
+      <span className="w-3 shrink-0 text-amber-400" aria-hidden="true">
+        {active ? "✓" : ""}
+      </span>
+      <span className="truncate">{label}</span>
+    </button>
   );
 }
 
 /** Native direct play with a "Try transcoding" fallback on <video> error. */
-function DirectPlayer({ src, onFallback }: { src: string; onFallback: () => void }) {
+function DirectPlayer({
+  target,
+  tracks,
+  selectedSub,
+  onFallback,
+}: {
+  target: PlaybackTarget;
+  tracks: SubtitleTrack[];
+  selectedSub: number;
+  onFallback: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
   const [errored, setErrored] = useState(false);
+
+  useWatchProgress(videoRef, target);
+  useSubtitleSelection(videoRef, tracks, selectedSub);
 
   return (
     <>
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video
+        ref={videoRef}
         controls
         autoPlay
-        className="w-full rounded bg-black"
-        src={src}
+        className="h-full w-full bg-black object-contain"
+        src={`/api/v1/stream/${target.type}/${target.id}`}
         onError={() => setErrored(true)}
-      />
-      {errored ? (
-        <Callout tone="warning" title="Direct play failed">
-          <p>
-            Your browser could not play this file directly. MP4/H.264/AAC plays natively; MKV, HEVC
-            and other formats need transcoding.
-          </p>
-          <div className="mt-2">
-            <Button size="sm" onClick={onFallback}>
-              Try transcoding
-            </Button>
-          </div>
-        </Callout>
-      ) : (
-        <Callout tone="info">
-          Direct play — streaming the original file. If it does not start, switch to transcoding.
-        </Callout>
+      >
+        <SubtitleTracks tracks={tracks} />
+      </video>
+      {errored && (
+        <div className="absolute inset-0 z-0 flex items-center justify-center p-6">
+          <Callout tone="warning" title="Direct play failed" className="max-w-md bg-zinc-900/90">
+            <p>
+              Your browser could not play this file directly. MP4/H.264/AAC plays natively; MKV,
+              HEVC and other formats need transcoding.
+            </p>
+            <div className="mt-2">
+              <Button size="sm" onClick={onFallback}>
+                Try transcoding
+              </Button>
+            </div>
+          </Callout>
+        </div>
       )}
     </>
   );
@@ -219,10 +603,22 @@ function DirectPlayer({ src, onFallback }: { src: string; onFallback: () => void
  * destroys the hls.js instance and DELETEs the session so the server tears down
  * ffmpeg and reclaims disk.
  */
-function TranscodePlayer({ type, id }: PlaybackTarget) {
+function TranscodePlayer({
+  target,
+  tracks,
+  selectedSub,
+}: {
+  target: PlaybackTarget;
+  tracks: SubtitleTrack[];
+  selectedSub: number;
+}) {
+  const { type, id } = target;
   const videoRef = useRef<HTMLVideoElement>(null);
   const [status, setStatus] = useState<"starting" | "playing" | "error">("starting");
   const [error, setError] = useState<string | null>(null);
+
+  useWatchProgress(videoRef, target);
+  useSubtitleSelection(videoRef, tracks, selectedSub);
 
   useEffect(() => {
     let cancelled = false;
@@ -297,25 +693,22 @@ function TranscodePlayer({ type, id }: PlaybackTarget) {
 
   return (
     <>
-      <div className="relative">
-        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-        <video ref={videoRef} controls autoPlay className="w-full rounded bg-black" />
-        {status === "starting" && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded bg-black/70 text-sm text-zinc-300">
-            <Spinner className="size-6" />
-            <span>Starting transcode…</span>
-          </div>
-        )}
-      </div>
-      {status === "error" ? (
-        <Callout tone="danger" title="Playback error">
-          {error}
-        </Callout>
-      ) : (
-        <Callout tone="info">
-          Transcoding to a browser-friendly HLS stream. Seeking far ahead may pause while new
-          segments are produced.
-        </Callout>
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+      <video ref={videoRef} controls autoPlay className="h-full w-full bg-black object-contain">
+        <SubtitleTracks tracks={tracks} />
+      </video>
+      {status === "starting" && (
+        <div className="absolute inset-0 z-0 flex flex-col items-center justify-center gap-2 bg-black/70 text-sm text-zinc-300">
+          <Spinner className="size-6" />
+          <span>Starting transcode…</span>
+        </div>
+      )}
+      {status === "error" && (
+        <div className="absolute inset-0 z-0 flex items-center justify-center p-6">
+          <Callout tone="danger" title="Playback error" className="max-w-md bg-zinc-900/90">
+            {error}
+          </Callout>
+        </div>
       )}
     </>
   );

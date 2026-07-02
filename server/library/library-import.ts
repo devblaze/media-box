@@ -1,11 +1,11 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { getDb, schema } from "@/server/db";
+import { getDb, schema, type Db } from "@/server/db";
 import { parseTitle } from "@/server/parser/release-parser";
 import { searchMovie, searchTv, posterUrl } from "@/server/metadata/tmdb";
 import { walkVideoFiles } from "./disk-scanner";
 
-export type ImportType = "movie" | "series";
+export type ImportType = "movie" | "series" | "anime";
 
 export interface ImportSuggestion {
   tmdbId: number;
@@ -16,9 +16,14 @@ export interface ImportSuggestion {
 }
 
 export interface ImportCandidate {
-  /** Absolute path of the on-disk folder. */
+  /** Absolute path of the folder that should become movie.path / series.path. */
   path: string;
-  /** Folder name (display). */
+  /**
+   * Absolute path of the representative video file (movies only — the largest file
+   * when several map to one title). Empty for folder-based series/anime candidates.
+   */
+  videoPath: string;
+  /** Display name (video file basename for movies, folder name for series/anime). */
   name: string;
   parsedTitle: string;
   parsedYear: number | null;
@@ -32,14 +37,45 @@ export interface ImportCandidate {
   suggestions: ImportSuggestion[];
 }
 
+export interface ScanResult {
+  candidates: ImportCandidate[];
+  /** True when there were more titles on disk than the per-scan cap. */
+  truncated: boolean;
+}
+
 /** Cap TMDB lookups per scan so a huge library can't hang the request. */
-const MAX_CANDIDATES = 100;
+const MAX_CANDIDATES = 150;
 
 function normalize(s: string): string {
   return s
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+/** Filenames/folders that carry no usable title (disc parts, placeholders, digits-only). */
+const GENERIC_TITLE = /^(movie|video|film|feature|cd|disc|dvd|part|title|vts|track)[\s._-]?\d*$/i;
+
+function isUsableTitle(raw: string): boolean {
+  const t = raw.trim();
+  if (t.length < 2) return false;
+  const compact = t.replace(/\s+/g, "");
+  if (/^\d+$/.test(compact)) return false; // digits only
+  if (GENERIC_TITLE.test(compact)) return false;
+  return true;
+}
+
+/**
+ * The release-parser can leave a trailing space/dot-separated year in the title
+ * (e.g. a plain folder "Inception 2010"). Strip it so the TMDB query is the bare
+ * title, and use it as the year hint when none was found.
+ */
+function stripTrailingYear(title: string, yearHint: number | null): { title: string; year: number | null } {
+  const trailing = title.match(/^(.*?)[\s.]+((?:19|20)\d{2})\s*$/);
+  if (trailing) {
+    return { title: trailing[1].trim(), year: yearHint ?? Number(trailing[2]) };
+  }
+  return { title, year: yearHint };
 }
 
 async function suggestFor(type: ImportType, query: string): Promise<ImportSuggestion[]> {
@@ -54,6 +90,7 @@ async function suggestFor(type: ImportType, query: string): Promise<ImportSugges
         overview: r.overview ?? "",
       }));
     }
+    // series and anime both resolve against TMDB TV.
     const res = await searchTv(query);
     return res.results.slice(0, 6).map((r) => ({
       tmdbId: r.id,
@@ -67,40 +104,134 @@ async function suggestFor(type: ImportType, query: string): Promise<ImportSugges
   }
 }
 
-/**
- * Scan a library root folder for on-disk titles not yet in the library, parse
- * each folder name, and match it against TMDB. Returns a candidate per folder,
- * classified as a confident match or "unsure" (needs manual selection).
- */
-export async function scanLibrary(type: ImportType, root: string): Promise<ImportCandidate[]> {
-  const db = getDb();
+/** Decide whether the top suggestion is a confident match for the parsed title/year. */
+function classify(
+  suggestions: ImportSuggestion[],
+  query: string,
+  yearHint: number | null
+): { status: "matched" | "unsure"; suggestedTmdbId: number | null } {
+  if (suggestions.length === 0) return { status: "unsure", suggestedTmdbId: null };
+  const top = suggestions[0];
+  const titleMatch = normalize(top.title) === normalize(query);
+  const yearMatch = yearHint != null && top.year != null && Math.abs(yearHint - top.year) <= 1;
+  // Confident when the title matches and either the year agrees or there was no year to check,
+  // or there is exactly one plausible result with a matching title.
+  if ((titleMatch && (yearHint == null || yearMatch)) || (suggestions.length === 1 && titleMatch)) {
+    return { status: "matched", suggestedTmdbId: top.tmdbId };
+  }
+  return { status: "unsure", suggestedTmdbId: null };
+}
 
+/**
+ * Movies: recurse the whole tree and produce one candidate per movie FILE (not per
+ * top-level folder). Files that share a normalized title+year — multiple parts,
+ * extras, or a dedicated movie folder — collapse into a single candidate whose
+ * representative is the largest file.
+ */
+async function scanMoviesByFile(db: Db, root: string): Promise<ScanResult> {
+  const files = await walkVideoFiles(root);
+
+  // Skip files already registered to a movie, and don't suggest tmdbIds already in the library.
+  const existingFilePaths = new Set<string>();
+  const existingTmdb = new Set<number>();
+  const movieById = new Map<number, { path: string }>();
+  for (const m of db
+    .select({ id: schema.movies.id, path: schema.movies.path, tmdbId: schema.movies.tmdbId })
+    .from(schema.movies)
+    .all()) {
+    movieById.set(m.id, { path: m.path });
+    existingTmdb.add(m.tmdbId);
+  }
+  for (const mf of db
+    .select({ movieId: schema.movieFiles.movieId, relativePath: schema.movieFiles.relativePath })
+    .from(schema.movieFiles)
+    .all()) {
+    const m = movieById.get(mf.movieId);
+    if (m) existingFilePaths.add(path.join(m.path, mf.relativePath));
+  }
+
+  interface Agg {
+    title: string;
+    year: number | null;
+    best: { absPath: string; size: number };
+    count: number;
+  }
+  const byKey = new Map<string, Agg>();
+
+  for (const file of files) {
+    if (existingFilePaths.has(file.absPath)) continue;
+
+    const fromFile = parseTitle(path.basename(file.absPath));
+    let title = fromFile.title;
+    let year: number | null = fromFile.year ?? null;
+
+    // If the filename yields no usable title, fall back to the parent folder name.
+    if (!isUsableTitle(title)) {
+      const parentName = path.basename(path.dirname(file.absPath));
+      const fromFolder = parseTitle(parentName);
+      title = fromFolder.title || parentName;
+      year = fromFolder.year ?? null;
+    }
+    ({ title, year } = stripTrailingYear(title, year));
+    // Only bail when there is genuinely no title left (e.g. a year-only name). A short
+    // real title like "A"/"B"/"M" or "It" is kept — we've already used the best source.
+    if (title.trim().length === 0) continue;
+
+    const key = `${normalize(title)}|${year ?? ""}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.count += 1;
+      if (file.size > existing.best.size) existing.best = file; // keep the largest as representative
+    } else {
+      byKey.set(key, { title, year, best: file, count: 1 });
+    }
+  }
+
+  const aggs = [...byKey.values()].sort((a, b) => a.title.localeCompare(b.title));
+  const truncated = aggs.length > MAX_CANDIDATES;
+  const limited = aggs.slice(0, MAX_CANDIDATES);
+
+  const candidates: ImportCandidate[] = [];
+  for (const agg of limited) {
+    const suggestions = (await suggestFor("movie", agg.title)).filter((s) => !existingTmdb.has(s.tmdbId));
+    const { status, suggestedTmdbId } = classify(suggestions, agg.title, agg.year);
+    const videoPath = agg.best.absPath;
+    candidates.push({
+      path: path.dirname(videoPath), // loose file → its category folder; dedicated folder → that folder
+      videoPath,
+      name: path.basename(videoPath),
+      parsedTitle: agg.title,
+      parsedYear: agg.year,
+      videoFileCount: agg.count,
+      status,
+      suggestedTmdbId,
+      suggestions,
+    });
+  }
+  return { candidates, truncated };
+}
+
+/**
+ * Series / anime: each immediate subfolder of the root is one title. Parse the
+ * folder name, match against TMDB TV, classify.
+ */
+async function scanFolders(db: Db, type: ImportType, root: string): Promise<ScanResult> {
   let entries;
   try {
     entries = await fs.readdir(root, { withFileTypes: true });
   } catch {
-    return [];
+    return { candidates: [], truncated: false };
   }
 
-  // Titles already in the library — skip their folders + don't suggest their tmdbIds.
+  // Series (incl. anime) are stored in the series table — skip their folders + tmdbIds.
   const existingPaths = new Set<string>();
   const existingTmdb = new Set<number>();
-  if (type === "movie") {
-    for (const r of db
-      .select({ path: schema.movies.path, tmdbId: schema.movies.tmdbId })
-      .from(schema.movies)
-      .all()) {
-      existingPaths.add(r.path);
-      existingTmdb.add(r.tmdbId);
-    }
-  } else {
-    for (const r of db
-      .select({ path: schema.series.path, tmdbId: schema.series.tmdbId })
-      .from(schema.series)
-      .all()) {
-      existingPaths.add(r.path);
-      existingTmdb.add(r.tmdbId);
-    }
+  for (const r of db
+    .select({ path: schema.series.path, tmdbId: schema.series.tmdbId })
+    .from(schema.series)
+    .all()) {
+    existingPaths.add(r.path);
+    existingTmdb.add(r.tmdbId);
   }
 
   const dirs = entries
@@ -109,8 +240,12 @@ export async function scanLibrary(type: ImportType, root: string): Promise<Impor
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const candidates: ImportCandidate[] = [];
+  let truncated = false;
   for (const d of dirs) {
-    if (candidates.length >= MAX_CANDIDATES) break;
+    if (candidates.length >= MAX_CANDIDATES) {
+      truncated = true;
+      break;
+    }
     if (existingPaths.has(d.path)) continue; // already imported
 
     const videos = await walkVideoFiles(d.path);
@@ -119,33 +254,14 @@ export async function scanLibrary(type: ImportType, root: string): Promise<Impor
     const parsed = parseTitle(d.name);
     let query = parsed.title || d.name;
     let yearHint = parsed.year ?? null;
-    // The release-parser can leave a trailing space-separated year in the title
-    // (e.g. a plain folder "Inception 2010"). Strip it so the TMDB query is the bare
-    // title, and use it as the year hint when the parser found none.
-    const trailing = query.match(/^(.*?)[\s.]+((?:19|20)\d{2})\s*$/);
-    if (trailing) {
-      query = trailing[1].trim();
-      if (yearHint == null) yearHint = Number(trailing[2]);
-    }
+    ({ title: query, year: yearHint } = stripTrailingYear(query, yearHint));
 
     const suggestions = (await suggestFor(type, query)).filter((s) => !existingTmdb.has(s.tmdbId));
-
-    let status: "matched" | "unsure" = "unsure";
-    let suggestedTmdbId: number | null = null;
-    if (suggestions.length > 0) {
-      const top = suggestions[0];
-      const titleMatch = normalize(top.title) === normalize(query);
-      const yearMatch = yearHint != null && top.year != null && Math.abs(yearHint - top.year) <= 1;
-      // Confident when the title matches and either the year agrees or there was no year to check,
-      // or there is exactly one plausible result with a matching title.
-      if ((titleMatch && (yearHint == null || yearMatch)) || (suggestions.length === 1 && titleMatch)) {
-        status = "matched";
-        suggestedTmdbId = top.tmdbId;
-      }
-    }
+    const { status, suggestedTmdbId } = classify(suggestions, query, yearHint);
 
     candidates.push({
       path: d.path,
+      videoPath: "",
       name: d.name,
       parsedTitle: query,
       parsedYear: yearHint,
@@ -156,5 +272,18 @@ export async function scanLibrary(type: ImportType, root: string): Promise<Impor
     });
   }
 
-  return candidates;
+  return { candidates, truncated };
+}
+
+/**
+ * Scan a library root folder for on-disk titles not yet in the library, match each
+ * against TMDB, and classify as a confident match or "unsure" (needs manual pick).
+ *
+ * Movies produce one candidate per movie FILE (recursing category folders); series
+ * and anime produce one candidate per immediate subfolder.
+ */
+export async function scanLibrary(type: ImportType, root: string): Promise<ScanResult> {
+  const db = getDb();
+  if (type === "movie") return scanMoviesByFile(db, root);
+  return scanFolders(db, type, root);
 }

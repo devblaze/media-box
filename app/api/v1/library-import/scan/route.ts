@@ -10,8 +10,8 @@ export const dynamic = "force-dynamic";
 
 /**
  * Scan a library root folder for on-disk titles not yet imported, matching each
- * against TMDB. `type` is "movie" | "series"; the folder scanned is the root
- * folder identified by `rootFolderId`.
+ * against TMDB. `type` is "movie" | "series" | "anime"; the folder scanned is the
+ * root folder identified by `rootFolderId`.
  */
 export async function GET(request: NextRequest) {
   const denied = requireAdmin(request);
@@ -19,8 +19,8 @@ export async function GET(request: NextRequest) {
 
   const type = request.nextUrl.searchParams.get("type");
   const rootFolderId = Number(request.nextUrl.searchParams.get("rootFolderId"));
-  if (type !== "movie" && type !== "series") {
-    return badRequest("?type= must be 'movie' or 'series'");
+  if (type !== "movie" && type !== "series" && type !== "anime") {
+    return badRequest("?type= must be 'movie', 'series' or 'anime'");
   }
   if (!Number.isInteger(rootFolderId)) return badRequest("?rootFolderId= is required");
 
@@ -31,8 +31,8 @@ export async function GET(request: NextRequest) {
       .where(eq(schema.rootFolders.id, rootFolderId))
       .get();
     if (!rf) return badRequest("Unknown root folder");
-    const candidates = await scanLibrary(type, rf.path);
-    return ok({ root: rf.path, candidates });
+    const { candidates, truncated } = await scanLibrary(type, rf.path);
+    return ok({ root: rf.path, candidates, truncated });
   } catch (err) {
     return serverError(err);
   }

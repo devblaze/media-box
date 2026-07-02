@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useMemo, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiFetch, useApi } from "@/lib/api";
 import { useEvents } from "@/lib/use-events";
@@ -12,6 +12,7 @@ import {
   Badge,
   Button,
   Card,
+  CardBody,
   CardHeader,
   CardTitle,
   EmptyState,
@@ -24,6 +25,28 @@ import {
   useToast,
 } from "@/components/ui";
 
+interface CastMember {
+  id: number;
+  name: string;
+  character: string;
+  profile: string | null;
+}
+
+interface EpProgress {
+  positionSeconds: number;
+  durationSeconds: number;
+  watched: boolean;
+}
+
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
 interface EpisodeFileLite {
   id: number;
   relativePath: string;
@@ -34,6 +57,7 @@ interface EpisodeFileLite {
 
 interface SeriesDetail {
   id: number;
+  tmdbId: number;
   title: string;
   year: number | null;
   overview: string | null;
@@ -43,6 +67,7 @@ interface SeriesDetail {
   path: string;
   monitored: boolean;
   monitorMode: "all" | "future" | "none";
+  isAnime: boolean;
   seasons: Season[];
   episodes: Episode[];
   files: EpisodeFileLite[];
@@ -67,7 +92,11 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
   const { data, mutate } = useApi<SeriesDetail>(`/series/${id}`);
   const { data: qualityDefs } = useApi<QualityDefinition[]>("/qualitydefinitions");
   const { data: me } = useApi<Me>("/auth/me");
+  const { data: credits } = useApi<{ cast: CastMember[] }>(
+    data?.tmdbId ? `/credits?type=series&tmdbId=${data.tmdbId}` : null
+  );
   const isAdmin = me?.role === "admin";
+  const [progressMap, setProgressMap] = useState<Map<number, EpProgress>>(new Map());
   const [searchScope, setSearchScope] = useState<{ scope: SearchScope; label: string } | null>(null);
   const [playing, setPlaying] = useState<{ episodeId: number; label: string } | null>(null);
   const qualityNames = useMemo(
@@ -91,6 +120,40 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
     [data]
   );
 
+  // Only downloaded episodes can carry watch state; fetch each in the background
+  // so the page renders immediately regardless of how many requests are in flight.
+  const fileEpisodeIds = useMemo(
+    () => (data?.episodes ?? []).filter((e) => e.episodeFileId).map((e) => e.id),
+    [data]
+  );
+
+  const loadProgress = useCallback(async () => {
+    if (fileEpisodeIds.length === 0) {
+      setProgressMap(new Map());
+      return;
+    }
+    const entries = await Promise.all(
+      fileEpisodeIds.map(async (epId) => {
+        try {
+          const p = await apiFetch<EpProgress | null>(`/watch-progress?episodeId=${epId}`);
+          return [epId, p] as const;
+        } catch {
+          return [epId, null] as const;
+        }
+      })
+    );
+    const next = new Map<number, EpProgress>();
+    for (const [epId, p] of entries) if (p) next.set(epId, p);
+    setProgressMap(next);
+  }, [fileEpisodeIds]);
+
+  useEffect(() => {
+    void loadProgress();
+  }, [loadProgress]);
+
+  const allWatched =
+    fileEpisodeIds.length > 0 && fileEpisodeIds.every((epId) => progressMap.get(epId)?.watched);
+
   if (!data) {
     return (
       <div className="flex gap-6">
@@ -107,6 +170,31 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
         </div>
       </div>
     );
+  }
+
+  async function toggleSeriesWatched() {
+    try {
+      await apiFetch("/watch-progress/watched", {
+        method: "POST",
+        body: JSON.stringify({ seriesId: data!.id, watched: !allWatched }),
+      });
+      await loadProgress();
+      toast.success(allWatched ? "Marked series unwatched" : "Marked series watched");
+    } catch {
+      toast.error("Failed to update watched state");
+    }
+  }
+
+  async function toggleEpisodeWatched(episodeId: number, watched: boolean) {
+    try {
+      await apiFetch("/watch-progress/watched", {
+        method: "POST",
+        body: JSON.stringify({ episodeId, watched }),
+      });
+      await loadProgress();
+    } catch {
+      toast.error("Failed to update watched state");
+    }
   }
 
   async function toggleSeriesMonitored() {
@@ -210,22 +298,30 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
           <div className="h-64 w-44 rounded bg-zinc-800" />
         )}
         <div className="flex-1">
-          <h1 className="text-2xl font-semibold">
-            {data.title} {data.year ? <span className="text-zinc-500">({data.year})</span> : null}
+          <h1 className="flex flex-wrap items-center gap-2 text-2xl font-semibold">
+            <span>
+              {data.title}{" "}
+              {data.year ? <span className="text-zinc-500">({data.year})</span> : null}
+            </span>
+            {data.isAnime && <Badge tone="accent">Anime</Badge>}
           </h1>
           <div className="mt-1 text-sm text-zinc-400">
             {data.network ?? "—"} · {data.status} · <span className="font-mono text-xs">{data.path}</span>
           </div>
           <p className="mt-3 max-w-3xl text-sm text-zinc-300">{data.overview}</p>
-          {isAdmin && (
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Button
-                variant={data.monitored ? "primary" : "secondary"}
-                size="sm"
-                onClick={toggleSeriesMonitored}
-              >
-                {data.monitored ? "Monitored" : "Unmonitored"}
-              </Button>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button variant="secondary" size="sm" onClick={toggleSeriesWatched}>
+              {allWatched ? "Mark series unwatched" : "Mark series watched"}
+            </Button>
+            {isAdmin && (
+              <>
+                <Button
+                  variant={data.monitored ? "primary" : "secondary"}
+                  size="sm"
+                  onClick={toggleSeriesMonitored}
+                >
+                  {data.monitored ? "Monitored" : "Unmonitored"}
+                </Button>
               <label className="flex items-center gap-2 text-sm text-zinc-400">
                 <span>Monitoring</span>
                 <div className="w-44">
@@ -251,11 +347,12 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
               <Button variant="secondary" size="sm" onClick={searchSubtitles}>
                 Search subtitles
               </Button>
-              <Button variant="danger" size="sm" onClick={remove}>
-                Remove
-              </Button>
-            </div>
-          )}
+                <Button variant="danger" size="sm" onClick={remove}>
+                  Remove
+                </Button>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -318,15 +415,34 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
                     {eps.map((ep) => {
                       const file = ep.episodeFileId ? filesById.get(ep.episodeFileId) : undefined;
                       const epLabel = `${data.title} S${String(ep.seasonNumber).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}`;
+                      const prog = progressMap.get(ep.id);
+                      const watched = prog?.watched ?? false;
+                      const inProgress =
+                        !watched &&
+                        !!prog &&
+                        prog.positionSeconds > 0 &&
+                        prog.durationSeconds > 0;
                       return (
                         <TR key={ep.id}>
                           <TD className="w-12">
                             <span className="text-zinc-500">{ep.episodeNumber}</span>
                           </TD>
                           <TD>
-                            <div>{ep.title ?? "TBA"}</div>
+                            <div className={watched ? "text-zinc-400" : undefined}>
+                              {ep.title ?? "TBA"}
+                            </div>
                             {file?.mediaInfo && (
                               <MediaInfoBadges info={file.mediaInfo} className="mt-1 flex flex-wrap items-center gap-1" />
+                            )}
+                            {inProgress && (
+                              <div className="mt-1 h-1 w-full max-w-xs overflow-hidden rounded-full bg-zinc-800">
+                                <div
+                                  className="h-full bg-amber-500"
+                                  style={{
+                                    width: `${Math.min(100, Math.round((prog.positionSeconds / prog.durationSeconds) * 100))}%`,
+                                  }}
+                                />
+                              </div>
                             )}
                           </TD>
                           <TD className="w-28">
@@ -343,8 +459,28 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
                               <Badge tone="neutral">Unaired</Badge>
                             )}
                           </TD>
-                          <TD className="w-32 text-right">
-                            <div className="flex justify-end gap-2">
+                          <TD className="w-40 text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              {ep.episodeFileId && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  title={
+                                    watched
+                                      ? "Watched — click to mark unwatched"
+                                      : "Mark watched"
+                                  }
+                                  onClick={() => toggleEpisodeWatched(ep.id, !watched)}
+                                >
+                                  <span
+                                    className={`text-base leading-none ${
+                                      watched ? "text-emerald-400" : "text-zinc-600"
+                                    }`}
+                                  >
+                                    ✓
+                                  </span>
+                                </Button>
+                              )}
                               {ep.episodeFileId && (
                                 <Button
                                   variant="primary"
@@ -380,6 +516,43 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
           })
         )}
       </div>
+
+      {credits?.cast && credits.cast.length > 0 && (
+        <Card className="mt-8">
+          <CardHeader>
+            <CardTitle>{data.isAnime ? "Voice cast" : "Cast"}</CardTitle>
+          </CardHeader>
+          <CardBody>
+            <div className="flex gap-4 overflow-x-auto pb-2">
+              {credits.cast.slice(0, 20).map((c) => (
+                <div key={c.id} className="w-24 shrink-0 text-center">
+                  {c.profile ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={c.profile}
+                      alt=""
+                      loading="lazy"
+                      className="mx-auto h-24 w-24 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-full bg-zinc-800 text-lg font-semibold text-zinc-400">
+                      {initials(c.name)}
+                    </div>
+                  )}
+                  <div className="mt-2 truncate text-xs font-medium text-zinc-100" title={c.name}>
+                    {c.name}
+                  </div>
+                  {c.character && (
+                    <div className="truncate text-xs text-zinc-500" title={c.character}>
+                      {c.character}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardBody>
+        </Card>
+      )}
 
       {searchScope && (
         <ReleaseSearchDrawer

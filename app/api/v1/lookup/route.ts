@@ -6,10 +6,12 @@ export async function GET(request: NextRequest) {
   const type = request.nextUrl.searchParams.get("type");
   const q = request.nextUrl.searchParams.get("q")?.trim();
   if (!q) return badRequest("Missing ?q=");
-  if (type !== "series" && type !== "movie") return badRequest("?type= must be 'series' or 'movie'");
+  if (type !== "series" && type !== "movie" && type !== "anime") {
+    return badRequest("?type= must be 'series', 'movie' or 'anime'");
+  }
 
   try {
-    if (type === "series") {
+    if (type === "series" || type === "anime") {
       const res = await searchTv(q);
       return ok(
         res.results.map((r) => ({

@@ -4,6 +4,7 @@ import { runMigrations } from "@/server/db/migrate";
 import { DEFAULT_PROFILES } from "@/server/parser/quality";
 import { DOWNLOADS_DIR, MOVIES_DIR, SERIES_DIR } from "@/server/config/paths";
 import { getSettings, setSetting } from "@/server/settings/settings-service";
+import { captureConsole } from "@/server/logging/logger";
 import {
   SCHEDULED_TASKS,
   recoverInterruptedCommands,
@@ -78,6 +79,10 @@ export async function boot() {
   const g = globalThis as GlobalWithBoot;
   if (g[BOOT_KEY]) return;
   g[BOOT_KEY] = true;
+
+  // Mirror console.error/warn into log_entries as early as possible so any
+  // warning/error raised during boot is captured for the admin Logs page.
+  captureConsole();
 
   console.log("[boot] media-box starting");
   runMigrations();

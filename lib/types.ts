@@ -9,7 +9,7 @@ export interface LookupResult {
 export interface RootFolder {
   id: number;
   path: string;
-  mediaType: "series" | "movies";
+  mediaType: "series" | "movies" | "anime";
   accessible?: boolean;
   freeSpace?: number | null;
 }

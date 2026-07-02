@@ -35,7 +35,7 @@ interface FsListing {
 
 export default function MediaManagementPage() {
   const { data: folders, mutate } = useApi<RootFolder[]>("/rootfolders");
-  const [adding, setAdding] = useState<"series" | "movies" | null>(null);
+  const [adding, setAdding] = useState<"series" | "movies" | "anime" | null>(null);
   const toast = useToast();
   const confirm = useConfirm();
 
@@ -62,9 +62,9 @@ export default function MediaManagementPage() {
     <div className="max-w-3xl space-y-6">
       <h1 className="text-xl font-semibold">Media Management</h1>
 
-      {(["series", "movies"] as const).map((type) => {
+      {(["series", "movies", "anime"] as const).map((type) => {
         const rows = (folders ?? []).filter((f) => f.mediaType === type);
-        const label = type === "series" ? "Series" : "Movie";
+        const label = type === "series" ? "Series" : type === "movies" ? "Movie" : "Anime";
         return (
           <Card key={type}>
             <CardHeader>
@@ -82,7 +82,7 @@ export default function MediaManagementPage() {
               ) : rows.length === 0 ? (
                 <EmptyState
                   title="No root folders configured"
-                  description={`Add a folder where imported ${type === "series" ? "series" : "movies"} should be stored.`}
+                  description={`Add a folder where imported ${type} should be stored.`}
                   action={
                     <Button size="sm" onClick={() => setAdding(type)}>
                       Add folder
@@ -153,11 +153,12 @@ interface LibraryPaths {
   downloadsPath: string;
   moviesPath: string;
   seriesPath: string;
+  animePath: string;
   importMode: "auto" | "hardlink" | "copy" | "move";
   maxBacklogGrabsPerRun: number;
 }
 
-type PathKey = "downloadsPath" | "moviesPath" | "seriesPath";
+type PathKey = "downloadsPath" | "moviesPath" | "seriesPath" | "animePath";
 
 function PathsSection() {
   const { data, mutate } = useApi<LibraryPaths>("/settings");
@@ -172,6 +173,7 @@ function PathsSection() {
         downloadsPath: data.downloadsPath ?? "",
         moviesPath: data.moviesPath ?? "",
         seriesPath: data.seriesPath ?? "",
+        animePath: data.animePath ?? "",
         importMode: data.importMode ?? "auto",
         maxBacklogGrabsPerRun: data.maxBacklogGrabsPerRun ?? 0,
       });
@@ -188,6 +190,7 @@ function PathsSection() {
           downloadsPath: form.downloadsPath,
           moviesPath: form.moviesPath,
           seriesPath: form.seriesPath,
+          animePath: form.animePath,
           importMode: form.importMode,
           maxBacklogGrabsPerRun: form.maxBacklogGrabsPerRun,
         }),
@@ -219,6 +222,12 @@ function PathsSection() {
       label: "Series library",
       description: "Where finished series/episodes are imported.",
       placeholder: "/data/media/tv",
+    },
+    {
+      key: "animePath",
+      label: "Anime library",
+      description: "Where finished anime series are imported.",
+      placeholder: "/data/media/anime",
     },
   ];
 

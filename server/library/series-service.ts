@@ -17,6 +17,8 @@ export interface AddSeriesInput {
   monitorMode?: "all" | "future" | "none";
   /** Import an existing on-disk folder in place instead of deriving the path from the naming template. */
   path?: string;
+  /** Mark the series as anime (separate library type). */
+  isAnime?: boolean;
 }
 
 export async function addSeries(input: AddSeriesInput) {
@@ -53,6 +55,7 @@ export async function addSeries(input: AddSeriesInput) {
       monitored: input.monitored ?? true,
       monitorMode: input.monitorMode ?? "all",
       seasonFolder: input.seasonFolder ?? true,
+      isAnime: input.isAnime ?? false,
       addedAt: new Date(),
     })
     .returning()

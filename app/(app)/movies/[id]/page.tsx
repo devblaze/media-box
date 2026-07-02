@@ -23,6 +23,7 @@ import {
 
 interface MovieDetail {
   id: number;
+  tmdbId: number;
   title: string;
   year: number | null;
   overview: string | null;
@@ -39,6 +40,38 @@ interface MovieDetail {
     releaseGroup: string | null;
     mediaInfo: MediaInfo | null;
   } | null;
+}
+
+interface CastMember {
+  id: number;
+  name: string;
+  character: string;
+  profile: string | null;
+}
+
+interface WatchProgress {
+  positionSeconds: number;
+  durationSeconds: number;
+  watched: boolean;
+}
+
+/** "1:23:45" when over an hour, otherwise "MM:SS". */
+function formatTime(total: number): string {
+  const s = Math.max(0, Math.floor(total));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const ss = String(sec).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase() ?? "")
+    .join("");
 }
 
 interface QualityDefinition {
@@ -60,6 +93,12 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
   const { data, mutate } = useApi<MovieDetail>(`/movies/${id}`);
   const { data: qualityDefs } = useApi<QualityDefinition[]>("/qualitydefinitions");
   const { data: me } = useApi<Me>("/auth/me");
+  const { data: credits } = useApi<{ cast: CastMember[] }>(
+    data?.tmdbId ? `/credits?type=movie&tmdbId=${data.tmdbId}` : null
+  );
+  const { data: progress, mutate: mutateProgress } = useApi<WatchProgress | null>(
+    `/watch-progress?movieId=${id}`
+  );
   const isAdmin = me?.role === "admin";
   const [searching, setSearching] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -85,6 +124,18 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
         </div>
       </div>
     );
+  }
+
+  async function toggleWatched() {
+    try {
+      await apiFetch("/watch-progress/watched", {
+        method: "POST",
+        body: JSON.stringify({ movieId: Number(id), watched: !progress?.watched }),
+      });
+      await mutateProgress();
+    } catch {
+      toast.error("Failed to update watched state");
+    }
   }
 
   async function toggleMonitored() {
@@ -170,6 +221,11 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
             <span>{data.runtime ? `${data.runtime} min` : "—"}</span>
             <span>·</span>
             <span className="font-mono text-xs">{data.path}</span>
+            {progress?.watched ? (
+              <Badge tone="success">Watched ✓</Badge>
+            ) : progress && progress.positionSeconds > 0 ? (
+              <Badge tone="info">Resume · {formatTime(progress.positionSeconds)}</Badge>
+            ) : null}
           </div>
           <p className="mt-3 max-w-3xl text-sm text-zinc-300">{data.overview}</p>
           <div className="mt-4 flex flex-wrap gap-2">
@@ -178,6 +234,9 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
                 Play
               </Button>
             )}
+            <Button variant="secondary" size="sm" onClick={toggleWatched}>
+              {progress?.watched ? "Mark unwatched" : "Mark watched"}
+            </Button>
             {isAdmin && (
               <>
                 <Button
@@ -235,6 +294,43 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
           )}
         </CardBody>
       </Card>
+
+      {credits?.cast && credits.cast.length > 0 && (
+        <Card className="mt-8">
+          <CardHeader>
+            <CardTitle>Cast</CardTitle>
+          </CardHeader>
+          <CardBody>
+            <div className="flex gap-4 overflow-x-auto pb-2">
+              {credits.cast.slice(0, 20).map((c) => (
+                <div key={c.id} className="w-24 shrink-0 text-center">
+                  {c.profile ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={c.profile}
+                      alt=""
+                      loading="lazy"
+                      className="mx-auto h-24 w-24 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-full bg-zinc-800 text-lg font-semibold text-zinc-400">
+                      {initials(c.name)}
+                    </div>
+                  )}
+                  <div className="mt-2 truncate text-xs font-medium text-zinc-100" title={c.name}>
+                    {c.name}
+                  </div>
+                  {c.character && (
+                    <div className="truncate text-xs text-zinc-500" title={c.character}>
+                      {c.character}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardBody>
+        </Card>
+      )}
 
       {searching && (
         <ReleaseSearchDrawer

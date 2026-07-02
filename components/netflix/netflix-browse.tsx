@@ -24,7 +24,16 @@ const HERO_COUNT = 8;
  * skeleton). When the shared search query is non-empty it swaps to a results
  * grid instead. Admins (no SearchProvider) get a page-level search box.
  */
-export function NetflixBrowse({ heroCategory, rows }: { heroCategory: string; rows: BrowseRow[] }) {
+export function NetflixBrowse({
+  heroCategory,
+  rows,
+  leadingRows,
+}: {
+  heroCategory: string;
+  rows: BrowseRow[];
+  /** Extra rows rendered above the mapped feed rows (ignored in search mode). */
+  leadingRows?: React.ReactNode;
+}) {
   // Normal users share the header's search box via context; admins render in the
   // sidebar shell with no header, so they fall back to a page-level box.
   const shared = useOptionalSearch();
@@ -105,6 +114,7 @@ export function NetflixBrowse({ heroCategory, rows }: { heroCategory: string; ro
       )}
 
       <div className="relative z-10 -mt-24 space-y-4 md:space-y-8">
+        {leadingRows}
         {rows.map((r) => (
           <BrowseRow
             key={`${r.category}-${r.title}`}

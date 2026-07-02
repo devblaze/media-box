@@ -7,7 +7,7 @@ import type { LookupResult } from "@/lib/types";
 import type { ImportCandidate } from "@/server/library/library-import";
 import { Badge, Button, Input, Spinner, useToast } from "@/components/ui";
 
-type ImportType = "movie" | "series";
+type ImportType = "movie" | "series" | "anime";
 
 /** The currently-chosen TMDB title a row will import against. */
 interface Target {
@@ -95,6 +95,8 @@ export function CandidateRow({
           body: JSON.stringify({
             type,
             path: candidate.path,
+            // Register the exact file for movie imports (many can share a folder).
+            videoPath: type === "movie" ? candidate.videoPath || undefined : undefined,
             tmdbId: target.tmdbId,
             rootFolderId,
             qualityProfileId,
@@ -211,7 +213,7 @@ export function CandidateRow({
                   setSearch(e.target.value);
                   setTouched(true);
                 }}
-                placeholder={`Search TMDB for the correct ${type === "series" ? "series" : "movie"}…`}
+                placeholder={`Search TMDB for the correct ${type === "movie" ? "movie" : type === "anime" ? "anime" : "series"}…`}
                 className="flex-1"
               />
               {searching && <Spinner className="size-4 text-zinc-500" />}

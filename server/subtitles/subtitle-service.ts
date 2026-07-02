@@ -219,3 +219,46 @@ export async function downloadSubtitleFor(
   }
   return true;
 }
+
+// ---------- Track listing + resolution (for the in-app player) ----------
+
+export interface SubtitleTrackInfo {
+  id: number;
+  language: string;
+  hearingImpaired: boolean;
+}
+
+export function listSubtitleTracks(target: { movieId?: number; episodeId?: number }): SubtitleTrackInfo[] {
+  const db = getDb();
+  const rows = target.movieId
+    ? db.select().from(schema.subtitleFiles).where(eq(schema.subtitleFiles.movieId, target.movieId)).all()
+    : target.episodeId
+      ? db.select().from(schema.subtitleFiles).where(eq(schema.subtitleFiles.episodeId, target.episodeId)).all()
+      : [];
+  return rows.map((r) => ({ id: r.id, language: r.language, hearingImpaired: r.hearingImpaired }));
+}
+
+/** Absolute on-disk path of a subtitle sidecar file, or null if unknown. */
+export function subtitleAbsPath(id: number): string | null {
+  const db = getDb();
+  const row = db.select().from(schema.subtitleFiles).where(eq(schema.subtitleFiles.id, id)).get();
+  if (!row) return null;
+  if (row.movieId != null) {
+    const m = db
+      .select({ path: schema.movies.path })
+      .from(schema.movies)
+      .where(eq(schema.movies.id, row.movieId))
+      .get();
+    return m ? path.join(m.path, row.relativePath) : null;
+  }
+  if (row.episodeId != null) {
+    const s = db
+      .select({ path: schema.series.path })
+      .from(schema.series)
+      .innerJoin(schema.episodes, eq(schema.episodes.seriesId, schema.series.id))
+      .where(eq(schema.episodes.id, row.episodeId))
+      .get();
+    return s ? path.join(s.path, row.relativePath) : null;
+  }
+  return null;
+}

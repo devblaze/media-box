@@ -223,3 +223,26 @@ export function pickLogo(images: TmdbImages): string | null {
   const chosen = en[0] ?? logos[0];
   return logoUrl(chosen.file_path);
 }
+
+// ---------- Credits (cast / actors, incl. anime voice actors) ----------
+
+export interface TmdbCastMember {
+  id: number;
+  name: string;
+  character?: string;
+  profile_path?: string | null;
+  order?: number;
+  // TV /aggregate_credits returns roles[] instead of a single character.
+  roles?: { character?: string; episode_count?: number }[];
+}
+export interface TmdbCredits {
+  cast?: TmdbCastMember[];
+}
+
+export const getMovieCredits = (id: number) => tmdb<TmdbCredits>(`/movie/${id}/credits`);
+/** Aggregate credits surface anime voice actors + per-character roles across seasons. */
+export const getTvAggregateCredits = (id: number) => tmdb<TmdbCredits>(`/tv/${id}/aggregate_credits`);
+
+export function profileUrl(path: string | null | undefined, size = "w185"): string | null {
+  return path ? `${TMDB_IMAGE_BASE}/${size}${path}` : null;
+}

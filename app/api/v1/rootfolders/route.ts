@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
 
 const addSchema = z.object({
   path: z.string().min(1),
-  mediaType: z.enum(["series", "movies"]),
+  mediaType: z.enum(["series", "movies", "anime"]),
 });
 
 export async function POST(request: NextRequest) {

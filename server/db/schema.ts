@@ -39,6 +39,8 @@ export const series = sqliteTable(
     monitorMode: text("monitor_mode", { enum: ["all", "future", "none"] })
       .notNull()
       .default("all"),
+    // Marks the series as anime (own library path / Anime category).
+    isAnime: integer("is_anime", { mode: "boolean" }).notNull().default(false),
     seasonFolder: integer("season_folder", { mode: "boolean" }).notNull().default(true),
     addedAt: integer("added_at", { mode: "timestamp" }).notNull(),
     lastRefreshAt: integer("last_refresh_at", { mode: "timestamp" }),
@@ -210,7 +212,7 @@ export const rootFolders = sqliteTable(
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     path: text("path").notNull(),
-    mediaType: text("media_type", { enum: ["series", "movies"] }).notNull(),
+    mediaType: text("media_type", { enum: ["series", "movies", "anime"] }).notNull(),
   },
   (t) => [uniqueIndex("root_folders_path_unique").on(t.path)]
 );
@@ -484,4 +486,45 @@ export const requests = sqliteTable(
     index("requests_status_idx").on(t.status),
     index("requests_user_idx").on(t.userId),
   ]
+);
+
+// ---------- Playback: per-user watch progress ----------
+
+export const watchProgress = sqliteTable(
+  "watch_progress",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // Exactly one of movieId / episodeId is set. seriesId is denormalized on episode
+    // rows so "continue watching" can find the latest episode per series cheaply.
+    movieId: integer("movie_id").references(() => movies.id, { onDelete: "cascade" }),
+    episodeId: integer("episode_id").references(() => episodes.id, { onDelete: "cascade" }),
+    seriesId: integer("series_id").references(() => series.id, { onDelete: "cascade" }),
+    positionSeconds: integer("position_seconds").notNull().default(0),
+    durationSeconds: integer("duration_seconds").notNull().default(0),
+    watched: integer("watched", { mode: "boolean" }).notNull().default(false),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [
+    uniqueIndex("watch_user_movie_unique").on(t.userId, t.movieId),
+    uniqueIndex("watch_user_episode_unique").on(t.userId, t.episodeId),
+    index("watch_user_updated_idx").on(t.userId, t.updatedAt),
+  ]
+);
+
+// ---------- Diagnostics: app log (admin debug view) ----------
+
+export const logEntries = sqliteTable(
+  "log_entries",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    level: text("level", { enum: ["debug", "info", "warn", "error"] }).notNull(),
+    source: text("source"),
+    message: text("message").notNull(),
+    context: text("context", { mode: "json" }),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [index("log_created_idx").on(t.createdAt)]
 );

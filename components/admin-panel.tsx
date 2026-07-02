@@ -16,6 +16,7 @@ const NAV = [
   { label: "Library Import", href: "/settings/library-import" },
   { label: "Migrate", href: "/settings/migrate" },
   { label: "General", href: "/settings/general" },
+  { label: "Logs", href: "/settings/logs" },
   { label: "Tasks", href: "/system/tasks" },
 ] as const;
 

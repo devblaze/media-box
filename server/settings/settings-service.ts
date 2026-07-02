@@ -12,6 +12,7 @@ export const appSettingsSchema = z.object({
   downloadsPath: z.string().default(""),
   moviesPath: z.string().default(""),
   seriesPath: z.string().default(""),
+  animePath: z.string().default(""),
   // How imports place files into the library.
   importMode: z.enum(["auto", "hardlink", "copy", "move"]).default("auto"),
   // HLS transcoding pipeline.
