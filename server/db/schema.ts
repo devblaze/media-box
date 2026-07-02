@@ -1,0 +1,452 @@
+import {
+  sqliteTable,
+  integer,
+  text,
+  uniqueIndex,
+  index,
+  type AnySQLiteColumn,
+} from "drizzle-orm/sqlite-core";
+
+// ---------- Library: series ----------
+
+export const series = sqliteTable(
+  "series",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    tmdbId: integer("tmdb_id").notNull(),
+    tvdbId: integer("tvdb_id"),
+    imdbId: text("imdb_id"),
+    title: text("title").notNull(),
+    sortTitle: text("sort_title").notNull(),
+    year: integer("year"),
+    overview: text("overview"),
+    status: text("status", { enum: ["continuing", "ended", "upcoming"] })
+      .notNull()
+      .default("continuing"),
+    network: text("network"),
+    runtime: integer("runtime"),
+    posterPath: text("poster_path"),
+    backdropPath: text("backdrop_path"),
+    path: text("path").notNull(),
+    rootFolderId: integer("root_folder_id").references(() => rootFolders.id, {
+      onDelete: "set null",
+    }),
+    qualityProfileId: integer("quality_profile_id")
+      .notNull()
+      .references(() => qualityProfiles.id),
+    monitored: integer("monitored", { mode: "boolean" }).notNull().default(true),
+    seasonFolder: integer("season_folder", { mode: "boolean" }).notNull().default(true),
+    addedAt: integer("added_at", { mode: "timestamp" }).notNull(),
+    lastRefreshAt: integer("last_refresh_at", { mode: "timestamp" }),
+  },
+  (t) => [uniqueIndex("series_tmdb_id_unique").on(t.tmdbId)]
+);
+
+export const seasons = sqliteTable(
+  "seasons",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    seriesId: integer("series_id")
+      .notNull()
+      .references(() => series.id, { onDelete: "cascade" }),
+    seasonNumber: integer("season_number").notNull(),
+    monitored: integer("monitored", { mode: "boolean" }).notNull().default(true),
+  },
+  (t) => [uniqueIndex("seasons_series_season_unique").on(t.seriesId, t.seasonNumber)]
+);
+
+export const episodes = sqliteTable(
+  "episodes",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    seriesId: integer("series_id")
+      .notNull()
+      .references(() => series.id, { onDelete: "cascade" }),
+    seasonNumber: integer("season_number").notNull(),
+    episodeNumber: integer("episode_number").notNull(),
+    absoluteNumber: integer("absolute_number"),
+    tmdbEpisodeId: integer("tmdb_episode_id"),
+    title: text("title"),
+    overview: text("overview"),
+    airDateUtc: integer("air_date_utc", { mode: "timestamp" }),
+    runtime: integer("runtime"),
+    monitored: integer("monitored", { mode: "boolean" }).notNull().default(true),
+    episodeFileId: integer("episode_file_id").references((): AnySQLiteColumn => episodeFiles.id, {
+      onDelete: "set null",
+    }),
+  },
+  (t) => [
+    uniqueIndex("episodes_series_season_episode_unique").on(
+      t.seriesId,
+      t.seasonNumber,
+      t.episodeNumber
+    ),
+    index("episodes_air_date_idx").on(t.seriesId, t.airDateUtc),
+    index("episodes_missing_idx").on(t.monitored, t.episodeFileId),
+  ]
+);
+
+export const episodeFiles = sqliteTable("episode_files", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  seriesId: integer("series_id")
+    .notNull()
+    .references(() => series.id, { onDelete: "cascade" }),
+  relativePath: text("relative_path").notNull(),
+  size: integer("size").notNull(),
+  quality: text("quality", { mode: "json" }).notNull(),
+  releaseGroup: text("release_group"),
+  sceneName: text("scene_name"),
+  dateAdded: integer("date_added", { mode: "timestamp" }).notNull(),
+  mediaInfo: text("media_info", { mode: "json" }),
+});
+
+// ---------- Library: movies ----------
+
+export const movies = sqliteTable(
+  "movies",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    tmdbId: integer("tmdb_id").notNull(),
+    imdbId: text("imdb_id"),
+    title: text("title").notNull(),
+    sortTitle: text("sort_title").notNull(),
+    year: integer("year"),
+    overview: text("overview"),
+    runtime: integer("runtime"),
+    status: text("status", { enum: ["announced", "inCinemas", "released"] })
+      .notNull()
+      .default("announced"),
+    physicalRelease: integer("physical_release", { mode: "timestamp" }),
+    digitalRelease: integer("digital_release", { mode: "timestamp" }),
+    posterPath: text("poster_path"),
+    backdropPath: text("backdrop_path"),
+    path: text("path").notNull(),
+    rootFolderId: integer("root_folder_id").references(() => rootFolders.id, {
+      onDelete: "set null",
+    }),
+    qualityProfileId: integer("quality_profile_id")
+      .notNull()
+      .references(() => qualityProfiles.id),
+    monitored: integer("monitored", { mode: "boolean" }).notNull().default(true),
+    minimumAvailability: text("minimum_availability", {
+      enum: ["announced", "inCinemas", "released"],
+    })
+      .notNull()
+      .default("released"),
+    movieFileId: integer("movie_file_id").references((): AnySQLiteColumn => movieFiles.id, {
+      onDelete: "set null",
+    }),
+    addedAt: integer("added_at", { mode: "timestamp" }).notNull(),
+    lastRefreshAt: integer("last_refresh_at", { mode: "timestamp" }),
+  },
+  (t) => [
+    uniqueIndex("movies_tmdb_id_unique").on(t.tmdbId),
+    index("movies_missing_idx").on(t.monitored, t.movieFileId),
+  ]
+);
+
+export const movieFiles = sqliteTable("movie_files", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  movieId: integer("movie_id")
+    .notNull()
+    .references(() => movies.id, { onDelete: "cascade" }),
+  relativePath: text("relative_path").notNull(),
+  size: integer("size").notNull(),
+  quality: text("quality", { mode: "json" }).notNull(),
+  releaseGroup: text("release_group"),
+  sceneName: text("scene_name"),
+  dateAdded: integer("date_added", { mode: "timestamp" }).notNull(),
+  mediaInfo: text("media_info", { mode: "json" }),
+});
+
+// ---------- Configuration ----------
+
+export const qualityProfiles = sqliteTable("quality_profiles", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  upgradeAllowed: integer("upgrade_allowed", { mode: "boolean" }).notNull().default(true),
+  cutoffQualityId: integer("cutoff_quality_id").notNull(),
+  // ordered worst -> best: [{ qualityId: number, allowed: boolean }]
+  items: text("items", { mode: "json" }).notNull(),
+});
+
+export const rootFolders = sqliteTable(
+  "root_folders",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    path: text("path").notNull(),
+    mediaType: text("media_type", { enum: ["series", "movies"] }).notNull(),
+  },
+  (t) => [uniqueIndex("root_folders_path_unique").on(t.path)]
+);
+
+export const remotePathMappings = sqliteTable("remote_path_mappings", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  downloadClientId: integer("download_client_id")
+    .notNull()
+    .references(() => downloadClients.id, { onDelete: "cascade" }),
+  remotePath: text("remote_path").notNull(),
+  localPath: text("local_path").notNull(),
+});
+
+export const namingConfig = sqliteTable("naming_config", {
+  id: integer("id").primaryKey(),
+  renameEpisodes: integer("rename_episodes", { mode: "boolean" }).notNull().default(true),
+  replaceIllegalCharacters: integer("replace_illegal_characters", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  standardEpisodeFormat: text("standard_episode_format")
+    .notNull()
+    .default("{Series Title} - S{season:00}E{episode:00} - {Episode Title} [{Quality}]"),
+  seriesFolderFormat: text("series_folder_format").notNull().default("{Series Title} ({Year})"),
+  seasonFolderFormat: text("season_folder_format").notNull().default("Season {season:00}"),
+  movieFormat: text("movie_format").notNull().default("{Movie Title} ({Year}) [{Quality}]"),
+  movieFolderFormat: text("movie_folder_format").notNull().default("{Movie Title} ({Year})"),
+});
+
+export const settings = sqliteTable("settings", {
+  key: text("key").primaryKey(),
+  value: text("value", { mode: "json" }),
+});
+
+export const tags = sqliteTable(
+  "tags",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    label: text("label").notNull(),
+  },
+  (t) => [uniqueIndex("tags_label_unique").on(t.label)]
+);
+
+export const seriesTags = sqliteTable(
+  "series_tags",
+  {
+    seriesId: integer("series_id")
+      .notNull()
+      .references(() => series.id, { onDelete: "cascade" }),
+    tagId: integer("tag_id")
+      .notNull()
+      .references(() => tags.id, { onDelete: "cascade" }),
+  },
+  (t) => [uniqueIndex("series_tags_unique").on(t.seriesId, t.tagId)]
+);
+
+export const movieTags = sqliteTable(
+  "movie_tags",
+  {
+    movieId: integer("movie_id")
+      .notNull()
+      .references(() => movies.id, { onDelete: "cascade" }),
+    tagId: integer("tag_id")
+      .notNull()
+      .references(() => tags.id, { onDelete: "cascade" }),
+  },
+  (t) => [uniqueIndex("movie_tags_unique").on(t.movieId, t.tagId)]
+);
+
+// ---------- Acquisition ----------
+
+export const indexers = sqliteTable("indexers", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  url: text("url").notNull(),
+  apiKey: text("api_key"),
+  categories: text("categories", { mode: "json" })
+    .notNull()
+    .default([5000, 5030, 5040, 2000, 2010, 2020, 2030, 2040, 2045, 2060]),
+  enableRss: integer("enable_rss", { mode: "boolean" }).notNull().default(true),
+  enableAutomaticSearch: integer("enable_automatic_search", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  enableInteractiveSearch: integer("enable_interactive_search", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  supportsTv: integer("supports_tv", { mode: "boolean" }).notNull().default(true),
+  supportsMovies: integer("supports_movies", { mode: "boolean" }).notNull().default(true),
+  minimumSeeders: integer("minimum_seeders").notNull().default(1),
+  priority: integer("priority").notNull().default(25),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+});
+
+export const downloadClients = sqliteTable("download_clients", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  type: text("type", { enum: ["qbittorrent", "torbox"] }).notNull(),
+  // qbittorrent: { host, port, useSsl, username, password, category }
+  // torbox: { apiKey, stagingDir }
+  settings: text("settings", { mode: "json" }).notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  priority: integer("priority").notNull().default(1),
+  removeCompletedDownloads: integer("remove_completed_downloads", { mode: "boolean" })
+    .notNull()
+    .default(true),
+});
+
+export const downloads = sqliteTable(
+  "downloads",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    downloadClientId: integer("download_client_id")
+      .notNull()
+      .references(() => downloadClients.id, { onDelete: "cascade" }),
+    externalId: text("external_id").notNull(),
+    mediaType: text("media_type", { enum: ["series", "movie"] }).notNull(),
+    seriesId: integer("series_id").references(() => series.id, { onDelete: "set null" }),
+    movieId: integer("movie_id").references(() => movies.id, { onDelete: "set null" }),
+    episodeIds: text("episode_ids", { mode: "json" }),
+    title: text("title").notNull(),
+    quality: text("quality", { mode: "json" }),
+    indexerId: integer("indexer_id"),
+    protocol: text("protocol").notNull().default("torrent"),
+    status: text("status", {
+      enum: [
+        "queued",
+        "downloading",
+        "remoteCompleted",
+        "fetching",
+        "importPending",
+        "importing",
+        "imported",
+        "failed",
+        "warning",
+      ],
+    })
+      .notNull()
+      .default("queued"),
+    statusMessage: text("status_message"),
+    size: integer("size"),
+    sizeLeft: integer("size_left"),
+    outputPath: text("output_path"),
+    grabbedAt: integer("grabbed_at", { mode: "timestamp" }).notNull(),
+    completedAt: integer("completed_at", { mode: "timestamp" }),
+  },
+  (t) => [
+    uniqueIndex("downloads_client_external_unique").on(t.downloadClientId, t.externalId),
+    index("downloads_status_idx").on(t.status),
+  ]
+);
+
+export const history = sqliteTable(
+  "history",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    eventType: text("event_type", {
+      enum: ["grabbed", "imported", "downloadFailed", "fileDeleted", "fileRenamed", "ignored"],
+    }).notNull(),
+    mediaType: text("media_type", { enum: ["series", "movie"] }).notNull(),
+    seriesId: integer("series_id"),
+    episodeId: integer("episode_id"),
+    movieId: integer("movie_id"),
+    sourceTitle: text("source_title"),
+    quality: text("quality", { mode: "json" }),
+    indexerId: integer("indexer_id"),
+    downloadClientId: integer("download_client_id"),
+    downloadExternalId: text("download_external_id"),
+    data: text("data", { mode: "json" }),
+    date: integer("date", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [index("history_date_idx").on(t.date)]
+);
+
+export const blocklist = sqliteTable("blocklist", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  mediaType: text("media_type", { enum: ["series", "movie"] }).notNull(),
+  seriesId: integer("series_id"),
+  movieId: integer("movie_id"),
+  sourceTitle: text("source_title").notNull(),
+  infoHash: text("info_hash"),
+  reason: text("reason"),
+  date: integer("date", { mode: "timestamp" }).notNull(),
+});
+
+// ---------- Jobs ----------
+
+export const scheduledTasks = sqliteTable(
+  "scheduled_tasks",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    name: text("name").notNull(),
+    intervalMinutes: integer("interval_minutes").notNull(),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    lastRunAt: integer("last_run_at", { mode: "timestamp" }),
+    lastDurationMs: integer("last_duration_ms"),
+    lastResult: text("last_result"),
+    nextRunAt: integer("next_run_at", { mode: "timestamp" }),
+  },
+  (t) => [uniqueIndex("scheduled_tasks_name_unique").on(t.name)]
+);
+
+export const commands = sqliteTable(
+  "commands",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    name: text("name").notNull(),
+    payload: text("payload", { mode: "json" }),
+    status: text("status", { enum: ["queued", "started", "completed", "failed"] })
+      .notNull()
+      .default("queued"),
+    priority: integer("priority").notNull().default(0),
+    trigger: text("trigger", { enum: ["scheduled", "manual", "system"] })
+      .notNull()
+      .default("system"),
+    queuedAt: integer("queued_at", { mode: "timestamp" }).notNull(),
+    startedAt: integer("started_at", { mode: "timestamp" }),
+    endedAt: integer("ended_at", { mode: "timestamp" }),
+    error: text("error"),
+  },
+  (t) => [index("commands_status_idx").on(t.status, t.priority)]
+);
+
+// ---------- Users & requests ----------
+
+export const users = sqliteTable(
+  "users",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    username: text("username").notNull(),
+    passwordHash: text("password_hash").notNull(),
+    role: text("role", { enum: ["admin", "user"] }).notNull().default("user"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [uniqueIndex("users_username_unique").on(t.username)]
+);
+
+export const sessions = sqliteTable("sessions", {
+  token: text("token").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+});
+
+export const requests = sqliteTable(
+  "requests",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    mediaType: text("media_type", { enum: ["series", "movie"] }).notNull(),
+    tmdbId: integer("tmdb_id").notNull(),
+    title: text("title").notNull(),
+    year: integer("year"),
+    posterPath: text("poster_path"),
+    // for series requests: requested season numbers, null = all
+    seasons: text("seasons", { mode: "json" }),
+    status: text("status", { enum: ["pending", "approved", "declined", "available"] })
+      .notNull()
+      .default("pending"),
+    declineReason: text("decline_reason"),
+    decidedByUserId: integer("decided_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    decidedAt: integer("decided_at", { mode: "timestamp" }),
+    seriesId: integer("series_id").references(() => series.id, { onDelete: "set null" }),
+    movieId: integer("movie_id").references(() => movies.id, { onDelete: "set null" }),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [
+    index("requests_status_idx").on(t.status),
+    index("requests_user_idx").on(t.userId),
+  ]
+);

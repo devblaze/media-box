@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.gitea
+.config-dev
+*.md
+!AGENTS.md
+unraid
+docker-compose.yml
+graphify-out
+coverage
+.idea
+.vscode

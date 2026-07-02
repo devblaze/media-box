@@ -1,0 +1,42 @@
+# media-box — docker-compose for non-Unraid hosts.
+#
+# Paths use the "separate shares" layout (downloads / movies / tv are distinct
+# mounts). NOTE: when downloads and the media libraries live on DIFFERENT
+# filesystems, imports must COPY (slower, needs free space for a second copy)
+# instead of hardlinking. To get instant, space-free hardlink imports, put
+# downloads + movies + tv on the SAME filesystem (e.g. subfolders of one mount).
+services:
+  media-box:
+    image: git.ncatechsolutions.org/nickanton/media-box:latest
+    container_name: media-box
+    ports:
+      - "7878:7878"
+    environment:
+      PUID: "99"
+      PGID: "100"
+      UMASK: "022"
+      TZ: "Europe/Athens"
+    volumes:
+      - ./config:/config # app config + SQLite database (persist this)
+      - /srv/downloads:/downloads # torrent/usenet download client output
+      - /srv/movies:/movies # movie library
+      - /srv/tv:/tv # series (TV) library
+    # GPU transcoding — Intel QuickSync / AMD VAAPI: pass the render device.
+    # (Set Transcoding > Hardware acceleration in Settings to vaapi/qsv.)
+    devices:
+      - /dev/dri:/dev/dri
+    # For NVIDIA NVENC instead: remove the devices block above, install the
+    # nvidia-container-toolkit on the host, and uncomment:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu, video]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7878/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
