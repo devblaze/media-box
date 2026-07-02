@@ -142,6 +142,9 @@ function ProfileDialog({
   const [upgradeAllowed, setUpgradeAllowed] = useState(initial.upgradeAllowed ?? true);
   const [cutoffQualityId, setCutoffQualityId] = useState(initial.cutoffQualityId ?? 7);
   const [items, setItems] = useState(initial.items ?? []);
+  const [preferredTerms, setPreferredTerms] = useState(initial.preferredTerms ?? []);
+  const [requiredTerms, setRequiredTerms] = useState(initial.requiredTerms ?? []);
+  const [ignoredTerms, setIgnoredTerms] = useState(initial.ignoredTerms ?? []);
   const [busy, setBusy] = useState(false);
 
   function toggle(qualityId: number) {
@@ -150,12 +153,30 @@ function ProfileDialog({
     );
   }
 
+  function addPreferred() {
+    setPreferredTerms((prev) => [...prev, { term: "", score: 0 }]);
+  }
+  function updatePreferred(index: number, patch: Partial<{ term: string; score: number }>) {
+    setPreferredTerms((prev) => prev.map((p, i) => (i === index ? { ...p, ...patch } : p)));
+  }
+  function removePreferred(index: number) {
+    setPreferredTerms((prev) => prev.filter((_, i) => i !== index));
+  }
+
   const allowed = items.filter((i) => i.allowed);
 
   async function save() {
     setBusy(true);
     try {
-      const body = { name, upgradeAllowed, cutoffQualityId, items };
+      const body = {
+        name,
+        upgradeAllowed,
+        cutoffQualityId,
+        items,
+        preferredTerms: preferredTerms.filter((p) => p.term.trim() !== ""),
+        requiredTerms: requiredTerms.filter((t) => t.trim() !== ""),
+        ignoredTerms: ignoredTerms.filter((t) => t.trim() !== ""),
+      };
       if (isNew) {
         await apiFetch("/qualityprofiles", { method: "POST", body: JSON.stringify(body) });
       } else {
@@ -252,7 +273,138 @@ function ProfileDialog({
             Upgrade existing files until cutoff is met
           </label>
         </div>
+
+        <div className="space-y-4 border-t border-zinc-800 pt-4">
+          <HowTo title="Preferred release groups & filters">
+            <p>
+              Fine-tune which specific releases media-box prefers or rejects within your allowed
+              qualities. A term matches the release title as a case-insensitive substring, or as a
+              regex if you wrap it in slashes — e.g. <code>/x265|hevc/</code>.
+            </p>
+            <ul>
+              <li>
+                <strong>Preferred terms</strong> — matching releases gain the term&apos;s score (use
+                a negative score to avoid). The release with the highest total score wins, but
+                non-matching releases stay eligible, so media-box still grabs one if your preferred
+                release isn&apos;t available. Example: term <code>YIFY</code> score <code>50</code>.
+              </li>
+              <li>
+                <strong>Required terms</strong> — if you add any, a release must contain at least one
+                to be eligible.
+              </li>
+              <li>
+                <strong>Ignored terms</strong> — a release is rejected if it contains any of these.
+              </li>
+            </ul>
+            <p>
+              Example setup: a <strong>Movies</strong> profile preferring <code>YIFY</code> and{" "}
+              <code>YTS</code>, and an <strong>Anime</strong> profile preferring your favourite anime
+              group — then assign the Anime profile to your anime series.
+            </p>
+          </HowTo>
+
+          <Field
+            label="Preferred terms"
+            description="Matching releases gain the score; the highest total wins, but other releases are still grabbed if none match."
+          >
+            <div className="space-y-2">
+              {preferredTerms.length === 0 && (
+                <p className="text-xs text-zinc-500">No preferred terms yet.</p>
+              )}
+              {preferredTerms.map((pt, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <Input
+                    value={pt.term}
+                    placeholder="e.g. YIFY or /x265|hevc/"
+                    onChange={(e) => updatePreferred(i, { term: e.target.value })}
+                  />
+                  <Input
+                    type="number"
+                    value={pt.score}
+                    aria-label="Score"
+                    className="w-24 shrink-0"
+                    onChange={(e) => updatePreferred(i, { score: Number(e.target.value) })}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Remove preferred term"
+                    onClick={() => removePreferred(i)}
+                  >
+                    ✕
+                  </Button>
+                </div>
+              ))}
+              <Button variant="outline" size="sm" onClick={addPreferred}>
+                Add preferred term
+              </Button>
+            </div>
+          </Field>
+
+          <Field
+            label="Required terms"
+            description="If any are set, a release must contain at least one of these to be eligible."
+          >
+            <TermList
+              values={requiredTerms}
+              onChange={setRequiredTerms}
+              placeholder="e.g. 1080p or /x265|hevc/"
+              addLabel="Add required term"
+            />
+          </Field>
+
+          <Field
+            label="Ignored terms"
+            description="A release is rejected if its title contains any of these."
+          >
+            <TermList
+              values={ignoredTerms}
+              onChange={setIgnoredTerms}
+              placeholder="e.g. CAM or /\.rar$/"
+              addLabel="Add ignored term"
+            />
+          </Field>
+        </div>
       </div>
     </Modal>
+  );
+}
+
+/** Editor for a simple list of string terms (required / ignored). */
+function TermList({
+  values,
+  onChange,
+  placeholder,
+  addLabel,
+}: {
+  values: string[];
+  onChange: (next: string[]) => void;
+  placeholder: string;
+  addLabel: string;
+}) {
+  return (
+    <div className="space-y-2">
+      {values.length === 0 && <p className="text-xs text-zinc-500">None yet.</p>}
+      {values.map((value, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <Input
+            value={value}
+            placeholder={placeholder}
+            onChange={(e) => onChange(values.map((v, j) => (j === i ? e.target.value : v)))}
+          />
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Remove term"
+            onClick={() => onChange(values.filter((_, j) => j !== i))}
+          >
+            ✕
+          </Button>
+        </div>
+      ))}
+      <Button variant="outline" size="sm" onClick={() => onChange([...values, ""])}>
+        {addLabel}
+      </Button>
+    </div>
   );
 }

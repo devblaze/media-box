@@ -16,6 +16,9 @@ function loadProfile(id: number): ProfileLike {
     cutoffQualityId: row.cutoffQualityId,
     upgradeAllowed: row.upgradeAllowed,
     items: row.items as ProfileLike["items"],
+    preferredTerms: row.preferredTerms,
+    requiredTerms: row.requiredTerms,
+    ignoredTerms: row.ignoredTerms,
   };
 }
 

@@ -168,6 +168,15 @@ export const qualityProfiles = sqliteTable("quality_profiles", {
   cutoffQualityId: integer("cutoff_quality_id").notNull(),
   // ordered worst -> best: [{ qualityId: number, allowed: boolean }]
   items: text("items", { mode: "json" }).notNull(),
+  // Release preferences matched against the release title (case-insensitive
+  // substring, or /regex/). Preferred terms add their score; a release with a
+  // required term is mandatory (if any set); an ignored term rejects the release.
+  preferredTerms: text("preferred_terms", { mode: "json" })
+    .$type<{ term: string; score: number }[]>()
+    .notNull()
+    .default([]),
+  requiredTerms: text("required_terms", { mode: "json" }).$type<string[]>().notNull().default([]),
+  ignoredTerms: text("ignored_terms", { mode: "json" }).$type<string[]>().notNull().default([]),
 });
 
 export const rootFolders = sqliteTable(

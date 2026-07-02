@@ -21,6 +21,11 @@ const profileSchema = z.object({
   upgradeAllowed: z.boolean().default(true),
   cutoffQualityId: z.number().int(),
   items: z.array(z.object({ qualityId: z.number().int(), allowed: z.boolean() })).min(1),
+  preferredTerms: z
+    .array(z.object({ term: z.string().min(1), score: z.number().int() }))
+    .default([]),
+  requiredTerms: z.array(z.string().min(1)).default([]),
+  ignoredTerms: z.array(z.string().min(1)).default([]),
 });
 
 export async function POST(request: NextRequest) {

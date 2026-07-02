@@ -6,6 +6,31 @@ export interface ProfileLike {
   cutoffQualityId: number;
   upgradeAllowed: boolean;
   items: ProfileItem[];
+  /** Preferred release terms; a match adds `score` to the release (negative to avoid). */
+  preferredTerms?: { term: string; score: number }[];
+  /** If any are set, a release must contain at least one of them. */
+  requiredTerms?: string[];
+  /** A release containing any of these is rejected. */
+  ignoredTerms?: string[];
+}
+
+/**
+ * Match a term against a release title. A term wrapped in slashes (e.g. `/x264/`)
+ * is treated as a case-insensitive regex; otherwise it's a case-insensitive
+ * substring match. Used for preferred/required/ignored release terms.
+ */
+export function matchesTerm(title: string, term: string): boolean {
+  const t = term.trim();
+  if (!t) return false;
+  const re = t.match(/^\/(.+)\/$/);
+  if (re) {
+    try {
+      return new RegExp(re[1], "i").test(title);
+    } catch {
+      return false; // invalid regex never matches
+    }
+  }
+  return title.toLowerCase().includes(t.toLowerCase());
 }
 
 export interface ReleaseCandidate {
@@ -128,9 +153,30 @@ export function evaluate(release: ReleaseCandidate, ctx: EvaluationContext): Eva
 
   if (ctx.isBlocklisted) rejections.push("Release is blocklisted");
 
+  // Release-term preferences (preferred groups, must/must-not contain).
+  const ignored = ctx.profile.ignoredTerms ?? [];
+  for (const term of ignored) {
+    if (matchesTerm(release.title, term)) rejections.push(`Contains ignored term "${term}"`);
+  }
+  const required = ctx.profile.requiredTerms ?? [];
+  if (required.length > 0 && !required.some((t) => matchesTerm(release.title, t))) {
+    rejections.push(`Missing a required term (${required.join(", ")})`);
+  }
+  let preferredScore = 0;
+  for (const p of ctx.profile.preferredTerms ?? []) {
+    if (matchesTerm(release.title, p.term)) preferredScore += p.score;
+  }
+
   const rank = Math.max(profileRank(ctx.profile, quality.qualityId), 0);
+  // Preferred score sits between quality rank (×1000) and revision so a strong
+  // preference can outrank quality if the user sets it high, but ties within a
+  // quality tier are broken by preferred groups first. Non-preferred releases
+  // remain accepted, so search falls back to them automatically.
   const score =
-    rank * 1000 + quality.revision.version * 100 + Math.min(release.seeders ?? 0, 99);
+    rank * 1000 +
+    preferredScore +
+    quality.revision.version * 100 +
+    Math.min(release.seeders ?? 0, 99);
 
   return { accepted: rejections.length === 0, rejections, score };
 }

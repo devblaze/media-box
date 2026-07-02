@@ -20,6 +20,12 @@ export interface QualityProfile {
   upgradeAllowed: boolean;
   cutoffQualityId: number;
   items: { qualityId: number; allowed: boolean }[];
+  /** Matched terms add their score (negative to avoid). Highest total wins. */
+  preferredTerms: { term: string; score: number }[];
+  /** If any set, a release must contain at least one to be eligible. */
+  requiredTerms: string[];
+  /** A release is rejected if it contains any of these. */
+  ignoredTerms: string[];
 }
 
 export interface SeriesSummary {
