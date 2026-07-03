@@ -156,7 +156,7 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
 
   if (!data) {
     return (
-      <div className="flex gap-6">
+      <div className="flex flex-col gap-6 md:flex-row">
         <Skeleton className="h-64 w-44" />
         <div className="flex-1 space-y-3">
           <Skeleton className="h-8 w-64" />
@@ -289,15 +289,15 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
     .sort((a, b) => b.seasonNumber - a.seasonNumber);
 
   return (
-    <div>
-      <div className="flex gap-6">
+    <div className="px-4 py-4 md:px-8 md:py-6">
+      <div className="flex flex-col gap-6 md:flex-row">
         {poster ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={poster} alt="" className="h-64 rounded object-cover" />
+          <img src={poster} alt="" className="h-64 w-44 shrink-0 self-start rounded object-cover" />
         ) : (
-          <div className="h-64 w-44 rounded bg-zinc-800" />
+          <div className="h-64 w-44 shrink-0 self-start rounded bg-zinc-800" />
         )}
-        <div className="flex-1">
+        <div className="min-w-0 flex-1">
           <h1 className="flex flex-wrap items-center gap-2 text-2xl font-semibold">
             <span>
               {data.title}{" "}
@@ -306,7 +306,8 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
             {data.isAnime && <Badge tone="accent">Anime</Badge>}
           </h1>
           <div className="mt-1 text-sm text-zinc-400">
-            {data.network ?? "—"} · {data.status} · <span className="font-mono text-xs">{data.path}</span>
+            {data.network ?? "—"} · {data.status} ·{" "}
+            <span className="font-mono text-xs break-all">{data.path}</span>
           </div>
           <p className="mt-3 max-w-3xl text-sm text-zinc-300">{data.overview}</p>
           <div className="mt-4 flex flex-wrap gap-2">
@@ -410,7 +411,8 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
                     )}
                   </div>
                 </CardHeader>
-                <table className="w-full text-sm">
+                <div className="overflow-x-auto">
+                <table className="w-full min-w-[520px] text-sm">
                   <TBody>
                     {eps.map((ep) => {
                       const file = ep.episodeFileId ? filesById.get(ep.episodeFileId) : undefined;
@@ -511,6 +513,7 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
                     })}
                   </TBody>
                 </table>
+                </div>
               </Card>
             );
           })

@@ -3,7 +3,8 @@ import { cn } from "@/lib/cn";
 export function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
     <div className="overflow-x-auto rounded-lg border border-zinc-800">
-      <table className={cn("w-full border-collapse text-sm", className)} {...props} />
+      {/* min-w keeps columns readable on phones: the wrapper scrolls instead of squishing. */}
+      <table className={cn("w-full min-w-[560px] border-collapse text-sm", className)} {...props} />
     </div>
   );
 }
@@ -21,7 +22,7 @@ export function TR({ className, ...props }: React.ComponentProps<"tr">) {
 }
 
 export function TH({ className, ...props }: React.ComponentProps<"th">) {
-  return <th className={cn("px-3 py-2 font-medium", className)} {...props} />;
+  return <th className={cn("whitespace-nowrap px-3 py-2 font-medium", className)} {...props} />;
 }
 
 export function TD({ className, ...props }: React.ComponentProps<"td">) {

@@ -96,12 +96,12 @@ export default function LogsPage() {
     <div className="max-w-4xl space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">Logs</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           <Select
             aria-label="Filter by level"
             value={level}
             onChange={(e) => setLevel(e.target.value as LevelFilter)}
-            className="w-32"
+            className="w-full sm:w-32"
           >
             <option value="all">All levels</option>
             <option value="error">Error</option>

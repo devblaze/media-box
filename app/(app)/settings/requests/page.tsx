@@ -116,19 +116,19 @@ export default function AdminRequestsPage() {
     <div className="max-w-5xl space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">Requests</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search title…"
-            className="w-48"
+            className="w-full sm:w-48"
             aria-label="Search by title"
           />
           <Select
             aria-label="Filter by status"
             value={status}
             onChange={(e) => setStatus(e.target.value as StatusFilter)}
-            className="w-36"
+            className="w-full sm:w-36"
           >
             <option value="all">All statuses</option>
             <option value="pending">Pending</option>

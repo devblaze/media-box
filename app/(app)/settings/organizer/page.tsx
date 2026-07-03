@@ -204,18 +204,18 @@ function FilesTab() {
 
       {scan && items.length > 0 && (
         <>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search filename or title…"
-              className="max-w-xs"
+              className="w-full sm:max-w-xs"
             />
             <Select
               aria-label="Filter by type"
               value={typeFilter}
               onChange={(e) => setTypeFilter(e.target.value as typeof typeFilter)}
-              className="w-36"
+              className="w-full sm:w-36"
             >
               <option value="all">All types</option>
               <option value="movies">Movies</option>
@@ -227,7 +227,7 @@ function FilesTab() {
               aria-label="Filter by match"
               value={matchFilter}
               onChange={(e) => setMatchFilter(e.target.value as typeof matchFilter)}
-              className="w-36"
+              className="w-full sm:w-36"
             >
               <option value="all">Matched &amp; not</option>
               <option value="matched">Matched</option>
@@ -537,18 +537,18 @@ function LogTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search source, title or episode…"
-          className="max-w-xs"
+          className="w-full sm:max-w-xs"
         />
         <Select
           aria-label="Filter log by type"
           value={typeFilter}
           onChange={(e) => setTypeFilter(e.target.value as typeof typeFilter)}
-          className="w-36"
+          className="w-full sm:w-36"
         >
           <option value="">All types</option>
           <option value="movie">Movies</option>
@@ -559,7 +559,7 @@ function LogTab() {
           aria-label="Filter log by status"
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
-          className="w-36"
+          className="w-full sm:w-36"
         >
           <option value="">All statuses</option>
           <option value="organized">Organized</option>

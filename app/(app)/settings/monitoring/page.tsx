@@ -194,13 +194,13 @@ export default function MonitoringPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-end gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
         <label className="flex flex-col gap-1 text-xs text-zinc-400">
           Type
           <Select
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
-            className="w-40"
+            className="w-full sm:w-40"
           >
             <option value="all">All</option>
             <option value="movie">Movies</option>
@@ -213,7 +213,7 @@ export default function MonitoringPage() {
           <Select
             value={monitorFilter}
             onChange={(e) => setMonitorFilter(e.target.value as MonitorFilter)}
-            className="w-40"
+            className="w-full sm:w-40"
           >
             <option value="all">All</option>
             <option value="monitored">Monitored</option>
@@ -243,7 +243,7 @@ export default function MonitoringPage() {
             </>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             size="sm"
             variant="secondary"

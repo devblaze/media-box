@@ -110,7 +110,7 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
 
   if (!data) {
     return (
-      <div className="flex gap-6">
+      <div className="flex flex-col gap-6 md:flex-row">
         <Skeleton className="h-64 w-44" />
         <div className="flex-1 space-y-3">
           <Skeleton className="h-8 w-64" />
@@ -203,15 +203,15 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
   const poster = tmdbPoster(data.posterPath);
 
   return (
-    <div>
-      <div className="flex gap-6">
+    <div className="px-4 py-4 md:px-8 md:py-6">
+      <div className="flex flex-col gap-6 md:flex-row">
         {poster ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={poster} alt="" className="h-64 rounded object-cover" />
+          <img src={poster} alt="" className="h-64 w-44 shrink-0 self-start rounded object-cover" />
         ) : (
-          <div className="h-64 w-44 rounded bg-zinc-800" />
+          <div className="h-64 w-44 shrink-0 self-start rounded bg-zinc-800" />
         )}
-        <div className="flex-1">
+        <div className="min-w-0 flex-1">
           <h1 className="text-2xl font-semibold">
             {data.title} {data.year ? <span className="text-zinc-500">({data.year})</span> : null}
           </h1>
@@ -220,7 +220,7 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
             <span>·</span>
             <span>{data.runtime ? `${data.runtime} min` : "—"}</span>
             <span>·</span>
-            <span className="font-mono text-xs">{data.path}</span>
+            <span className="font-mono text-xs break-all">{data.path}</span>
             {progress?.watched ? (
               <Badge tone="success">Watched ✓</Badge>
             ) : progress && progress.positionSeconds > 0 ? (
@@ -277,7 +277,7 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
               {data.file.mediaInfo && <MediaInfoBadges info={data.file.mediaInfo} />}
               <dl className="grid max-w-2xl grid-cols-[auto_1fr] gap-x-6 gap-y-1 text-sm">
                 <dt className="text-zinc-500">Path</dt>
-                <dd className="font-mono text-xs">{data.file.relativePath}</dd>
+                <dd className="font-mono text-xs break-all">{data.file.relativePath}</dd>
                 <dt className="text-zinc-500">Size</dt>
                 <dd>{formatBytes(data.file.size)}</dd>
                 <dt className="text-zinc-500">Quality</dt>

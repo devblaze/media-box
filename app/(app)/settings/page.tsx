@@ -201,7 +201,9 @@ export default function DashboardPage() {
         />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      {/* [&>*]:min-w-0 lets grid-item cards shrink below their content so long
+          paths/filenames truncate instead of forcing the card past the viewport. */}
+      <div className="grid gap-4 lg:grid-cols-3 [&>*]:min-w-0">
         {/* Recent activity */}
         <Card className="lg:col-span-2">
           <CardHeader>
@@ -295,7 +297,7 @@ export default function DashboardPage() {
                       key={r.id}
                       className="flex items-center justify-between gap-3 border-t border-zinc-800/60 py-2 first:border-t-0 first:pt-0"
                     >
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <div className="truncate font-mono text-xs text-zinc-300">{r.path}</div>
                         <div className="mt-1 flex items-center gap-2">
                           <Badge tone="neutral">{r.mediaType}</Badge>
@@ -326,7 +328,7 @@ export default function DashboardPage() {
                   <dt className="text-zinc-500">Started</dt>
                   <dd>{new Date(system.startedAt).toLocaleString()}</dd>
                   <dt className="text-zinc-500">Config</dt>
-                  <dd className="truncate font-mono text-xs">{system.configDir}</dd>
+                  <dd className="min-w-0 break-all font-mono text-xs">{system.configDir}</dd>
                   <dt className="text-zinc-500">Node</dt>
                   <dd>{system.node}</dd>
                 </dl>

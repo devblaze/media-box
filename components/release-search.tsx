@@ -73,12 +73,15 @@ export function ReleaseSearchDrawer({
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70" onClick={onClose}>
       <div
-        className="max-h-[80vh] w-full max-w-5xl overflow-y-auto rounded-t-lg border border-zinc-700 bg-zinc-900 p-5"
+        className="max-h-[85vh] w-full max-w-5xl overflow-y-auto rounded-t-lg border border-zinc-700 bg-zinc-900 p-4 sm:p-5"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Search — {title}</h2>
-          <button onClick={onClose} className="rounded bg-zinc-800 px-3 py-1 text-sm hover:bg-zinc-700">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="min-w-0 truncate text-lg font-semibold">Search — {title}</h2>
+          <button
+            onClick={onClose}
+            className="shrink-0 rounded bg-zinc-800 px-3 py-1 text-sm hover:bg-zinc-700"
+          >
             Close
           </button>
         </div>
@@ -87,7 +90,8 @@ export function ReleaseSearchDrawer({
         {!releases && !error && <p className="mt-4 text-sm text-zinc-400">Searching indexers…</p>}
 
         {releases && (
-          <table className="mt-4 w-full text-sm">
+          <div className="mt-4 overflow-x-auto">
+          <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="text-left text-xs text-zinc-500">
                 <th className="py-1.5 font-normal">Release</th>
@@ -136,6 +140,7 @@ export function ReleaseSearchDrawer({
               )}
             </tbody>
           </table>
+          </div>
         )}
         {releases && releases.some((r) => !r.accepted) && (
           <p className="mt-2 text-xs text-zinc-500">

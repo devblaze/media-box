@@ -60,3 +60,67 @@ html {
   width: 0;
   height: 0;
 }
+
+/* ---- Pre-auth login showcase (decorative app demo) ----
+   Self-contained animations for the animated browse mock behind the sign-in
+   panel. No external images or JS timers — pure CSS motion, honoured only when
+   the visitor hasn't asked to reduce motion. */
+@keyframes mb-marquee {
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+@keyframes mb-marquee-reverse {
+  from {
+    transform: translate3d(-50%, 0, 0);
+  }
+  to {
+    transform: translate3d(0, 0, 0);
+  }
+}
+@keyframes mb-hero-pan {
+  from {
+    transform: scale(1.05);
+  }
+  to {
+    transform: scale(1.18);
+  }
+}
+@keyframes mb-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A horizontally-scrolling poster row. Its children are duplicated once, so a
+   -50% translate lands the copy exactly on the original for a seamless loop.
+   Duration is set inline per row to vary the speeds. */
+.mb-marquee-track {
+  display: flex;
+  width: max-content;
+  animation: mb-marquee 40s linear infinite;
+  will-change: transform;
+}
+.mb-marquee-track.reverse {
+  animation-name: mb-marquee-reverse;
+}
+.mb-hero-pan {
+  animation: mb-hero-pan 20s ease-in-out infinite alternate;
+  will-change: transform;
+}
+.mb-fade-up {
+  animation: mb-fade-up 700ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mb-marquee-track,
+  .mb-hero-pan,
+  .mb-fade-up {
+    animation: none !important;
+  }
+}

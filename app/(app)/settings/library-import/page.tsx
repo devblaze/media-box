@@ -243,7 +243,7 @@ export default function LibraryImportPage() {
       </Callout>
 
       {/* Controls */}
-      <div className="flex flex-wrap items-end gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
         <Field label="Type">
           <div className="flex gap-1">
             {(["movie", "series", "anime"] as const).map((t) => (
