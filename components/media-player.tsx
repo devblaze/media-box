@@ -128,6 +128,32 @@ type SubtitleTrack = { id: number; language: string; label: string; url: string 
 /** Shape of `GET /api/v1/watch-progress` (or `null` when nothing is stored). */
 type WatchProgress = { positionSeconds: number; durationSeconds: number; watched: boolean };
 
+/**
+ * A selectable file version (quality) for the current title, from
+ * `GET /api/v1/versions`. Movies can have several (e.g. a 1080p + a 4K); episodes
+ * return a single entry. `resolution` is a short tag ("4K"/"1080p"); `label` is
+ * fuller (e.g. "4K · WEB-DL-2160p").
+ */
+type MediaVersion = {
+  fileId: number;
+  resolution: string;
+  label: string;
+  size: number;
+  isPrimary: boolean;
+};
+
+/**
+ * Coarse quality tag derived from a raw pixel height. Used only as a fallback
+ * chip label when the versions list could not be fetched.
+ */
+function qualityTagFromHeight(height: number | null | undefined): string | null {
+  if (height == null) return null;
+  if (height >= 2160) return "4K";
+  if (height >= 1080) return "1080p";
+  if (height >= 720) return "720p";
+  return "SD";
+}
+
 // ---- fullscreen helpers (defensive against browsers without the promise API) ----
 
 function enterFullscreen(el: HTMLElement | null) {
@@ -300,7 +326,14 @@ export function VideoPlayerModal({
   const [tracks, setTracks] = useState<SubtitleTrack[]>([]);
   const [selectedSub, setSelectedSub] = useState(-1); // -1 = off (default)
 
-  const barVisible = controlsVisible || ccOpen;
+  // Available file versions (qualities) and the one currently playing. `null`
+  // fileId means "server default/primary" (used until the list resolves, or when
+  // the fetch fails and we treat the title as a single default version).
+  const [versions, setVersions] = useState<MediaVersion[]>([]);
+  const [selectedFileId, setSelectedFileId] = useState<number | null>(null);
+  const [qualityOpen, setQualityOpen] = useState(false);
+
+  const barVisible = controlsVisible || ccOpen || qualityOpen;
 
   // Opens windowed (full-page overlay, browser chrome still visible). Native
   // fullscreen is opt-in via the maximize button / `F` — no auto-request here.
@@ -314,6 +347,27 @@ export function VideoPlayerModal({
         if (active) setTracks(res.tracks ?? []);
       })
       .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [target.type, target.id]);
+
+  // Fetch the available file versions once on open. Silent on failure — we then
+  // treat the title as a single default version (no picker, fileId stays null).
+  useEffect(() => {
+    const type = target.type === "movie" ? "movie" : "episode";
+    let active = true;
+    void apiFetch<{ versions: MediaVersion[] }>(`/versions?type=${type}&id=${target.id}`)
+      .then((res) => {
+        if (!active) return;
+        const list = res.versions ?? [];
+        setVersions(list);
+        const primary = list.find((v) => v.isPrimary) ?? list[0] ?? null;
+        setSelectedFileId(primary ? primary.fileId : null);
+      })
+      .catch(() => {
+        /* no versions endpoint / error — leave as a single default version */
+      });
     return () => {
       active = false;
     };
@@ -366,6 +420,12 @@ export function VideoPlayerModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [toggleFullscreen, handleClose]);
 
+  // The currently-playing version (if the list resolved) and the label for the
+  // always-on quality chip. Prefer the selected version's short tag; otherwise
+  // fall back to a tag derived from the probed height; hide it if nothing known.
+  const selectedVersion = versions.find((v) => v.fileId === selectedFileId) ?? null;
+  const qualityChip = selectedVersion?.resolution ?? qualityTagFromHeight(mediaInfo?.video?.height);
+
   return (
     <div
       ref={containerRef}
@@ -375,15 +435,26 @@ export function VideoPlayerModal({
       )}
       onMouseMove={showControls}
     >
+      {/* Keying by the selected fileId remounts the player when the version
+          changes, which re-inits the source (and, via the shared hooks, saves the
+          old position then resumes it on the newly-loaded stream). */}
       {mode === "direct" ? (
         <DirectPlayer
+          key={selectedFileId ?? "default"}
           target={target}
+          fileId={selectedFileId}
           tracks={tracks}
           selectedSub={selectedSub}
           onFallback={() => setMode("transcode")}
         />
       ) : (
-        <TranscodePlayer target={target} tracks={tracks} selectedSub={selectedSub} />
+        <TranscodePlayer
+          key={selectedFileId ?? "default"}
+          target={target}
+          fileId={selectedFileId}
+          tracks={tracks}
+          selectedSub={selectedSub}
+        />
       )}
 
       {/* Top-left: Back button + title. Auto-hides, reappears on mouse move. */}
@@ -471,6 +542,68 @@ export function VideoPlayerModal({
             </button>
           </div>
 
+          {/* Current-quality chip — always shown when a quality is known. */}
+          {qualityChip && (
+            <span
+              className="rounded-md border border-white/15 px-2 py-1 text-xs font-medium text-zinc-200"
+              aria-label={`Current quality ${qualityChip}`}
+            >
+              {qualityChip}
+            </span>
+          )}
+
+          {/* Quality (version) picker — only when there's more than one version.
+              Menu opens upward so it isn't clipped at the edge. */}
+          {versions.length > 1 && (
+            <div className="relative">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  setQualityOpen((o) => !o);
+                  setCcOpen(false);
+                  showControls();
+                }}
+                aria-label="Quality"
+                aria-haspopup="menu"
+                aria-expanded={qualityOpen}
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  className="size-5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12 3l9 5-9 5-9-5 9-5z" />
+                  <path d="M3 13l9 5 9-5" />
+                </svg>
+              </Button>
+              {qualityOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 bottom-full mb-2 max-h-64 min-w-44 overflow-auto rounded-md border border-white/10 bg-zinc-900/95 py-1 shadow-xl backdrop-blur"
+                >
+                  {versions.map((v) => (
+                    <SubtitleMenuItem
+                      key={v.fileId}
+                      label={v.label || v.resolution}
+                      active={v.fileId === selectedFileId}
+                      onSelect={() => {
+                        setSelectedFileId(v.fileId);
+                        setQualityOpen(false);
+                        showControls();
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Subtitles (CC) — menu opens upward so it isn't clipped at the edge */}
           <div className="relative">
             <Button
@@ -478,6 +611,7 @@ export function VideoPlayerModal({
               size="icon"
               onClick={() => {
                 setCcOpen((o) => !o);
+                setQualityOpen(false);
                 showControls();
               }}
               aria-label="Subtitles"
@@ -580,11 +714,13 @@ function SubtitleMenuItem({
 /** Native direct play with a "Try transcoding" fallback on <video> error. */
 function DirectPlayer({
   target,
+  fileId,
   tracks,
   selectedSub,
   onFallback,
 }: {
   target: PlaybackTarget;
+  fileId: number | null;
   tracks: SubtitleTrack[];
   selectedSub: number;
   onFallback: () => void;
@@ -595,6 +731,9 @@ function DirectPlayer({
   useWatchProgress(videoRef, target);
   useSubtitleSelection(videoRef, tracks, selectedSub);
 
+  // A specific version streams from `?file=<id>`; the primary/default omits it.
+  const src = `/api/v1/stream/${target.type}/${target.id}${fileId != null ? `?file=${fileId}` : ""}`;
+
   return (
     <>
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
@@ -603,7 +742,7 @@ function DirectPlayer({
         controls
         autoPlay
         className="h-full w-full bg-black object-contain"
-        src={`/api/v1/stream/${target.type}/${target.id}`}
+        src={src}
         onError={() => setErrored(true)}
       >
         <SubtitleTracks tracks={tracks} />
@@ -635,10 +774,12 @@ function DirectPlayer({
  */
 function TranscodePlayer({
   target,
+  fileId,
   tracks,
   selectedSub,
 }: {
   target: PlaybackTarget;
+  fileId: number | null;
   tracks: SubtitleTrack[];
   selectedSub: number;
 }) {
@@ -659,7 +800,7 @@ function TranscodePlayer({
       try {
         const res = await apiFetch<{ sessionId: string; url: string }>("/transcode", {
           method: "POST",
-          body: JSON.stringify({ type, id }),
+          body: JSON.stringify({ type, id, ...(fileId != null ? { fileId } : {}) }),
         });
         sessionId = res.sessionId; // capture before any early return so cleanup can DELETE it
         if (cancelled) return;
@@ -719,7 +860,7 @@ function TranscodePlayer({
         );
       }
     };
-  }, [type, id]);
+  }, [type, id, fileId]);
 
   return (
     <>

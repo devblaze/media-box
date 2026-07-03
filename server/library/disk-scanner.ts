@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import { and, eq, inArray } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { parseTitle, parseQuality, parseReleaseGroup } from "@/server/parser/release-parser";
+import { getQuality, type QualityModel } from "@/server/parser/quality";
 import { emitEvent } from "@/server/events/bus";
 
 export const VIDEO_EXTENSIONS = new Set([".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv"]);
@@ -183,6 +184,70 @@ export async function importMovieFileAt(movieId: number, videoAbsPath: string): 
   db.update(schema.movies).set({ movieFileId: fileRow.id }).where(eq(schema.movies.id, movieId)).run();
   emitEvent({ type: "movie.updated", movieId });
   return 1;
+}
+
+/**
+ * Add a file to an existing movie as an additional quality VERSION (e.g. keep a
+ * 4K next to a 1080p) rather than replacing. Skips it when the same file or a file
+ * of the same resolution is already present (so you don't end up with duplicates).
+ * The highest-resolution version becomes the primary (what plays / shows by default).
+ */
+export async function addMovieFileVersion(
+  movieId: number,
+  videoAbsPath: string
+): Promise<{ added: boolean; reason?: string }> {
+  const db = getDb();
+  const m = db.select().from(schema.movies).where(eq(schema.movies.id, movieId)).get();
+  if (!m) return { added: false, reason: "movie missing" };
+
+  const name = path.basename(videoAbsPath);
+  const quality = parseQuality(name);
+  const newRes = getQuality(quality.qualityId).resolution;
+  const relativePath = path.relative(m.path, videoAbsPath);
+
+  const existing = db
+    .select()
+    .from(schema.movieFiles)
+    .where(eq(schema.movieFiles.movieId, movieId))
+    .all();
+  if (existing.some((f) => f.relativePath === relativePath)) {
+    return { added: false, reason: "file already imported" };
+  }
+  if (existing.some((f) => getQuality((f.quality as QualityModel)?.qualityId ?? 0).resolution === newRes)) {
+    return { added: false, reason: `a ${newRes || "same"}p version already exists` };
+  }
+
+  let size = 0;
+  try {
+    size = (await fs.stat(videoAbsPath)).size;
+  } catch {
+    /* register with size 0 rather than fail */
+  }
+  const fileRow = db
+    .insert(schema.movieFiles)
+    .values({
+      movieId,
+      relativePath,
+      size,
+      quality,
+      releaseGroup: parseReleaseGroup(name) ?? null,
+      sceneName: path.basename(videoAbsPath, path.extname(videoAbsPath)),
+      dateAdded: new Date(),
+    })
+    .returning({ id: schema.movieFiles.id })
+    .get();
+
+  // Promote to primary when there's no primary yet or this version is higher-res.
+  const primaryRes = m.movieFileId
+    ? getQuality(
+        (existing.find((f) => f.id === m.movieFileId)?.quality as QualityModel)?.qualityId ?? 0
+      ).resolution
+    : -1;
+  if (!m.movieFileId || newRes > primaryRes) {
+    db.update(schema.movies).set({ movieFileId: fileRow.id }).where(eq(schema.movies.id, movieId)).run();
+  }
+  emitEvent({ type: "movie.updated", movieId });
+  return { added: true };
 }
 
 export async function scanAll(): Promise<string> {

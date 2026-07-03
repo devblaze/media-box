@@ -1,5 +1,5 @@
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 
 export type MediaType = "movie" | "episode";
@@ -21,18 +21,34 @@ export interface ResolvedMedia {
  *
  * Shared by the direct-stream routes and the transcode pipeline.
  */
-export function resolveMediaPath(type: MediaType, id: number): ResolvedMedia | null {
+export function resolveMediaPath(
+  type: MediaType,
+  id: number,
+  fileId?: number | null
+): ResolvedMedia | null {
   if (!Number.isInteger(id)) return null;
   const db = getDb();
 
   if (type === "movie") {
     const movie = db.select().from(schema.movies).where(eq(schema.movies.id, id)).get();
-    if (!movie || !movie.movieFileId) return null;
-    const file = db
-      .select()
-      .from(schema.movieFiles)
-      .where(eq(schema.movieFiles.id, movie.movieFileId))
-      .get();
+    if (!movie) return null;
+    // A specific version if requested + it belongs to this movie; else the primary file.
+    let file =
+      fileId && Number.isInteger(fileId)
+        ? db
+            .select()
+            .from(schema.movieFiles)
+            .where(and(eq(schema.movieFiles.id, fileId), eq(schema.movieFiles.movieId, id)))
+            .get()
+        : undefined;
+    if (!file) {
+      if (!movie.movieFileId) return null;
+      file = db
+        .select()
+        .from(schema.movieFiles)
+        .where(eq(schema.movieFiles.id, movie.movieFileId))
+        .get();
+    }
     if (!file) return null;
     return {
       absPath: path.join(movie.path, file.relativePath),

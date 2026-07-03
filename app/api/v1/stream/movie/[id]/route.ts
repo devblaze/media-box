@@ -11,7 +11,8 @@ type Ctx = { params: Promise<{ id: string }> };
 async function handle(request: NextRequest, ctx: Ctx, method: "GET" | "HEAD"): Promise<Response> {
   if (!getRequestUser(request)) return new Response("Unauthorized", { status: 401 });
   const { id } = await ctx.params;
-  const resolved = resolveMediaPath("movie", Number(id));
+  const fileId = Number(request.nextUrl.searchParams.get("file")) || undefined;
+  const resolved = resolveMediaPath("movie", Number(id), fileId);
   if (!resolved) return new Response("Not Found", { status: 404 });
   return streamFile(request, resolved.absPath, method);
 }

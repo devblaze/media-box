@@ -2,9 +2,14 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAdmin } from "@/server/auth/guards";
-import { addMovie } from "@/server/library/movie-service";
+import { addMovie, getMovieIdByTmdb } from "@/server/library/movie-service";
 import { addSeries } from "@/server/library/series-service";
-import { scanMovie, scanSeries, importMovieFileAt } from "@/server/library/disk-scanner";
+import {
+  scanMovie,
+  scanSeries,
+  importMovieFileAt,
+  addMovieFileVersion,
+} from "@/server/library/disk-scanner";
 import { markCandidateImported } from "@/server/library/library-import";
 import { ok, badRequest, serverError } from "@/lib/http";
 
@@ -40,6 +45,17 @@ export async function POST(request: NextRequest) {
 
   try {
     if (input.type === "movie") {
+      // Already in the library? Add this file as an extra quality VERSION (e.g. a 4K
+      // next to a 1080p) instead of rejecting — same-quality files are skipped.
+      const existingId = getMovieIdByTmdb(input.tmdbId);
+      if (existingId) {
+        markCandidateImported(input.type, input.path);
+        if (!input.videoPath) {
+          return NextResponse.json({ error: "Movie is already in the library" }, { status: 409 });
+        }
+        const version = await addMovieFileVersion(existingId, input.videoPath);
+        return ok({ id: existingId, mediaType: "movie" as const, version }, { status: 200 });
+      }
       const movie = await addMovie({
         tmdbId: input.tmdbId,
         rootFolderId: input.rootFolderId,

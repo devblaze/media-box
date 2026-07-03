@@ -17,6 +17,15 @@ export interface AddMovieInput {
   path?: string;
 }
 
+/** The library id of a movie already imported for this TMDB id, if any. */
+export function getMovieIdByTmdb(tmdbId: number): number | undefined {
+  return getDb()
+    .select({ id: schema.movies.id })
+    .from(schema.movies)
+    .where(eq(schema.movies.tmdbId, tmdbId))
+    .get()?.id;
+}
+
 export async function addMovie(input: AddMovieInput) {
   const db = getDb();
 

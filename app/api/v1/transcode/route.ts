@@ -16,6 +16,7 @@ export const dynamic = "force-dynamic";
 const bodySchema = z.object({
   type: z.enum(["movie", "episode"]),
   id: z.coerce.number().int().positive(),
+  fileId: z.coerce.number().int().positive().optional(),
   startSec: z.coerce.number().min(0).optional(),
 });
 
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest) {
     return badRequest("Invalid request body");
   }
 
-  const resolved = resolveMediaPath(body.type, body.id);
+  const resolved = resolveMediaPath(body.type, body.id, body.fileId);
   if (!resolved) return notFound("Media not found");
 
   try {

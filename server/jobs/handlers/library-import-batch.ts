@@ -1,8 +1,13 @@
 import { and, eq } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
-import { addMovie } from "@/server/library/movie-service";
+import { addMovie, getMovieIdByTmdb } from "@/server/library/movie-service";
 import { addSeries } from "@/server/library/series-service";
-import { importMovieFileAt, scanMovie, scanSeries } from "@/server/library/disk-scanner";
+import {
+  importMovieFileAt,
+  scanMovie,
+  scanSeries,
+  addMovieFileVersion,
+} from "@/server/library/disk-scanner";
 
 /**
  * Background batch import for Library Import "Import all".
@@ -44,17 +49,24 @@ export async function libraryImportBatchHandler(payload: unknown): Promise<strin
       }
 
       if (type === "movie") {
-        const movie = await addMovie({
-          tmdbId: row.suggestedTmdbId,
-          rootFolderId: row.rootFolderId,
-          qualityProfileId: row.qualityProfileId,
-          monitored: true,
-          path: row.path,
-        });
-        // Register the exact file the scanner identified (many movies share a
-        // category folder); otherwise fall back to folder mode.
-        if (row.videoPath) await importMovieFileAt(movie.id, row.videoPath);
-        else await scanMovie(movie.id);
+        // Already in the library? Attach this file as an extra quality version
+        // (skips same-quality dupes) rather than failing.
+        const existingId = getMovieIdByTmdb(row.suggestedTmdbId);
+        if (existingId) {
+          if (row.videoPath) await addMovieFileVersion(existingId, row.videoPath);
+        } else {
+          const movie = await addMovie({
+            tmdbId: row.suggestedTmdbId,
+            rootFolderId: row.rootFolderId,
+            qualityProfileId: row.qualityProfileId,
+            monitored: true,
+            path: row.path,
+          });
+          // Register the exact file the scanner identified (many movies share a
+          // category folder); otherwise fall back to folder mode.
+          if (row.videoPath) await importMovieFileAt(movie.id, row.videoPath);
+          else await scanMovie(movie.id);
+        }
       } else {
         const series = await addSeries({
           tmdbId: row.suggestedTmdbId,
