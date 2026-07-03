@@ -35,7 +35,6 @@ export function TitleCard({ item }: { item: DiscoverItem }) {
       : null;
 
   const canPlayMovie = status === "available" && item.mediaType === "movie" && item.mediaId != null;
-  const canWatchSeries = status === "available" && item.mediaType === "series" && detailHref != null;
   const image = item.backdrop ?? item.poster;
 
   async function request() {
@@ -108,25 +107,45 @@ export function TitleCard({ item }: { item: DiscoverItem }) {
             </div>
           </div>
 
-          {/* Hover info panel (over the image, so it adds no height to clip) */}
-          <div className="absolute inset-x-0 bottom-0 flex translate-y-2 items-center gap-2 bg-gradient-to-t from-black via-black/85 to-transparent px-2 pb-2 pt-8 opacity-0 transition-all duration-300 group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100">
+          {/* Whole-card link to the detail page (in-library titles). Sits above the
+              artwork but below the action buttons (which are z-30 + pointer-events)
+              so Play / Request keep working while the rest of the card opens details. */}
+          {detailHref && (
+            <Link
+              href={detailHref}
+              aria-label={`View details for ${item.title}`}
+              className="absolute inset-0 z-20 rounded-md"
+            />
+          )}
+
+          {/* Hover info panel (over the image, so it adds no height to clip).
+              pointer-events-none lets clicks fall through to the detail link;
+              the action buttons re-enable pointer events for themselves. */}
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 flex translate-y-2 items-center gap-2 bg-gradient-to-t from-black via-black/85 to-transparent px-2 pb-2 pt-8 opacity-0 transition-all duration-300 group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100">
             {canPlayMovie && (
               <button
                 type="button"
                 onClick={() => setPlaying(true)}
-                className={cn(circleBase, "bg-white text-black hover:bg-white/80")}
+                className={cn(circleBase, "pointer-events-auto bg-white text-black hover:bg-white/80")}
                 aria-label={`Play ${item.title}`}
               >
                 ▶
               </button>
             )}
-            {canWatchSeries && detailHref && (
+            {/* In-library titles: a clear "more info" action to the detail page
+                (the whole card links there too). For series this is the primary
+                action — the detail page is where you pick an episode to play. */}
+            {detailHref && (
               <Link
                 href={detailHref}
-                className={cn(circleBase, "bg-white text-black hover:bg-white/80")}
-                aria-label={`Play ${item.title}`}
+                className={cn(
+                  circleBase,
+                  "pointer-events-auto border border-white/70 text-white hover:border-white hover:bg-white/10"
+                )}
+                aria-label={`More info about ${item.title}`}
+                title="More info"
               >
-                ▶
+                ⓘ
               </Link>
             )}
             {status === "unavailable" && (
@@ -136,7 +155,7 @@ export function TitleCard({ item }: { item: DiscoverItem }) {
                 disabled={requesting}
                 className={cn(
                   circleBase,
-                  "border border-white/60 text-white hover:border-white disabled:opacity-50"
+                  "pointer-events-auto border border-white/60 text-white hover:border-white disabled:opacity-50"
                 )}
                 aria-label={`Request ${item.title}`}
               >

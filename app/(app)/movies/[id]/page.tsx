@@ -6,6 +6,7 @@ import { apiFetch, useApi } from "@/lib/api";
 import { useEvents } from "@/lib/use-events";
 import { formatBytes, tmdbPoster } from "@/lib/types";
 import { ReleaseSearchDrawer } from "@/components/release-search";
+import { SubtitleSearchDrawer } from "@/components/subtitle-search";
 import { MediaInfoBadges, VideoPlayerModal } from "@/components/media-player";
 import type { MediaInfo } from "@/server/library/media-info";
 import {
@@ -114,6 +115,7 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
   );
   const isAdmin = me?.role === "admin";
   const [searching, setSearching] = useState(false);
+  const [subtitleSearch, setSubtitleSearch] = useState(false);
   const [playing, setPlaying] = useState(false);
   const qualityNames = useMemo(
     () => new Map((qualityDefs ?? []).map((q) => [q.id, q.name])),
@@ -293,6 +295,9 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
                 <Button variant="secondary" size="sm" onClick={searchSubtitles}>
                   Search subtitles
                 </Button>
+                <Button variant="secondary" size="sm" onClick={() => setSubtitleSearch(true)}>
+                  Find subtitles…
+                </Button>
                 <Button variant="danger" size="sm" onClick={remove}>
                   Remove
                 </Button>
@@ -411,6 +416,17 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
           title={`${data.title}${data.year ? ` (${data.year})` : ""}`}
           qualityNames={qualityNames}
           onClose={() => setSearching(false)}
+        />
+      )}
+
+      {subtitleSearch && (
+        <SubtitleSearchDrawer
+          target={{ movieId: data.id }}
+          title={`${data.title}${data.year ? ` (${data.year})` : ""}`}
+          onClose={() => {
+            setSubtitleSearch(false);
+            void mutate();
+          }}
         />
       )}
 

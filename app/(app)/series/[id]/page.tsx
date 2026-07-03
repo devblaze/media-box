@@ -6,6 +6,7 @@ import { apiFetch, useApi } from "@/lib/api";
 import { useEvents } from "@/lib/use-events";
 import { tmdbPoster, type Episode, type Season } from "@/lib/types";
 import { ReleaseSearchDrawer, type SearchScope } from "@/components/release-search";
+import { SubtitleSearchDrawer } from "@/components/subtitle-search";
 import { MediaInfoBadges, VideoPlayerModal } from "@/components/media-player";
 import type { MediaInfo } from "@/server/library/media-info";
 import {
@@ -98,6 +99,9 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
   const isAdmin = me?.role === "admin";
   const [progressMap, setProgressMap] = useState<Map<number, EpProgress>>(new Map());
   const [searchScope, setSearchScope] = useState<{ scope: SearchScope; label: string } | null>(null);
+  const [subtitleSearch, setSubtitleSearch] = useState<{ episodeId: number; label: string } | null>(
+    null
+  );
   const [playing, setPlaying] = useState<{ episodeId: number; label: string } | null>(null);
   const qualityNames = useMemo(
     () => new Map((qualityDefs ?? []).map((q) => [q.id, q.name])),
@@ -506,6 +510,18 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
                                   Search
                                 </Button>
                               )}
+                              {isAdmin && (
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  title="Find subtitles"
+                                  onClick={() =>
+                                    setSubtitleSearch({ episodeId: ep.id, label: epLabel })
+                                  }
+                                >
+                                  Subs
+                                </Button>
+                              )}
                             </div>
                           </TD>
                         </TR>
@@ -563,6 +579,17 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
           title={searchScope.label}
           qualityNames={qualityNames}
           onClose={() => setSearchScope(null)}
+        />
+      )}
+
+      {subtitleSearch && (
+        <SubtitleSearchDrawer
+          target={{ episodeId: subtitleSearch.episodeId }}
+          title={subtitleSearch.label}
+          onClose={() => {
+            setSubtitleSearch(null);
+            void mutate();
+          }}
         />
       )}
 

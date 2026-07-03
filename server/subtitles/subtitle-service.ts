@@ -6,6 +6,7 @@
  */
 import path from "node:path";
 import fs from "node:fs/promises";
+import crypto from "node:crypto";
 import { and, eq, isNotNull } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { getSettings } from "@/server/settings/settings-service";
@@ -219,18 +220,40 @@ export async function downloadSubtitleFor(
   } catch {
     return false;
   }
+  await persistSubtitle(target, ref, language, content, best.providerId, best.hearingImpaired);
+  return true;
+}
+
+/**
+ * Write a subtitle sidecar + record it, replacing any prior record for the same
+ * (deterministic) sidecar path, then emit the update event.
+ */
+async function persistSubtitle(
+  target: SubtitleTarget,
+  ref: VideoRef,
+  language: string,
+  content: string,
+  providerId: string,
+  hearingImpaired: boolean
+): Promise<void> {
   const abs = sidecarPath(ref.absVideo, language);
   await fs.writeFile(abs, content, "utf8");
+  const relativePath = path.relative(ref.root, abs);
 
   const db = getDb();
+  const idCol =
+    target.kind === "movie" ? schema.subtitleFiles.movieId : schema.subtitleFiles.episodeId;
+  db.delete(schema.subtitleFiles)
+    .where(and(eq(idCol, target.id), eq(schema.subtitleFiles.relativePath, relativePath)))
+    .run();
   db.insert(schema.subtitleFiles)
     .values({
       movieId: target.kind === "movie" ? target.id : null,
       episodeId: target.kind === "episode" ? target.id : null,
       language,
-      relativePath: path.relative(ref.root, abs),
-      provider: best.providerId,
-      hearingImpaired: best.hearingImpaired,
+      relativePath,
+      provider: providerId,
+      hearingImpaired,
       addedAt: new Date(),
     })
     .run();
@@ -244,6 +267,102 @@ export async function downloadSubtitleFor(
       .get()?.seriesId;
     if (seriesId) emitEvent({ type: "series.updated", seriesId });
   }
+}
+
+// ---------- Interactive (manual) subtitle search ----------
+
+export interface SubtitleCandidateResult {
+  /** Opaque token to pass back to downloadSubtitleCandidate(). */
+  id: string;
+  providerId: string;
+  providerName: string;
+  language: string;
+  release: string;
+  hearingImpaired: boolean;
+  score: number;
+}
+
+interface CachedCandidate {
+  download: () => Promise<string>;
+  providerId: string;
+  hearingImpaired: boolean;
+  language: string;
+  expires: number;
+}
+// Candidates carry a provider-specific download closure that can't cross HTTP, so
+// we cache them briefly and hand the client an opaque id to grab one later.
+const CANDIDATE_CACHE = new Map<string, CachedCandidate>();
+const CACHE_TTL_MS = 15 * 60 * 1000;
+
+function pruneCandidateCache(now: number): void {
+  for (const [k, v] of CANDIDATE_CACHE) if (v.expires < now) CANDIDATE_CACHE.delete(k);
+}
+
+/** Search all enabled providers for one target/language and return candidates (no download). */
+export async function searchSubtitleCandidates(
+  target: SubtitleTarget,
+  language: string
+): Promise<SubtitleCandidateResult[]> {
+  const ref = target.kind === "movie" ? movieVideo(target.id) : episodeVideo(target.id);
+  if (!ref) return [];
+  const providers = enabledProviders();
+  if (providers.length === 0) return [];
+  const hi = getSettings().subtitleHearingImpaired;
+  const q: ProviderSearchQuery = { ...ref.query, language, hearingImpaired: hi };
+
+  const now = Date.now();
+  pruneCandidateCache(now);
+  const out: SubtitleCandidateResult[] = [];
+  for (const provider of providers) {
+    let cands: ProviderCandidate[];
+    try {
+      cands = await provider.search(q);
+    } catch {
+      continue;
+    }
+    for (const c of cands.slice(0, 20)) {
+      const id = crypto.randomUUID();
+      CANDIDATE_CACHE.set(id, {
+        download: c.download,
+        providerId: c.providerId,
+        hearingImpaired: c.hearingImpaired,
+        language,
+        expires: now + CACHE_TTL_MS,
+      });
+      out.push({
+        id,
+        providerId: c.providerId,
+        providerName: provider.name,
+        language: c.language,
+        release: c.release,
+        hearingImpaired: c.hearingImpaired,
+        score: c.score,
+      });
+    }
+  }
+  return out;
+}
+
+/** Download a specific candidate previously returned by searchSubtitleCandidates(). */
+export async function downloadSubtitleCandidate(
+  target: SubtitleTarget,
+  candidateId: string
+): Promise<boolean> {
+  const cached = CANDIDATE_CACHE.get(candidateId);
+  if (!cached || cached.expires < Date.now()) {
+    CANDIDATE_CACHE.delete(candidateId);
+    return false;
+  }
+  const ref = target.kind === "movie" ? movieVideo(target.id) : episodeVideo(target.id);
+  if (!ref) return false;
+  let content: string;
+  try {
+    content = await cached.download();
+  } catch {
+    return false;
+  }
+  await persistSubtitle(target, ref, cached.language, content, cached.providerId, cached.hearingImpaired);
+  CANDIDATE_CACHE.delete(candidateId);
   return true;
 }
 

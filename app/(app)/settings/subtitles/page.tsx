@@ -14,6 +14,7 @@ import {
   HowTo,
   Input,
   Skeleton,
+  Spinner,
   Switch,
   useToast,
 } from "@/components/ui";
@@ -36,6 +37,23 @@ interface Provider {
   enabled: boolean;
   ready: boolean;
 }
+
+/** Shape of a sample subtitle release returned by the probe search. */
+interface TestSample {
+  release: string;
+  hearingImpaired: boolean;
+}
+
+/** Response from POST /subtitles/providers/<id>/test (HTTP 200). */
+type TestResponse =
+  | { ok: true; language: string; count: number; tookMs: number; sample?: TestSample[] }
+  | { ok: false; count: 0; error: string };
+
+/** Per-provider test UI state, keyed by provider id. */
+type TestState =
+  | { status: "loading" }
+  | { status: "ok"; count: number; tookMs: number; sample: TestSample[] }
+  | { status: "error"; message: string };
 
 interface FormState {
   subtitleLanguages: string;
@@ -113,6 +131,7 @@ export default function SubtitlesSettingsPage() {
   const { data: providers, mutate: mutateProviders } = useApi<Provider[]>("/subtitles/providers");
   const [form, setForm] = useState<FormState | null>(null);
   const [saving, setSaving] = useState(false);
+  const [tests, setTests] = useState<Record<string, TestState>>({});
   const toast = useToast();
 
   useEffect(() => {
@@ -156,6 +175,43 @@ export default function SubtitlesSettingsPage() {
       [order[i], order[j]] = [order[j], order[i]];
       return { ...f, order };
     });
+  }
+
+  /** Run a live probe search against one provider and record its result. */
+  async function test(id: string) {
+    // Use the first Wanted language code, if any, else let the server default.
+    const language = (form?.subtitleLanguages ?? "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean)[0];
+    setTests((t) => ({ ...t, [id]: { status: "loading" } }));
+    try {
+      const res = await apiFetch<TestResponse>(`/subtitles/providers/${id}/test`, {
+        method: "POST",
+        body: JSON.stringify(language ? { language } : {}),
+      });
+      if (res.ok) {
+        setTests((t) => ({
+          ...t,
+          [id]: {
+            status: "ok",
+            count: res.count,
+            tookMs: res.tookMs,
+            sample: res.sample ?? [],
+          },
+        }));
+      } else {
+        setTests((t) => ({
+          ...t,
+          [id]: { status: "error", message: res.error || "Search failed" },
+        }));
+      }
+    } catch (err) {
+      setTests((t) => ({
+        ...t,
+        [id]: { status: "error", message: err instanceof Error ? err.message : "Test failed" },
+      }));
+    }
   }
 
   async function save() {
@@ -266,6 +322,12 @@ export default function SubtitlesSettingsPage() {
               const isEnabled = form.enabled[id];
               const priority = enabledOrder.indexOf(id);
               const setup = SETUP[id];
+              const testState = tests[id];
+              const testTitle = p.ready
+                ? "Run a live probe search against this provider"
+                : p.needsConfig
+                  ? "Add the required config above and Save first, then test"
+                  : "Provider is not ready";
 
               const status = p.needsConfig ? (
                 p.ready ? (
@@ -333,6 +395,50 @@ export default function SubtitlesSettingsPage() {
 
                   <CardBody className="space-y-3">
                     <p className="text-sm text-zinc-400">{p.description}</p>
+
+                    {/* Per-provider live test: probe search + inline result. */}
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={!p.ready || testState?.status === "loading"}
+                          loading={testState?.status === "loading"}
+                          title={testTitle}
+                          onClick={() => test(id)}
+                        >
+                          Test
+                        </Button>
+
+                        {testState?.status === "loading" && (
+                          <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400">
+                            <Spinner className="size-3.5" /> Testing…
+                          </span>
+                        )}
+                        {testState?.status === "ok" && testState.count > 0 && (
+                          <span className="text-xs font-medium text-emerald-400">
+                            ✓ {testState.count} result{testState.count === 1 ? "" : "s"} (
+                            {testState.tookMs} ms)
+                          </span>
+                        )}
+                        {testState?.status === "ok" && testState.count === 0 && (
+                          <span className="text-xs font-medium text-amber-400">
+                            No results — the provider returned nothing
+                          </span>
+                        )}
+                        {testState?.status === "error" && (
+                          <span className="text-xs font-medium text-red-400">
+                            ✕ {testState.message}
+                          </span>
+                        )}
+                      </div>
+
+                      {testState?.status === "ok" && testState.sample.length > 0 && (
+                        <p className="truncate text-xs text-zinc-500">
+                          e.g. {testState.sample.map((s) => s.release).join(", ")}
+                        </p>
+                      )}
+                    </div>
 
                     {p.needsConfig && id === "opensubtitles" && (
                       <div className="space-y-3 rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
