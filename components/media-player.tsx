@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Callout, Spinner } from "@/components/ui";
 import { cn } from "@/lib/cn";
@@ -333,6 +334,12 @@ export function VideoPlayerModal({
   const [selectedFileId, setSelectedFileId] = useState<number | null>(null);
   const [qualityOpen, setQualityOpen] = useState(false);
 
+  // The overlay is portaled to <body>. Without this, the player is a React child
+  // of whatever card opened it, and clicks bubble (through the React tree) to that
+  // card's onClick/Link — which made a click on the video "exit to home".
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   const barVisible = controlsVisible || ccOpen || qualityOpen;
 
   // Opens windowed (full-page overlay, browser chrome still visible). Native
@@ -426,7 +433,7 @@ export function VideoPlayerModal({
   const selectedVersion = versions.find((v) => v.fileId === selectedFileId) ?? null;
   const qualityChip = selectedVersion?.resolution ?? qualityTagFromHeight(mediaInfo?.video?.height);
 
-  return (
+  const overlay = (
     <div
       ref={containerRef}
       className={cn(
@@ -681,6 +688,8 @@ export function VideoPlayerModal({
       </div>
     </div>
   );
+
+  return mounted ? createPortal(overlay, document.body) : null;
 }
 
 function SubtitleMenuItem({

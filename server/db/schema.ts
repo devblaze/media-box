@@ -404,6 +404,13 @@ export const scheduledTasks = sqliteTable(
     id: integer("id").primaryKey({ autoIncrement: true }),
     name: text("name").notNull(),
     intervalMinutes: integer("interval_minutes").notNull(),
+    // How to schedule: fixed interval, or a daily / weekly time of day.
+    scheduleKind: text("schedule_kind", { enum: ["interval", "daily", "weekly"] })
+      .notNull()
+      .default("interval"),
+    scheduleHour: integer("schedule_hour"), // 0-23 (daily/weekly)
+    scheduleMinute: integer("schedule_minute"), // 0-59 (daily/weekly)
+    scheduleDay: integer("schedule_day"), // 0-6, Sun=0 (weekly)
     enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
     lastRunAt: integer("last_run_at", { mode: "timestamp" }),
     lastDurationMs: integer("last_duration_ms"),
@@ -430,6 +437,8 @@ export const commands = sqliteTable(
     startedAt: integer("started_at", { mode: "timestamp" }),
     endedAt: integer("ended_at", { mode: "timestamp" }),
     error: text("error"),
+    // The handler's return string (per-run log line), for the task run history.
+    result: text("result"),
   },
   (t) => [index("commands_status_idx").on(t.status, t.priority)]
 );

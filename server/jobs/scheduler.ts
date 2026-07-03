@@ -104,7 +104,7 @@ async function runCommand(cmd: { id: number; name: string; payload: unknown }) {
     if (!def) throw new Error(`No handler registered for command '${cmd.name}'`);
     const result = await def.handler(cmd.payload);
     db.update(schema.commands)
-      .set({ status: "completed", endedAt: new Date() })
+      .set({ status: "completed", endedAt: new Date(), result: result ?? "ok" })
       .where(eq(schema.commands.id, cmd.id))
       .run();
     db.update(schema.scheduledTasks)
@@ -131,6 +131,32 @@ async function runCommand(cmd: { id: number; name: string; payload: unknown }) {
   }
 }
 
+export interface Schedulable {
+  scheduleKind: "interval" | "daily" | "weekly";
+  intervalMinutes: number;
+  scheduleHour: number | null;
+  scheduleMinute: number | null;
+  scheduleDay: number | null;
+}
+
+/** Next fire time for a task given its schedule (interval / daily / weekly), in server local time. */
+export function computeNextRun(task: Schedulable, from: Date): Date {
+  if (task.scheduleKind === "daily" || task.scheduleKind === "weekly") {
+    const next = new Date(from);
+    next.setHours(task.scheduleHour ?? 3, task.scheduleMinute ?? 0, 0, 0);
+    if (task.scheduleKind === "weekly") {
+      const targetDay = task.scheduleDay ?? 1; // Monday default
+      let addDays = (targetDay - next.getDay() + 7) % 7;
+      if (addDays === 0 && next <= from) addDays = 7;
+      next.setDate(next.getDate() + addDays);
+    } else if (next <= from) {
+      next.setDate(next.getDate() + 1);
+    }
+    return next;
+  }
+  return new Date(from.getTime() + Math.max(1, task.intervalMinutes) * 60_000);
+}
+
 function enqueueDueTasks() {
   const db = getDb();
   const now = new Date();
@@ -142,7 +168,7 @@ function enqueueDueTasks() {
   for (const task of due) {
     enqueueCommand(task.name, null, "scheduled");
     db.update(schema.scheduledTasks)
-      .set({ nextRunAt: new Date(now.getTime() + task.intervalMinutes * 60_000) })
+      .set({ nextRunAt: computeNextRun(task, now) })
       .where(eq(schema.scheduledTasks.id, task.id))
       .run();
   }
