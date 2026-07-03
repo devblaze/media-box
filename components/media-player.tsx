@@ -110,6 +110,35 @@ export function MediaInfoBadges({
 
 export type PlaybackTarget = { type: "movie" | "episode"; id: number };
 
+/** Two-digit zero-padded number, e.g. 3 → "03". */
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/**
+ * The previous / next PLAYABLE episode relative to the one now playing, as served
+ * by `GET /api/v1/episodes/{id}/neighbors`. `null` when there is no such neighbor.
+ */
+type Neighbor = {
+  id: number;
+  seasonNumber: number;
+  episodeNumber: number;
+  title: string | null;
+  seriesTitle: string;
+};
+
+/** Human label for a neighbor, e.g. "Show · S01E02 · The Title". */
+function neighborLabel(n: Neighbor): string {
+  return `${n.seriesTitle} · S${pad2(n.seasonNumber)}E${pad2(n.episodeNumber)}${
+    n.title ? ` · ${n.title}` : ""
+  }`;
+}
+
+/** How early (seconds before the end) the auto-advance "Up next" card appears. */
+const UP_NEXT_LEAD_SECONDS = 25;
+/** Seconds the "Up next" auto-advance countdown starts from. */
+const UP_NEXT_COUNTDOWN = 10;
+
 const DIRECT_CONTAINERS = new Set(["mp4", "m4v", "mov"]);
 const DIRECT_VIDEO = new Set(["h264", "avc", "avc1"]);
 const DIRECT_AUDIO = new Set(["aac"]);
@@ -400,6 +429,24 @@ export function VideoPlayerModal({
   const [mode, setMode] = useState<"direct" | "transcode">(() =>
     canDirectPlay(mediaInfo) ? "direct" : "transcode"
   );
+
+  // The title actually playing. Starts as the opened `target` but, for episodes,
+  // can move to an adjacent episode via prev/next or the auto-advance "Up next"
+  // card. Everything that streams or persists progress reads `current`, not the
+  // `target` prop, so navigating loads the neighbour without remounting the modal.
+  const [current, setCurrent] = useState<PlaybackTarget>(target);
+  const [currentTitle, setCurrentTitle] = useState<React.ReactNode>(title);
+
+  // Adjacent playable episodes (episode targets only) and the auto-advance card
+  // state. `upNextCancelled` suppresses auto-advance for the current episode only.
+  const [neighbors, setNeighbors] = useState<{ prev: Neighbor | null; next: Neighbor | null }>({
+    prev: null,
+    next: null,
+  });
+  const [upNextVisible, setUpNextVisible] = useState(false);
+  const [upNextCancelled, setUpNextCancelled] = useState(false);
+  const [countdown, setCountdown] = useState(UP_NEXT_COUNTDOWN);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<number | null>(null);
 
@@ -434,11 +481,12 @@ export function VideoPlayerModal({
   // Opens windowed (full-page overlay, browser chrome still visible). Native
   // fullscreen is opt-in via the maximize button / `F` — no auto-request here.
 
-  // Fetch available subtitle tracks once on open (silent on failure).
+  // Fetch available subtitle tracks for the current title (silent on failure).
+  // Refetches whenever `current` changes (e.g. navigating to a neighbour episode).
   useEffect(() => {
-    const key = target.type === "movie" ? "movieId" : "episodeId";
+    const key = current.type === "movie" ? "movieId" : "episodeId";
     let active = true;
-    void apiFetch<{ tracks: SubtitleTrack[] }>(`/subtitles?${key}=${target.id}`)
+    void apiFetch<{ tracks: SubtitleTrack[] }>(`/subtitles?${key}=${current.id}`)
       .then((res) => {
         if (active) setTracks(res.tracks ?? []);
       })
@@ -446,14 +494,15 @@ export function VideoPlayerModal({
     return () => {
       active = false;
     };
-  }, [target.type, target.id]);
+  }, [current.type, current.id]);
 
-  // Fetch the available file versions once on open. Silent on failure — we then
-  // treat the title as a single default version (no picker, fileId stays null).
+  // Fetch the available file versions for the current title. Silent on failure —
+  // we then treat it as a single default version (no picker, fileId stays null).
+  // Refetches whenever `current` changes (e.g. navigating to a neighbour episode).
   useEffect(() => {
-    const type = target.type === "movie" ? "movie" : "episode";
+    const type = current.type === "movie" ? "movie" : "episode";
     let active = true;
-    void apiFetch<{ versions: MediaVersion[] }>(`/versions?type=${type}&id=${target.id}`)
+    void apiFetch<{ versions: MediaVersion[] }>(`/versions?type=${type}&id=${current.id}`)
       .then((res) => {
         if (!active) return;
         const list = res.versions ?? [];
@@ -467,7 +516,87 @@ export function VideoPlayerModal({
     return () => {
       active = false;
     };
-  }, [target.type, target.id]);
+  }, [current.type, current.id]);
+
+  // Fetch the previous/next playable episode for the current episode. Movies have
+  // no neighbours (and `current.type` never changes for a movie target, so the
+  // default {null,null} stands). Refetches whenever `current.id` changes.
+  useEffect(() => {
+    if (current.type !== "episode") return;
+    let active = true;
+    void apiFetch<{ prev: Neighbor | null; next: Neighbor | null }>(
+      `/episodes/${current.id}/neighbors`
+    )
+      .then((res) => {
+        if (active) setNeighbors({ prev: res.prev ?? null, next: res.next ?? null });
+      })
+      .catch(() => {
+        if (active) setNeighbors({ prev: null, next: null });
+      });
+    return () => {
+      active = false;
+    };
+  }, [current.type, current.id]);
+
+  // Navigate to an adjacent episode: point `current` at it and reset every
+  // per-title bit of state so it loads fresh (mode back to a direct-play attempt,
+  // default version, no subtitle selection, no lingering up-next card). The
+  // versions/subtitles/neighbours effects above refetch off the new `current`.
+  const goTo = useCallback((n: Neighbor) => {
+    setCurrent({ type: "episode", id: n.id });
+    setCurrentTitle(neighborLabel(n));
+    setMode("direct");
+    setSelectedFileId(null);
+    setVersions([]);
+    setSelectedSub(-1);
+    setSubtitleOffset(0);
+    setTracks([]);
+    setNeighbors({ prev: null, next: null });
+    setUpNextVisible(false);
+    setUpNextCancelled(false);
+    setCountdown(UP_NEXT_COUNTDOWN);
+  }, []);
+
+  // Video progress reported up from the active child player. When we're within the
+  // last stretch of an episode that has a next neighbour (and the viewer hasn't
+  // dismissed it), reveal the auto-advance "Up next" card.
+  const handleTime = useCallback(
+    (currentTime: number, duration: number) => {
+      if (current.type !== "episode" || !neighbors.next || upNextCancelled) return;
+      if (duration > 0 && currentTime >= duration - UP_NEXT_LEAD_SECONDS) {
+        setUpNextVisible(true);
+      }
+    },
+    [current.type, neighbors.next, upNextCancelled]
+  );
+
+  // The video finished. If a next episode exists and auto-advance wasn't cancelled,
+  // jump straight to it; otherwise leave the default end-of-video behaviour.
+  const handleEnded = useCallback(() => {
+    if (current.type === "episode" && neighbors.next && !upNextCancelled) {
+      goTo(neighbors.next);
+    }
+  }, [current.type, neighbors.next, upNextCancelled, goTo]);
+
+  // While the "Up next" card is showing, tick a once-per-second wall-clock
+  // countdown (it enters at UP_NEXT_COUNTDOWN — the state default, reset on every
+  // navigation) and auto-advance to the next episode when it reaches zero. The
+  // interval is cleared on hide / unmount / navigation (all flip `upNextVisible`).
+  useEffect(() => {
+    const next = neighbors.next;
+    if (!upNextVisible || !next) return;
+    let remaining = UP_NEXT_COUNTDOWN;
+    const timer = window.setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        window.clearInterval(timer);
+        goTo(next);
+      } else {
+        setCountdown(remaining);
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [upNextVisible, neighbors.next, goTo]);
 
   // Keep the max/min icon in sync with the actual fullscreen state.
   useEffect(() => {
@@ -572,24 +701,28 @@ export function VideoPlayerModal({
           old position then resumes it on the newly-loaded stream). */}
       {mode === "direct" ? (
         <DirectPlayer
-          key={selectedFileId ?? "default"}
-          target={target}
+          key={`${current.type}-${current.id}-${selectedFileId ?? "default"}`}
+          target={current}
           fileId={selectedFileId}
           tracks={tracks}
           selectedSub={selectedSub}
           subtitleStyle={subtitleStyle}
           subtitleOffset={subtitleOffset}
           onFallback={() => setMode("transcode")}
+          onTime={handleTime}
+          onEnded={handleEnded}
         />
       ) : (
         <TranscodePlayer
-          key={selectedFileId ?? "default"}
-          target={target}
+          key={`${current.type}-${current.id}-${selectedFileId ?? "default"}`}
+          target={current}
           fileId={selectedFileId}
           tracks={tracks}
           selectedSub={selectedSub}
           subtitleStyle={subtitleStyle}
           subtitleOffset={subtitleOffset}
+          onTime={handleTime}
+          onEnded={handleEnded}
         />
       )}
 
@@ -598,6 +731,37 @@ export function VideoPlayerModal({
         <div className="pointer-events-none absolute inset-x-0 top-1/4 z-20 flex justify-center">
           <div className="rounded-lg bg-black/70 px-4 py-2 text-sm font-medium text-white shadow-lg backdrop-blur">
             Subtitle delay {formatOffset(subtitleOffset)}
+          </div>
+        </div>
+      )}
+
+      {/* Auto-advance "Up next" card — bottom-right, above the control cluster.
+          Shows in the final stretch (or at end) of an episode that has a next
+          neighbour, unless the viewer cancelled it. Stays visible even when the
+          controls have auto-hidden. */}
+      {current.type === "episode" && upNextVisible && neighbors.next && (
+        <div className="pointer-events-auto absolute right-3 bottom-28 z-20 w-72 max-w-[calc(100%-1.5rem)] rounded-lg border border-white/10 bg-zinc-900/95 p-4 shadow-xl backdrop-blur sm:right-4">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-zinc-400">Up next</p>
+          <p className="mt-1 line-clamp-2 text-sm font-semibold text-white">
+            {neighborLabel(neighbors.next)}
+          </p>
+          <p className="mt-2 text-xs text-zinc-400" aria-live="polite">
+            Playing in {Math.max(0, countdown)}s…
+          </p>
+          <div className="mt-3 flex items-center gap-2">
+            <Button size="sm" onClick={() => neighbors.next && goTo(neighbors.next)}>
+              Play now
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setUpNextVisible(false);
+                setUpNextCancelled(true);
+              }}
+            >
+              Cancel
+            </Button>
           </div>
         </div>
       )}
@@ -631,7 +795,7 @@ export function VideoPlayerModal({
         </button>
 
         <div className="min-w-0 flex-1 truncate text-base font-semibold text-white sm:text-lg">
-          {title}
+          {currentTitle}
         </div>
       </div>
 
@@ -653,6 +817,60 @@ export function VideoPlayerModal({
             barVisible ? "pointer-events-auto" : "pointer-events-none"
           )}
         >
+          {/* Previous / Next episode (episodes only) — disabled when no neighbour. */}
+          {current.type === "episode" && (
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={!neighbors.prev}
+                onClick={() => {
+                  if (neighbors.prev) goTo(neighbors.prev);
+                  showControls();
+                }}
+                aria-label="Previous episode"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  className="size-5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M18 6L9 12l9 6V6z" />
+                  <line x1="6" y1="6" x2="6" y2="18" />
+                </svg>
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={!neighbors.next}
+                onClick={() => {
+                  if (neighbors.next) goTo(neighbors.next);
+                  showControls();
+                }}
+                aria-label="Next episode"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  className="size-5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M6 6l9 6-9 6V6z" />
+                  <line x1="18" y1="6" x2="18" y2="18" />
+                </svg>
+              </Button>
+            </div>
+          )}
+
           {/* Direct / Transcode toggle */}
           <div className="flex items-center overflow-hidden rounded-md border border-white/15">
             <button
@@ -921,6 +1139,8 @@ function DirectPlayer({
   subtitleStyle,
   subtitleOffset,
   onFallback,
+  onTime,
+  onEnded,
 }: {
   target: PlaybackTarget;
   fileId: number | null;
@@ -929,6 +1149,8 @@ function DirectPlayer({
   subtitleStyle: SubtitleStyle;
   subtitleOffset: number;
   onFallback: () => void;
+  onTime?: (currentTime: number, duration: number) => void;
+  onEnded?: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const subtitleSinkRef = useRef<HTMLDivElement>(null);
@@ -950,6 +1172,8 @@ function DirectPlayer({
         className="h-full w-full bg-black object-contain"
         src={src}
         onError={() => setErrored(true)}
+        onTimeUpdate={(e) => onTime?.(e.currentTarget.currentTime, e.currentTarget.duration)}
+        onEnded={() => onEnded?.()}
       >
         <SubtitleTracks tracks={tracks} />
       </video>
@@ -986,6 +1210,8 @@ function TranscodePlayer({
   selectedSub,
   subtitleStyle,
   subtitleOffset,
+  onTime,
+  onEnded,
 }: {
   target: PlaybackTarget;
   fileId: number | null;
@@ -993,6 +1219,8 @@ function TranscodePlayer({
   selectedSub: number;
   subtitleStyle: SubtitleStyle;
   subtitleOffset: number;
+  onTime?: (currentTime: number, duration: number) => void;
+  onEnded?: () => void;
 }) {
   const { type, id } = target;
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1077,7 +1305,14 @@ function TranscodePlayer({
   return (
     <>
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-      <video ref={videoRef} controls autoPlay className="h-full w-full bg-black object-contain">
+      <video
+        ref={videoRef}
+        controls
+        autoPlay
+        className="h-full w-full bg-black object-contain"
+        onTimeUpdate={(e) => onTime?.(e.currentTarget.currentTime, e.currentTarget.duration)}
+        onEnded={() => onEnded?.()}
+      >
         <SubtitleTracks tracks={tracks} />
       </video>
       <SubtitleOverlay sinkRef={subtitleSinkRef} style={subtitleStyle} />
