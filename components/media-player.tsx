@@ -261,18 +261,33 @@ function stripCueTags(text: string): string {
   return text.replace(/<[^>]+>/g, "");
 }
 
+/** Subtitle-sync nudge, in seconds, per button press / keypress. */
+const SUBTITLE_OFFSET_STEP = 0.1;
+/** Clamp the sync offset so it can never run away. */
+const SUBTITLE_OFFSET_MAX = 60;
+
+/** e.g. 0 → "0.0s", 0.5 → "+0.5s", -0.3 → "-0.3s". */
+function formatOffset(sec: number): string {
+  return `${sec > 0 ? "+" : ""}${sec.toFixed(1)}s`;
+}
+
 /**
  * Drives the `<video>`'s TextTrack modes from the selected subtitle index
  * (`-1` = off) and pipes the active cue text into a styled overlay element
  * (`sinkRef`). The selected track is set to `hidden` — the browser still parses
- * its cues (so `activeCues` is populated) but does NOT paint them, leaving our
- * own overlay as the sole, fully user-styleable renderer. Re-applies on
- * `loadedmetadata` because some browsers reset track modes on media load.
+ * its cues but does NOT paint them, leaving our own overlay as the sole, fully
+ * user-styleable renderer.
+ *
+ * Instead of the browser's fixed cue timing we pick the active cue ourselves at
+ * `currentTime - offsetSeconds`, so the viewer can nudge subtitle sync earlier
+ * (negative) or later (positive) live. A small rAF loop keeps the overlay in
+ * step and only writes to the DOM when the visible text actually changes.
  */
 function useStyledSubtitles(
   videoRef: React.RefObject<HTMLVideoElement | null>,
   tracks: SubtitleTrack[],
   selectedIndex: number,
+  offsetSeconds: number,
   sinkRef: React.RefObject<HTMLDivElement | null>
 ) {
   useEffect(() => {
@@ -291,36 +306,42 @@ function useStyledSubtitles(
       return selectedIndex >= 0 && selectedIndex < list.length ? list[selectedIndex] : null;
     };
 
-    // Push the currently-active cue text into the overlay imperatively (no React
-    // state) so a caption change never re-renders the whole player.
-    const render = () => {
-      const sink = sinkRef.current;
-      if (!sink) return;
-      const cues = currentTrack()?.activeCues;
-      if (!cues || cues.length === 0) {
-        sink.textContent = "";
-        sink.style.visibility = "hidden";
-        return;
-      }
+    // The cue text that should be showing at `t`, honouring the sync offset.
+    const textAt = (t: number, track: TextTrack | null): string => {
+      const cues = track?.cues;
+      if (!cues || cues.length === 0) return "";
       const parts: string[] = [];
       for (let i = 0; i < cues.length; i++) {
-        parts.push(stripCueTags((cues[i] as VTTCue).text));
+        const c = cues[i] as VTTCue;
+        if (t >= c.startTime && t < c.endTime) parts.push(stripCueTags(c.text));
       }
-      sink.textContent = parts.join("\n");
-      sink.style.visibility = "visible";
+      return parts.join("\n");
+    };
+
+    let raf = 0;
+    let lastText = "";
+    const tick = () => {
+      const sink = sinkRef.current;
+      if (sink) {
+        const text =
+          selectedIndex < 0 ? "" : textAt(video.currentTime - offsetSeconds, currentTrack());
+        if (text !== lastText) {
+          lastText = text;
+          sink.textContent = text;
+          sink.style.visibility = text ? "visible" : "hidden";
+        }
+      }
+      raf = requestAnimationFrame(tick);
     };
 
     setModes();
-    render();
-
-    const track = currentTrack();
-    track?.addEventListener("cuechange", render);
     video.addEventListener("loadedmetadata", setModes);
+    raf = requestAnimationFrame(tick);
     return () => {
-      track?.removeEventListener("cuechange", render);
+      cancelAnimationFrame(raf);
       video.removeEventListener("loadedmetadata", setModes);
     };
-  }, [videoRef, tracks, selectedIndex, sinkRef]);
+  }, [videoRef, tracks, selectedIndex, offsetSeconds, sinkRef]);
 }
 
 /** Subtitle `<track>` children shared by both players (modes set imperatively). */
@@ -389,6 +410,11 @@ export function VideoPlayerModal({
   const [selectedSub, setSelectedSub] = useState(-1); // -1 = off (default)
   // The viewer's saved caption appearance, read once when the player opens.
   const [subtitleStyle] = useState<SubtitleStyle>(() => loadSubtitleStyle());
+  // Subtitle sync offset in seconds (+ = later, − = earlier), nudged live with
+  // the [ / ] keys or the CC-menu buttons. A brief OSD flashes on each change.
+  const [subtitleOffset, setSubtitleOffset] = useState(0);
+  const [offsetOsd, setOffsetOsd] = useState(false);
+  const osdTimer = useRef<number | null>(null);
 
   // Available file versions (qualities) and the one currently playing. `null`
   // fileId means "server default/primary" (used until the list resolves, or when
@@ -475,7 +501,37 @@ export function VideoPlayerModal({
     showControls();
   }, [showControls]);
 
-  // F toggles fullscreen; Esc exits fullscreen first, otherwise closes.
+  // Flash the subtitle-offset OSD for ~1.2s so keyboard nudges give feedback.
+  const flashOffset = useCallback(() => {
+    setOffsetOsd(true);
+    if (osdTimer.current) window.clearTimeout(osdTimer.current);
+    osdTimer.current = window.setTimeout(() => setOffsetOsd(false), 1200);
+  }, []);
+
+  const nudgeOffset = useCallback(
+    (delta: number) => {
+      setSubtitleOffset((o) => {
+        const clamped = Math.min(SUBTITLE_OFFSET_MAX, Math.max(-SUBTITLE_OFFSET_MAX, o + delta));
+        return Math.round(clamped * 10) / 10; // keep to one decimal, no float drift
+      });
+      flashOffset();
+    },
+    [flashOffset]
+  );
+
+  const resetOffset = useCallback(() => {
+    setSubtitleOffset(0);
+    flashOffset();
+  }, [flashOffset]);
+
+  useEffect(() => {
+    return () => {
+      if (osdTimer.current) window.clearTimeout(osdTimer.current);
+    };
+  }, []);
+
+  // F toggles fullscreen; Esc exits fullscreen first, otherwise closes;
+  // [ / ] nudge subtitle sync earlier / later (only while a subtitle is on).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "f" || e.key === "F") {
@@ -484,11 +540,17 @@ export function VideoPlayerModal({
       } else if (e.key === "Escape") {
         if (document.fullscreenElement) exitFullscreen();
         else handleClose();
+      } else if (e.key === "[" && selectedSub >= 0) {
+        e.preventDefault();
+        nudgeOffset(-SUBTITLE_OFFSET_STEP);
+      } else if (e.key === "]" && selectedSub >= 0) {
+        e.preventDefault();
+        nudgeOffset(SUBTITLE_OFFSET_STEP);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleFullscreen, handleClose]);
+  }, [toggleFullscreen, handleClose, nudgeOffset, selectedSub]);
 
   // The currently-playing version (if the list resolved) and the label for the
   // always-on quality chip. Prefer the selected version's short tag; otherwise
@@ -516,6 +578,7 @@ export function VideoPlayerModal({
           tracks={tracks}
           selectedSub={selectedSub}
           subtitleStyle={subtitleStyle}
+          subtitleOffset={subtitleOffset}
           onFallback={() => setMode("transcode")}
         />
       ) : (
@@ -526,7 +589,17 @@ export function VideoPlayerModal({
           tracks={tracks}
           selectedSub={selectedSub}
           subtitleStyle={subtitleStyle}
+          subtitleOffset={subtitleOffset}
         />
+      )}
+
+      {/* Subtitle-sync OSD — flashes on each [ / ] nudge or button press. */}
+      {offsetOsd && (
+        <div className="pointer-events-none absolute inset-x-0 top-1/4 z-20 flex justify-center">
+          <div className="rounded-lg bg-black/70 px-4 py-2 text-sm font-medium text-white shadow-lg backdrop-blur">
+            Subtitle delay {formatOffset(subtitleOffset)}
+          </div>
+        </div>
       )}
 
       {/* Top-left: Back button + title. Auto-hides, reappears on mouse move. */}
@@ -721,6 +794,60 @@ export function VideoPlayerModal({
                     }}
                   />
                 ))}
+
+                {/* Subtitle-sync timing — nudge the delay earlier / later. */}
+                {selectedSub >= 0 && (
+                  <div className="mt-1 border-t border-white/10 px-3 pb-1 pt-2">
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+                        Timing
+                      </span>
+                      {subtitleOffset !== 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            resetOffset();
+                            showControls();
+                          }}
+                          className="text-[11px] text-zinc-400 hover:text-zinc-200"
+                        >
+                          Reset
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          nudgeOffset(-SUBTITLE_OFFSET_STEP);
+                          showControls();
+                        }}
+                        aria-label="Subtitles earlier"
+                        className="flex size-7 items-center justify-center rounded border border-white/15 text-base leading-none text-zinc-100 transition-colors hover:bg-white/10"
+                      >
+                        −
+                      </button>
+                      <span className="min-w-14 text-center text-xs font-medium tabular-nums text-zinc-100">
+                        {formatOffset(subtitleOffset)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          nudgeOffset(SUBTITLE_OFFSET_STEP);
+                          showControls();
+                        }}
+                        aria-label="Subtitles later"
+                        className="flex size-7 items-center justify-center rounded border border-white/15 text-base leading-none text-zinc-100 transition-colors hover:bg-white/10"
+                      >
+                        +
+                      </button>
+                    </div>
+                    <div className="mt-1.5 text-center text-[10px] text-zinc-500">
+                      Shortcut: <kbd className="text-zinc-400">[</kbd> earlier ·{" "}
+                      <kbd className="text-zinc-400">]</kbd> later
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -792,6 +919,7 @@ function DirectPlayer({
   tracks,
   selectedSub,
   subtitleStyle,
+  subtitleOffset,
   onFallback,
 }: {
   target: PlaybackTarget;
@@ -799,6 +927,7 @@ function DirectPlayer({
   tracks: SubtitleTrack[];
   selectedSub: number;
   subtitleStyle: SubtitleStyle;
+  subtitleOffset: number;
   onFallback: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -806,7 +935,7 @@ function DirectPlayer({
   const [errored, setErrored] = useState(false);
 
   useWatchProgress(videoRef, target);
-  useStyledSubtitles(videoRef, tracks, selectedSub, subtitleSinkRef);
+  useStyledSubtitles(videoRef, tracks, selectedSub, subtitleOffset, subtitleSinkRef);
 
   // A specific version streams from `?file=<id>`; the primary/default omits it.
   const src = `/api/v1/stream/${target.type}/${target.id}${fileId != null ? `?file=${fileId}` : ""}`;
@@ -856,12 +985,14 @@ function TranscodePlayer({
   tracks,
   selectedSub,
   subtitleStyle,
+  subtitleOffset,
 }: {
   target: PlaybackTarget;
   fileId: number | null;
   tracks: SubtitleTrack[];
   selectedSub: number;
   subtitleStyle: SubtitleStyle;
+  subtitleOffset: number;
 }) {
   const { type, id } = target;
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -870,7 +1001,7 @@ function TranscodePlayer({
   const [error, setError] = useState<string | null>(null);
 
   useWatchProgress(videoRef, target);
-  useStyledSubtitles(videoRef, tracks, selectedSub, subtitleSinkRef);
+  useStyledSubtitles(videoRef, tracks, selectedSub, subtitleOffset, subtitleSinkRef);
 
   useEffect(() => {
     let cancelled = false;
