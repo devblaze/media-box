@@ -23,7 +23,11 @@ export const appSettingsSchema = z.object({
   maxBacklogGrabsPerRun: z.coerce.number().int().min(0).max(50).default(3),
   // Subtitles (Bazarr-style). Wanted languages = comma-separated ISO 639-1 codes ("en,es").
   subtitleLanguages: z.string().default(""),
+  // Legacy single-provider selector (kept for back-compat; superseded by subtitleProviders).
   subtitleProvider: z.enum(["none", "opensubtitles"]).default("none"),
+  // Enabled providers as a comma-separated id list in priority order, e.g.
+  // "opensubtitles,opensubtitlesorg,podnapisi,subs4free". Empty = subtitles off.
+  subtitleProviders: z.string().default(""),
   subtitleHearingImpaired: z.coerce.boolean().default(false),
   openSubtitlesApiKey: z.string().default(""),
   openSubtitlesUsername: z.string().default(""),

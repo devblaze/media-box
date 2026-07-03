@@ -23,7 +23,7 @@ export class OpenSubtitlesError extends Error {}
 
 function creds() {
   const s = getSettings();
-  if (s.subtitleProvider !== "opensubtitles" || !s.openSubtitlesApiKey) {
+  if (!s.openSubtitlesApiKey) {
     throw new OpenSubtitlesError("OpenSubtitles is not configured (Settings → Subtitles).");
   }
   return {

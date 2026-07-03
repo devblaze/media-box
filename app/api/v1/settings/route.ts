@@ -29,6 +29,7 @@ const patchSchema = z.object({
   maxBacklogGrabsPerRun: z.coerce.number().int().min(0).max(50).optional(),
   subtitleLanguages: z.string().optional(),
   subtitleProvider: z.enum(["none", "opensubtitles"]).optional(),
+  subtitleProviders: z.string().optional(),
   subtitleHearingImpaired: z.coerce.boolean().optional(),
   openSubtitlesApiKey: z.string().optional(),
   openSubtitlesUsername: z.string().optional(),

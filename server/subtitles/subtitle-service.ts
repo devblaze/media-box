@@ -9,7 +9,8 @@ import fs from "node:fs/promises";
 import { and, eq, isNotNull } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { getSettings } from "@/server/settings/settings-service";
-import { searchSubtitles, downloadSubtitle, type SearchQuery } from "./opensubtitles";
+import { enabledProviders } from "./providers/registry";
+import type { ProviderCandidate, ProviderSearchQuery } from "./providers/types";
 import { emitEvent } from "@/server/events/bus";
 
 export type SubtitleTarget =
@@ -24,10 +25,10 @@ export interface WantedSubtitle {
   language: string;
 }
 
-/** Configured wanted languages (ISO 639-1), empty when subtitles are off. */
+/** Configured wanted languages (ISO 639-1), empty when no provider is enabled. */
 export function wantedLanguages(): string[] {
   const s = getSettings();
-  if (s.subtitleProvider === "none") return [];
+  if (enabledProviders().length === 0) return [];
   return s.subtitleLanguages
     .split(",")
     .map((l) => l.trim().toLowerCase())
@@ -39,7 +40,7 @@ interface VideoRef {
   absVideo: string;
   /** Library root the sidecar path is stored relative to (movie.path / series.path). */
   root: string;
-  query: Omit<SearchQuery, "language">;
+  query: Omit<ProviderSearchQuery, "language" | "hearingImpaired">;
 }
 
 function movieVideo(movieId: number): VideoRef | null {
@@ -49,6 +50,8 @@ function movieVideo(movieId: number): VideoRef | null {
       moviePath: schema.movies.path,
       imdbId: schema.movies.imdbId,
       tmdbId: schema.movies.tmdbId,
+      title: schema.movies.title,
+      year: schema.movies.year,
       relativePath: schema.movieFiles.relativePath,
     })
     .from(schema.movies)
@@ -59,7 +62,7 @@ function movieVideo(movieId: number): VideoRef | null {
   return {
     absVideo: path.join(row.moviePath, row.relativePath),
     root: row.moviePath,
-    query: { imdbId: row.imdbId, tmdbId: row.tmdbId },
+    query: { imdbId: row.imdbId, tmdbId: row.tmdbId, title: row.title, year: row.year },
   };
 }
 
@@ -70,6 +73,8 @@ function episodeVideo(episodeId: number): VideoRef | null {
       seriesPath: schema.series.path,
       parentImdbId: schema.series.imdbId,
       parentTmdbId: schema.series.tmdbId,
+      seriesTitle: schema.series.title,
+      seriesYear: schema.series.year,
       seasonNumber: schema.episodes.seasonNumber,
       episodeNumber: schema.episodes.episodeNumber,
       relativePath: schema.episodeFiles.relativePath,
@@ -86,6 +91,8 @@ function episodeVideo(episodeId: number): VideoRef | null {
     query: {
       parentImdbId: row.parentImdbId,
       parentTmdbId: row.parentTmdbId,
+      title: row.seriesTitle,
+      year: row.seriesYear,
       season: row.seasonNumber,
       episode: row.episodeNumber,
     },
@@ -186,12 +193,32 @@ export async function downloadSubtitleFor(
   const ref = target.kind === "movie" ? movieVideo(target.id) : episodeVideo(target.id);
   if (!ref) return false;
 
+  const providers = enabledProviders();
+  if (providers.length === 0) return false;
   const hi = getSettings().subtitleHearingImpaired;
-  const candidates = await searchSubtitles({ ...ref.query, language, hearingImpaired: hi });
-  const best = candidates[0];
+  const q: ProviderSearchQuery = { ...ref.query, language, hearingImpaired: hi };
+
+  // Try providers in the configured priority order; first one with a hit wins.
+  let best: ProviderCandidate | null = null;
+  for (const provider of providers) {
+    try {
+      const cands = await provider.search(q);
+      if (cands.length > 0) {
+        best = cands[0];
+        break;
+      }
+    } catch {
+      /* provider failed — fall through to the next */
+    }
+  }
   if (!best) return false;
 
-  const content = await downloadSubtitle(best.fileId);
+  let content: string;
+  try {
+    content = await best.download();
+  } catch {
+    return false;
+  }
   const abs = sidecarPath(ref.absVideo, language);
   await fs.writeFile(abs, content, "utf8");
 
@@ -202,7 +229,7 @@ export async function downloadSubtitleFor(
       episodeId: target.kind === "episode" ? target.id : null,
       language,
       relativePath: path.relative(ref.root, abs),
-      provider: "opensubtitles",
+      provider: best.providerId,
       hearingImpaired: best.hearingImpaired,
       addedAt: new Date(),
     })
