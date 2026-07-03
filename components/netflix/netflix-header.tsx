@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/cn";
@@ -63,6 +63,15 @@ export function NetflixHeader() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Focus the field once it has finished expanding (autoFocus won't re-fire on a
+  // persistent input, and focusing mid-animation fights the width transition).
+  useEffect(() => {
+    if (!searchOpen) return;
+    const t = setTimeout(() => searchInputRef.current?.focus(), 180);
+    return () => clearTimeout(t);
+  }, [searchOpen]);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 20);
@@ -149,33 +158,55 @@ export function NetflixHeader() {
               Available only
             </button>
           )}
-          {search &&
-            (searchOpen ? (
-              <div className="flex items-center gap-2 border border-white/40 bg-black/70 px-2">
-                <SearchIcon className="text-zinc-400" />
-                <input
-                  autoFocus
-                  type="search"
-                  value={search.query}
-                  onChange={(e) => onSearch(e.target.value)}
-                  onBlur={() => {
-                    if (!search.query) setSearchOpen(false);
-                  }}
-                  placeholder="Titles, people, genres"
-                  aria-label="Search titles"
-                  className="h-9 w-40 bg-transparent text-sm text-white outline-none placeholder:text-zinc-500 sm:w-56"
-                />
-              </div>
-            ) : (
+          {search && (
+            // Persistent container so the field can smoothly expand/collapse: the
+            // icon stays anchored while the input's width + the border/background
+            // animate in and out (Netflix-style), instead of swapping abruptly.
+            <div
+              className={cn(
+                "flex items-center rounded-md transition-all duration-300 ease-out",
+                searchOpen
+                  ? "border border-white/40 bg-black/70 pr-2 shadow-lg"
+                  : "border border-transparent"
+              )}
+            >
               <button
                 type="button"
-                onClick={() => setSearchOpen(true)}
+                onClick={() =>
+                  setSearchOpen((o) => (o && !search.query ? false : true))
+                }
                 aria-label="Search"
-                className="inline-flex size-9 items-center justify-center rounded text-white hover:bg-white/10"
+                aria-expanded={searchOpen}
+                className="inline-flex size-9 shrink-0 items-center justify-center rounded-md text-white transition-colors hover:bg-white/10"
               >
-                <SearchIcon />
+                <SearchIcon className={cn("transition-colors", searchOpen && "text-zinc-400")} />
               </button>
-            ))}
+              <input
+                ref={searchInputRef}
+                type="search"
+                value={search.query}
+                onChange={(e) => onSearch(e.target.value)}
+                onBlur={() => {
+                  if (!search.query) setSearchOpen(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    onSearch("");
+                    setSearchOpen(false);
+                    searchInputRef.current?.blur();
+                  }
+                }}
+                placeholder="Titles, people, genres"
+                aria-label="Search titles"
+                aria-hidden={!searchOpen}
+                tabIndex={searchOpen ? 0 : -1}
+                className={cn(
+                  "h-9 bg-transparent text-sm text-white outline-none transition-all duration-300 ease-out placeholder:text-zinc-500",
+                  searchOpen ? "w-40 pl-1 opacity-100 sm:w-56" : "pointer-events-none w-0 opacity-0"
+                )}
+              />
+            </div>
+          )}
 
           {me?.role === "admin" && (
             <Link
