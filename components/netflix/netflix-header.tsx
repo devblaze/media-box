@@ -19,6 +19,7 @@ const NAV = [
   { label: "Series", href: "/discover/series" },
   { label: "Anime", href: "/discover/anime" },
   { label: "My List", href: "/requests" },
+  { label: "Calendar", href: "/calendar" },
 ] as const;
 
 /** Home highlights only on exactly /discover; others match their route + sub-paths. */

@@ -13,6 +13,7 @@ import { emitEvent } from "@/server/events/bus";
 import { markRequestsAvailable } from "@/server/requests/request-service";
 import { getSettings } from "@/server/settings/settings-service";
 import { getClient } from "@/server/download/client";
+import { recordDownloadFailure } from "@/server/download/failure-log";
 
 type DownloadRow = typeof schema.downloads.$inferSelect;
 
@@ -134,7 +135,7 @@ async function importEpisodes(
         .from(schema.episodeFiles)
         .where(eq(schema.episodeFiles.id, existingFileId))
         .get();
-      if (existing && !isUpgrade(profile, quality, existing.quality as QualityModel)) {
+      if (existing && !download.override && !isUpgrade(profile, quality, existing.quality as QualityModel)) {
         if (files.length === 1) throw new ImportWarning("Not an upgrade over the existing file");
         continue;
       }
@@ -249,7 +250,7 @@ async function importMovie(
   const quality =
     parsed.quality.qualityId !== 0 ? parsed.quality : (download.quality as QualityModel);
 
-  if (m.movieFileId) {
+  if (m.movieFileId && !download.override) {
     const existing = db
       .select()
       .from(schema.movieFiles)
@@ -300,7 +301,10 @@ async function importMovie(
     .get();
   db.update(schema.movies).set({ movieFileId: fileRow.id }).where(eq(schema.movies.id, m.id)).run();
 
-  if (oldFileId) {
+  // On a normal upgrade we replace: delete the old file. On a manual override we
+  // KEEP the old file as another quality version (movieFiles allows several rows
+  // per movie); the just-imported file becomes the primary movieFileId above.
+  if (oldFileId && !download.override) {
     const old = db.select().from(schema.movieFiles).where(eq(schema.movieFiles.id, oldFileId)).get();
     if (old) {
       await fs.rm(path.join(m.path, old.relativePath), { force: true });
@@ -387,13 +391,28 @@ export async function importDownload(downloadId: number): Promise<string> {
     return `imported ${count} file(s) from '${download.title}'`;
   } catch (err) {
     const warning = err instanceof ImportWarning;
+    const reason = err instanceof Error ? err.message : String(err);
     db.update(schema.downloads)
-      .set({
-        status: warning ? "warning" : "failed",
-        statusMessage: err instanceof Error ? err.message : String(err),
-      })
+      .set({ status: warning ? "warning" : "failed", statusMessage: reason })
       .where(eq(schema.downloads.id, downloadId))
       .run();
+    // Record hard import failures (not the expected "not an upgrade" warnings) so
+    // the admin failures calendar can surface + let the admin re-search them.
+    if (!warning) {
+      recordDownloadFailure({
+        mediaType: download.mediaType,
+        seriesId: download.seriesId,
+        movieId: download.movieId,
+        episodeIds: download.episodeIds as number[] | null,
+        sourceTitle: download.title,
+        quality: download.quality as QualityModel | null,
+        indexerId: download.indexerId,
+        downloadClientId: download.downloadClientId,
+        downloadExternalId: download.externalId,
+        reason,
+        stage: "import",
+      });
+    }
     emitEvent({ type: "queue.updated" });
     throw err;
   }

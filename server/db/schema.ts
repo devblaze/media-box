@@ -354,6 +354,9 @@ export const downloads = sqliteTable(
     size: integer("size"),
     sizeLeft: integer("size_left"),
     outputPath: text("output_path"),
+    // Manual "grab anyway" override — skips the not-an-upgrade import guard so a
+    // deliberately different (even lower) quality can replace/version the file.
+    override: integer("override", { mode: "boolean" }).notNull().default(false),
     grabbedAt: integer("grabbed_at", { mode: "timestamp" }).notNull(),
     completedAt: integer("completed_at", { mode: "timestamp" }),
   },

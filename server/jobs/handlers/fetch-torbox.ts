@@ -10,6 +10,8 @@ import { torboxSettingsSchema } from "@/server/download/client";
 import { freeSpace } from "@/server/library/filesystem";
 import { enqueueCommand } from "@/server/jobs/scheduler";
 import { sanitizePathComponent } from "@/server/library/naming-utils";
+import { recordDownloadFailure } from "@/server/download/failure-log";
+import type { QualityModel } from "@/server/parser/quality";
 import { emitEvent } from "@/server/events/bus";
 
 const VIDEO_RE = /\.(mkv|mp4|avi|m4v|ts|wmv)$/i;
@@ -66,13 +68,24 @@ export async function fetchTorboxHandler(payload: unknown): Promise<string> {
     enqueueCommand("ImportDownload", { downloadId }, "system", 5);
     return `fetched ${files.length} file(s) to ${destDir}`;
   } catch (err) {
+    const reason = `TorBox fetch failed: ${err instanceof Error ? err.message : String(err)}`;
     db.update(schema.downloads)
-      .set({
-        status: "failed",
-        statusMessage: `TorBox fetch failed: ${err instanceof Error ? err.message : String(err)}`,
-      })
+      .set({ status: "failed", statusMessage: reason })
       .where(eq(schema.downloads.id, downloadId))
       .run();
+    recordDownloadFailure({
+      mediaType: download.mediaType,
+      seriesId: download.seriesId,
+      movieId: download.movieId,
+      episodeIds: download.episodeIds as number[] | null,
+      sourceTitle: download.title,
+      quality: download.quality as QualityModel | null,
+      indexerId: download.indexerId,
+      downloadClientId: download.downloadClientId,
+      downloadExternalId: download.externalId,
+      reason,
+      stage: "fetch",
+    });
     emitEvent({ type: "queue.updated" });
     throw err;
   }

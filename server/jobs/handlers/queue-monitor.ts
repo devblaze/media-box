@@ -3,6 +3,25 @@ import { getDb, schema } from "@/server/db";
 import { getClient } from "@/server/download/client";
 import { enqueueCommand } from "@/server/jobs/scheduler";
 import { emitEvent } from "@/server/events/bus";
+import { recordDownloadFailure } from "@/server/download/failure-log";
+import type { QualityModel } from "@/server/parser/quality";
+
+/** Persist a durable failure row for a download the monitor just marked failed. */
+function logQueueFailure(download: typeof schema.downloads.$inferSelect, reason: string): void {
+  recordDownloadFailure({
+    mediaType: download.mediaType,
+    seriesId: download.seriesId,
+    movieId: download.movieId,
+    episodeIds: download.episodeIds as number[] | null,
+    sourceTitle: download.title,
+    quality: download.quality as QualityModel | null,
+    indexerId: download.indexerId,
+    downloadClientId: download.downloadClientId,
+    downloadExternalId: download.externalId,
+    reason,
+    stage: "download",
+  });
+}
 
 const ACTIVE_STATUSES = ["queued", "downloading", "remoteCompleted", "fetching", "importPending"] as const;
 
@@ -50,6 +69,7 @@ export async function queueMonitorHandler(): Promise<string> {
             .set({ status: "failed", statusMessage: "Download disappeared from the client" })
             .where(eq(schema.downloads.id, download.id))
             .run();
+          logQueueFailure(download, "Download disappeared from the client");
           updates++;
         }
         continue;
@@ -69,6 +89,7 @@ export async function queueMonitorHandler(): Promise<string> {
         case "error":
           patch.status = "failed";
           patch.statusMessage = item.message ?? "Client reported an error";
+          logQueueFailure(download, patch.statusMessage);
           break;
         case "localComplete":
           if (download.status !== "importPending") {

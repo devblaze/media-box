@@ -19,6 +19,7 @@ const NAV = [
   { label: "Organizer", href: "/settings/organizer" },
   { label: "Migrate", href: "/settings/migrate" },
   { label: "General", href: "/settings/general" },
+  { label: "Failures", href: "/settings/failures" },
   { label: "Logs", href: "/settings/logs" },
   { label: "Tasks", href: "/system/tasks" },
 ] as const;

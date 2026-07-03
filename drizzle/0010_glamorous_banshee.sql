@@ -1,0 +1,1 @@
+ALTER TABLE `downloads` ADD `override` integer DEFAULT false NOT NULL;

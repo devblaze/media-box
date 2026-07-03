@@ -3,12 +3,15 @@ import { getDb, schema } from "@/server/db";
 import { getClient } from "./client";
 import type { DecoratedRelease } from "@/server/indexers/release-search";
 import { emitEvent } from "@/server/events/bus";
+import { recordDownloadFailure } from "./failure-log";
 
 export interface GrabTarget {
   mediaType: "series" | "movie";
   seriesId?: number;
   movieId?: number;
   episodeIds?: number[];
+  /** Manual override — import even if it isn't an upgrade over the current file. */
+  override?: boolean;
 }
 
 export async function grab(release: DecoratedRelease, target: GrabTarget) {
@@ -51,6 +54,7 @@ export async function grab(release: DecoratedRelease, target: GrabTarget) {
           status: "queued",
           size: release.size,
           sizeLeft: release.size,
+          override: target.override ?? false,
           grabbedAt: new Date(),
         })
         .onConflictDoNothing()
@@ -82,7 +86,17 @@ export async function grab(release: DecoratedRelease, target: GrabTarget) {
       console.error(`[grab] client '${row.name}' failed:`, err);
     }
   }
-  throw new Error(
-    `All download clients failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`
-  );
+  const reason = `All download clients failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`;
+  recordDownloadFailure({
+    mediaType: target.mediaType,
+    seriesId: target.seriesId ?? null,
+    movieId: target.movieId ?? null,
+    episodeIds: target.episodeIds ?? null,
+    sourceTitle: release.title,
+    quality: release.parsed.quality,
+    indexerId: release.indexerId,
+    reason,
+    stage: "grab",
+  });
+  throw new Error(reason);
 }

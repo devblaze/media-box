@@ -27,6 +27,12 @@ function scopeQuery(scope: SearchScope): string {
   return `seriesId=${scope.seriesId}&season=${scope.season}`;
 }
 
+// True when a release was rejected because it's not an upgrade / the quality
+// cutoff is already met — the cases that only actually import with Override on.
+function needsOverride(release: Release): boolean {
+  return release.rejections.some((r) => /upgrade|cutoff/i.test(r));
+}
+
 export function ReleaseSearchDrawer({
   scope,
   title,
@@ -42,6 +48,7 @@ export function ReleaseSearchDrawer({
   const [error, setError] = useState<string | null>(null);
   const [grabbing, setGrabbing] = useState<string | null>(null);
   const [grabbed, setGrabbed] = useState<Set<string>>(new Set());
+  const [override, setOverride] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,7 +67,7 @@ export function ReleaseSearchDrawer({
     try {
       await apiFetch("/release", {
         method: "POST",
-        body: JSON.stringify({ guid: release.guid, ...scope }),
+        body: JSON.stringify({ guid: release.guid, ...scope, override }),
       });
       setGrabbed((prev) => new Set(prev).add(release.guid));
     } catch (err) {
@@ -85,6 +92,22 @@ export function ReleaseSearchDrawer({
             Close
           </button>
         </div>
+
+        <label className="mt-3 flex cursor-pointer items-start gap-2 rounded border border-zinc-800 bg-zinc-950/40 p-2.5">
+          <input
+            type="checkbox"
+            checked={override}
+            onChange={(e) => setOverride(e.target.checked)}
+            className="mt-0.5 shrink-0"
+          />
+          <span className="text-xs">
+            <span className="font-medium text-zinc-200">Override — grab even if not an upgrade</span>
+            <span className="mt-0.5 block text-zinc-500">
+              Imports the release even when it isn&apos;t an upgrade over your current file; for
+              movies the current file is kept as another version.
+            </span>
+          </span>
+        </label>
 
         {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
         {!releases && !error && <p className="mt-4 text-sm text-zinc-400">Searching indexers…</p>}
@@ -123,9 +146,16 @@ export function ReleaseSearchDrawer({
                       <button
                         onClick={() => grab(r)}
                         disabled={grabbing !== null}
+                        title={
+                          needsOverride(r) && !override ? "Enable Override to import this" : undefined
+                        }
                         className="rounded bg-amber-500 px-2 py-0.5 text-xs font-medium text-zinc-950 hover:bg-amber-400 disabled:opacity-50"
                       >
-                        {grabbing === r.guid ? "…" : "Grab"}
+                        {grabbing === r.guid
+                          ? "…"
+                          : needsOverride(r) && !override
+                            ? "Grab anyway"
+                            : "Grab"}
                       </button>
                     )}
                   </td>

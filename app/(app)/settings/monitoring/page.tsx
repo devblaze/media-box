@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { apiFetch, useApi } from "@/lib/api";
 import { tmdbPoster } from "@/lib/types";
 import type { MovieSummary, SeriesSummary } from "@/lib/types";
@@ -12,6 +13,7 @@ type TabKey = "movies" | "series" | "anime";
 type ApiType = "movie" | "series";
 type MonitorMode = "all" | "future" | "none";
 type MonitorFilter = "all" | "monitored" | "unmonitored";
+type ViewMode = "list" | "tiles";
 
 interface Row {
   id: number;
@@ -35,9 +37,142 @@ const MODES: { value: MonitorMode; label: string }[] = [
   { value: "none", label: "None" },
 ];
 
+/** Responsive poster grid used by the Tiles view (and its loading skeleton). */
+const TILE_GRID =
+  "grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6";
+
 /** The bulk endpoint uses "series" for both Series and Anime rows (anime is a series flag). */
 function apiTypeFor(tab: TabKey): ApiType {
   return tab === "movies" ? "movie" : "series";
+}
+
+/** Detail page for a row — movies drill into /movies/:id, series & anime into /series/:id. */
+function detailHref(row: Row): string {
+  return row.apiType === "movie" ? `/movies/${row.id}` : `/series/${row.id}`;
+}
+
+function ListIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <line x1="8" y1="6" x2="21" y2="6" />
+      <line x1="8" y1="12" x2="21" y2="12" />
+      <line x1="8" y1="18" x2="21" y2="18" />
+      <line x1="3" y1="6" x2="3.01" y2="6" />
+      <line x1="3" y1="12" x2="3.01" y2="12" />
+      <line x1="3" y1="18" x2="3.01" y2="18" />
+    </svg>
+  );
+}
+
+function GridIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="3" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <rect x="14" y="14" width="7" height="7" rx="1" />
+    </svg>
+  );
+}
+
+/** List / Tiles segmented control — page-level view preference. */
+function ViewToggle({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode) => void }) {
+  const options: { value: ViewMode; label: string; icon: React.ReactNode }[] = [
+    { value: "list", label: "List", icon: <ListIcon /> },
+    { value: "tiles", label: "Tiles", icon: <GridIcon /> },
+  ];
+  return (
+    <div
+      role="group"
+      aria-label="View"
+      className="inline-flex shrink-0 overflow-hidden rounded-md border border-zinc-800 bg-zinc-900/50"
+    >
+      {options.map((o) => {
+        const on = view === o.value;
+        return (
+          <button
+            key={o.value}
+            type="button"
+            onClick={() => onChange(o.value)}
+            aria-pressed={on}
+            title={`${o.label} view`}
+            className={cn(
+              "flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium transition-colors",
+              on
+                ? "bg-amber-500 text-zinc-950"
+                : "text-zinc-400 hover:bg-zinc-800/70 hover:text-zinc-100"
+            )}
+          >
+            {o.icon}
+            <span className="hidden sm:inline">{o.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** All / Future / None monitor-mode control (series & anime rows). */
+function ModeButtons({
+  value,
+  disabled,
+  onSelect,
+  fill,
+}: {
+  value: MonitorMode;
+  disabled?: boolean;
+  onSelect: (mode: MonitorMode) => void;
+  fill?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "inline-flex overflow-hidden rounded-md border border-zinc-700",
+        fill && "flex w-full"
+      )}
+    >
+      {MODES.map((m) => {
+        const on = value === m.value;
+        return (
+          <button
+            key={m.value}
+            type="button"
+            disabled={disabled}
+            onClick={() => onSelect(m.value)}
+            aria-pressed={on}
+            title={`Monitor ${m.label.toLowerCase()} episodes`}
+            className={cn(
+              "px-2 py-1 text-[11px] font-medium transition-colors disabled:opacity-50",
+              fill && "flex-1",
+              on ? "bg-zinc-700 text-zinc-100" : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+            )}
+          >
+            {m.label}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 export default function MonitoringPage() {
@@ -46,6 +181,7 @@ export default function MonitoringPage() {
   const toast = useToast();
 
   const [tab, setTab] = useState<TabKey>("movies");
+  const [view, setView] = useState<ViewMode>("list");
   const [search, setSearch] = useState("");
   const [monitorFilter, setMonitorFilter] = useState<MonitorFilter>("all");
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -118,7 +254,7 @@ export default function MonitoringPage() {
   function switchTab(next: TabKey) {
     if (next === tab) return;
     setTab(next);
-    // Selection + search are per-tab: start each tab fresh.
+    // Selection + search are per-tab: start each tab fresh. (View preference persists.)
     setSelected(new Set());
     setSearch("");
     setMonitorFilter("all");
@@ -235,11 +371,14 @@ export default function MonitoringPage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-5">
-      <div>
-        <h1 className="text-xl font-semibold">Monitoring</h1>
-        <p className="mt-1 text-sm text-zinc-400">
-          Choose what media-box tracks. Monitored items are searched and grabbed automatically.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">Monitoring</h1>
+          <p className="mt-1 text-sm text-zinc-400">
+            Choose what media-box tracks. Monitored items are searched and grabbed automatically.
+          </p>
+        </div>
+        <ViewToggle view={view} onChange={setView} />
       </div>
 
       {/* Tabs — one per media kind, with total + monitored counts */}
@@ -272,7 +411,7 @@ export default function MonitoringPage() {
                 </span>
               </span>
               <span className={cn("mt-0.5 text-[11px]", isActive ? "text-zinc-900/70" : "text-zinc-500")}>
-                {loading ? " " : `${c.monitored} monitored`}
+                {loading ? " " : `${c.monitored} monitored`}
               </span>
             </button>
           );
@@ -371,13 +510,25 @@ export default function MonitoringPage() {
         </div>
       </div>
 
-      {/* Rows */}
+      {/* Items — list rows or poster tiles, driven by the view toggle */}
       {loading ? (
-        <div className="space-y-2">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-16 w-full" />
-          ))}
-        </div>
+        view === "tiles" ? (
+          <div className={TILE_GRID}>
+            {Array.from({ length: 12 }).map((_, i) => (
+              <div key={i} className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-2">
+                <Skeleton className="aspect-[2/3] w-full" />
+                <Skeleton className="mt-2 h-4 w-3/4" />
+                <Skeleton className="mt-2 h-6 w-full" />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-16 w-full" />
+            ))}
+          </div>
+        )
       ) : filtered.length === 0 ? (
         <EmptyState
           title={`No ${tab} to show`}
@@ -387,12 +538,103 @@ export default function MonitoringPage() {
               : "No items match the current filters. Try adjusting the search or monitored filter."
           }
         />
+      ) : view === "tiles" ? (
+        /* ---- Tiles view: responsive poster grid ---- */
+        <ul className={TILE_GRID}>
+          {filtered.map((row) => {
+            const isSelected = selected.has(row.id);
+            const isSaving = savingIds.has(row.id);
+            const poster = tmdbPoster(row.posterPath, "w342");
+            const href = detailHref(row);
+            return (
+              <li
+                key={row.id}
+                className={cn(
+                  "group relative flex flex-col overflow-hidden rounded-lg border transition-colors",
+                  isSelected
+                    ? "border-amber-500/60 bg-amber-500/5"
+                    : "border-zinc-800 bg-zinc-900/40 hover:border-zinc-700"
+                )}
+              >
+                {/* Corner select checkbox — sibling of the link (not nested in the anchor). */}
+                <label
+                  className="absolute left-2 top-2 z-10 flex cursor-pointer items-center rounded bg-zinc-950/80 p-1 ring-1 ring-zinc-700 backdrop-blur"
+                  title={`Select ${row.title}`}
+                >
+                  <Checkbox
+                    checked={isSelected}
+                    onChange={() => toggleRow(row.id)}
+                    aria-label={`Select ${row.title}`}
+                  />
+                </label>
+
+                {/* Drill-in link: poster + title */}
+                <Link href={href} className="block focus:outline-none">
+                  <div className="relative aspect-[2/3] w-full overflow-hidden bg-zinc-800">
+                    {poster ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={poster}
+                        alt=""
+                        loading="lazy"
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center px-2 text-center text-xs text-zinc-600">
+                        No art
+                      </div>
+                    )}
+                    {/* Subtle "open" affordance on hover/focus */}
+                    <span className="pointer-events-none absolute right-2 top-2 rounded bg-zinc-950/80 px-1.5 py-0.5 text-[11px] font-medium text-zinc-100 opacity-0 ring-1 ring-zinc-700 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                      Open ↗
+                    </span>
+                  </div>
+                  <div className="px-2 pt-2">
+                    <div
+                      className="truncate text-sm font-medium text-zinc-100 group-hover:text-amber-300"
+                      title={row.title}
+                    >
+                      {row.title}
+                    </div>
+                    <div className="text-xs text-zinc-500">{row.year ?? "—"}</div>
+                  </div>
+                </Link>
+
+                {/* Controls — outside the anchor so their clicks never navigate. */}
+                <div className="mt-auto flex flex-col gap-2 px-2 pb-2 pt-2">
+                  {row.apiType === "series" && (
+                    <ModeButtons
+                      fill
+                      value={row.monitorMode ?? "all"}
+                      disabled={isSaving || busy}
+                      onSelect={(mode) => changeMode(row, mode)}
+                    />
+                  )}
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-zinc-500">
+                      {row.monitored ? "Monitored" : "Unmonitored"}
+                    </span>
+                    <MonitorToggle
+                      checked={row.monitored}
+                      pending={isSaving}
+                      disabled={busy}
+                      onChange={() => toggleMonitored(row)}
+                      aria-label={`${row.monitored ? "Unmonitor" : "Monitor"} ${row.title}`}
+                    />
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
       ) : (
+        /* ---- List view: compact rows ---- */
         <ul className="space-y-2">
           {filtered.map((row) => {
             const isSelected = selected.has(row.id);
             const isSaving = savingIds.has(row.id);
             const poster = tmdbPoster(row.posterPath, "w92");
+            const href = detailHref(row);
             return (
               <li
                 key={row.id}
@@ -409,52 +651,51 @@ export default function MonitoringPage() {
                   aria-label={`Select ${row.title}`}
                 />
 
-                {poster ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={poster}
-                    alt=""
-                    loading="lazy"
-                    className="h-14 w-10 shrink-0 rounded object-cover ring-1 ring-zinc-800"
-                  />
-                ) : (
-                  <div className="flex h-14 w-10 shrink-0 items-center justify-center rounded bg-zinc-800 text-[9px] text-zinc-600 ring-1 ring-zinc-800">
-                    No art
-                  </div>
-                )}
+                {/* Drill-in link: poster + title (controls stay outside the anchor). */}
+                <Link
+                  href={href}
+                  className="group flex min-w-0 flex-1 items-center gap-3 focus:outline-none"
+                >
+                  {poster ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={poster}
+                      alt=""
+                      loading="lazy"
+                      className="h-14 w-10 shrink-0 rounded object-cover ring-1 ring-zinc-800"
+                    />
+                  ) : (
+                    <div className="flex h-14 w-10 shrink-0 items-center justify-center rounded bg-zinc-800 text-[9px] text-zinc-600 ring-1 ring-zinc-800">
+                      No art
+                    </div>
+                  )}
 
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium text-zinc-100" title={row.title}>
-                    {row.title}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 items-center gap-1">
+                      <span
+                        className="truncate text-sm font-medium text-zinc-100 group-hover:text-amber-300"
+                        title={row.title}
+                      >
+                        {row.title}
+                      </span>
+                      <span
+                        aria-hidden
+                        className="shrink-0 text-zinc-600 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                      >
+                        ↗
+                      </span>
+                    </div>
+                    {row.year != null && <div className="text-xs text-zinc-500">{row.year}</div>}
                   </div>
-                  {row.year != null && <div className="text-xs text-zinc-500">{row.year}</div>}
-                </div>
+                </Link>
 
                 <div className="flex items-center gap-2 sm:gap-3">
                   {row.apiType === "series" && (
-                    <div className="inline-flex overflow-hidden rounded-md border border-zinc-700">
-                      {MODES.map((m) => {
-                        const on = (row.monitorMode ?? "all") === m.value;
-                        return (
-                          <button
-                            key={m.value}
-                            type="button"
-                            disabled={isSaving || busy}
-                            onClick={() => changeMode(row, m.value)}
-                            aria-pressed={on}
-                            title={`Monitor ${m.label.toLowerCase()} episodes`}
-                            className={cn(
-                              "px-2 py-1 text-[11px] font-medium transition-colors disabled:opacity-50",
-                              on
-                                ? "bg-zinc-700 text-zinc-100"
-                                : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
-                            )}
-                          >
-                            {m.label}
-                          </button>
-                        );
-                      })}
-                    </div>
+                    <ModeButtons
+                      value={row.monitorMode ?? "all"}
+                      disabled={isSaving || busy}
+                      onSelect={(mode) => changeMode(row, mode)}
+                    />
                   )}
 
                   <MonitorToggle

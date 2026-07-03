@@ -33,6 +33,8 @@ const grabSchema = z.object({
   movieId: z.number().int().optional(),
   seriesId: z.number().int().optional(),
   season: z.number().int().optional(),
+  // "Grab anyway" — import even if the release isn't an upgrade over what's there.
+  override: z.boolean().optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -53,7 +55,7 @@ export async function POST(request: NextRequest) {
     const release = releases.find((r) => r.guid === body.guid);
     if (!release) return badRequest("Release no longer available — search again");
 
-    const download = await grab(release, target.grab);
+    const download = await grab(release, { ...target.grab, override: body.override ?? false });
     return ok(download, { status: 201 });
   } catch (err) {
     return serverError(err);
