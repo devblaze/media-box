@@ -4,6 +4,12 @@ export interface LookupResult {
   year: number | null;
   overview: string;
   poster: string | null;
+  /** Raw TMDB poster path (e.g. "/abc.jpg") for storing on a request. */
+  posterPath?: string | null;
+  /** Availability relative to the library: already have it, already requested, or new. */
+  status?: "available" | "requested" | "unavailable";
+  /** Library id (movies.id / series.id) when already in the library. */
+  mediaId?: number | null;
 }
 
 export interface RootFolder {
