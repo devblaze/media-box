@@ -7,6 +7,8 @@ import { useApi } from "@/lib/api";
 
 const FULL_NAV = [
   { label: "Discover", href: "/discover" },
+  { label: "Channels", href: "/channels" },
+  { label: "TV Guide", href: "/channels/guide" },
   { label: "Dashboard", href: "/" },
   { label: "Series", href: "/series" },
   { label: "Movies", href: "/movies" },
@@ -19,6 +21,8 @@ const FULL_NAV = [
 
 const USER_NAV = [
   { label: "Discover", href: "/discover" },
+  { label: "Channels", href: "/channels" },
+  { label: "TV Guide", href: "/channels/guide" },
   { label: "Series", href: "/series" },
   { label: "Movies", href: "/movies" },
   { label: "Requests", href: "/requests" },

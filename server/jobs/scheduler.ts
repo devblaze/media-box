@@ -46,6 +46,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDef[] = [
   { name: "RefreshMovies", intervalMinutes: 720 },
   { name: "DiskScan", intervalMinutes: 720 },
   { name: "Housekeeping", intervalMinutes: 1440 },
+  { name: "ChannelScheduler", intervalMinutes: 1 },
 ];
 
 const MONITOR_COMMANDS = new Set(["QueueMonitor"]);

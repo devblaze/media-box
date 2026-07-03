@@ -119,6 +119,10 @@ export const movies = sqliteTable(
     year: integer("year"),
     overview: text("overview"),
     runtime: integer("runtime"),
+    // TMDB collection (franchise) this movie belongs to, if any. Movies sharing a
+    // collectionTmdbId form a franchise played in year order on the Movies channel.
+    collectionTmdbId: integer("collection_tmdb_id"),
+    collectionName: text("collection_name"),
     status: text("status", { enum: ["announced", "inCinemas", "released"] })
       .notNull()
       .default("announced"),
@@ -148,6 +152,7 @@ export const movies = sqliteTable(
   (t) => [
     uniqueIndex("movies_tmdb_id_unique").on(t.tmdbId),
     index("movies_missing_idx").on(t.monitored, t.movieFileId),
+    index("movies_collection_idx").on(t.collectionTmdbId),
   ]
 );
 
@@ -594,4 +599,47 @@ export const scanCandidates = sqliteTable(
   // No unique index: several loose movies can share a category folder (path =
   // dirname), and persistScanCandidates replaces all rows for a type on each scan.
   (t) => [index("scan_candidates_type_idx").on(t.type)]
+);
+
+// ---------- Live TV channels: synchronized program schedule ----------
+//
+// Each channel (movies / series / anime) is a broadcast station whose "now
+// playing" is derived from the wall clock: the program whose [startAt, endAt)
+// window contains `now`, at offset `now - startAt`. The schedule is materialized
+// ahead of time (a rolling ~12h horizon) so it doubles as the TV Guide, and so
+// every viewer who tunes in sees the same title at the same moment.
+
+export const channelPrograms = sqliteTable(
+  "channel_programs",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    channel: text("channel", { enum: ["movies", "series", "anime"] }).notNull(),
+    mediaType: text("media_type", { enum: ["movie", "episode"] }).notNull(),
+    // Exactly one of movieId / episodeId is set (cascade-cleared if the library row goes away).
+    movieId: integer("movie_id").references(() => movies.id, { onDelete: "cascade" }),
+    episodeId: integer("episode_id").references(() => episodes.id, { onDelete: "cascade" }),
+    // Denormalized display label for the guide (e.g. "Supernatural · S01E02 — Wendigo").
+    title: text("title").notNull(),
+    startAt: integer("start_at", { mode: "timestamp" }).notNull(),
+    endAt: integer("end_at", { mode: "timestamp" }).notNull(),
+    durationSeconds: integer("duration_seconds").notNull(),
+  },
+  (t) => [index("channel_programs_channel_start_idx").on(t.channel, t.startAt)]
+);
+
+// Per-show / per-franchise cursor so episodes and sequels advance in order across
+// occurrences. refKind "series" -> refId = series.id (lastEpisodeId set); refKind
+// "collection" -> refId = movies.collectionTmdbId (lastMovieId set).
+export const channelProgress = sqliteTable(
+  "channel_progress",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    channel: text("channel", { enum: ["movies", "series", "anime"] }).notNull(),
+    refKind: text("ref_kind", { enum: ["series", "collection"] }).notNull(),
+    refId: integer("ref_id").notNull(),
+    lastEpisodeId: integer("last_episode_id"),
+    lastMovieId: integer("last_movie_id"),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [uniqueIndex("channel_progress_ref_unique").on(t.channel, t.refKind, t.refId)]
 );

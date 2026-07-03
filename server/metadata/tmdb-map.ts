@@ -55,6 +55,8 @@ export function mapMovie(details: TmdbMovieDetails) {
     overview: details.overview ?? null,
     status: mapMovieStatus(details.status),
     runtime: details.runtime ?? null,
+    collectionTmdbId: details.belongs_to_collection?.id ?? null,
+    collectionName: details.belongs_to_collection?.name ?? null,
     posterPath: details.poster_path ?? null,
     backdropPath: details.backdrop_path ?? null,
     digitalRelease: null as Date | null,

@@ -117,6 +117,8 @@ export interface TmdbMovieDetails extends TmdbMovieSummary {
   runtime?: number | null;
   imdb_id?: string | null;
   external_ids?: { imdb_id?: string | null };
+  // Franchise this movie belongs to (a default top-level field on /movie/{id}).
+  belongs_to_collection?: { id: number; name: string } | null;
 }
 
 export const searchTv = (query: string) =>
