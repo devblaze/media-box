@@ -33,6 +33,7 @@ const patchSchema = z.object({
   openSubtitlesApiKey: z.string().optional(),
   openSubtitlesUsername: z.string().optional(),
   openSubtitlesPassword: z.string().optional(),
+  pushoverAppToken: z.string().optional(),
 });
 
 export async function PUT(request: NextRequest) {

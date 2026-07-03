@@ -28,6 +28,8 @@ export const appSettingsSchema = z.object({
   openSubtitlesApiKey: z.string().default(""),
   openSubtitlesUsername: z.string().default(""),
   openSubtitlesPassword: z.string().default(""),
+  // Pushover Application API token (admin) — enables per-user request notifications.
+  pushoverAppToken: z.string().default(""),
 });
 
 export type AppSettings = z.infer<typeof appSettingsSchema>;

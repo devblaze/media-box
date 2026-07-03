@@ -4,6 +4,7 @@ import { addMovie } from "@/server/library/movie-service";
 import { addSeries } from "@/server/library/series-service";
 import { enqueueCommand } from "@/server/jobs/scheduler";
 import { emitEvent } from "@/server/events/bus";
+import { notifyRequestAvailable } from "@/server/notifications/pushover";
 
 /** Approve a request: add the media to the library (monitored) and kick off a search. */
 export async function approveRequest(requestId: number, adminUserId: number) {
@@ -123,5 +124,7 @@ export function markRequestsAvailable(mediaType: "series" | "movie", mediaId: nu
       .where(eq(schema.requests.id, request.id))
       .run();
     emitEvent({ type: "request.updated", requestId: request.id });
+    // Best-effort Pushover to the requester (no-op unless configured).
+    notifyRequestAvailable(request.userId, request.title);
   }
 }

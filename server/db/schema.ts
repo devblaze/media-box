@@ -443,6 +443,8 @@ export const users = sqliteTable(
     username: text("username").notNull(),
     passwordHash: text("password_hash").notNull(),
     role: text("role", { enum: ["admin", "user"] }).notNull().default("user"),
+    // Personal Pushover user key for request-available notifications (null = off).
+    pushoverUserKey: text("pushover_user_key"),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   },
   (t) => [uniqueIndex("users_username_unique").on(t.username)]

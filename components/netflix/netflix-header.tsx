@@ -209,6 +209,13 @@ export function NetflixHeader() {
                 <div className="absolute right-0 z-50 mt-2 w-48 rounded border border-white/10 bg-black/95 py-2 text-sm shadow-xl backdrop-blur">
                   <div className="truncate px-3 py-1.5 text-zinc-400">{me?.username ?? "Account"}</div>
                   <div className="my-1 border-t border-white/10" />
+                  <Link
+                    href="/account"
+                    onClick={() => setMenuOpen(false)}
+                    className="block w-full px-3 py-1.5 text-left text-zinc-200 hover:bg-white/10"
+                  >
+                    Account
+                  </Link>
                   <button
                     type="button"
                     onClick={logout}

@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { getMovie } from "@/server/metadata/tmdb";
 import { mapMovie } from "@/server/metadata/tmdb-map";
@@ -92,4 +92,51 @@ export async function deleteMovie(movieId: number, deleteFiles: boolean) {
     await fs.rm(row.path, { recursive: true, force: true });
   }
   emitEvent({ type: "movie.updated", movieId });
+}
+
+/**
+ * Delete one quality VERSION (movie_file) of a movie — its DB row and, when
+ * `deleteFile`, its file on disk. If it was the primary, the largest remaining
+ * version becomes the new primary (or none).
+ */
+export async function deleteMovieVersion(
+  movieId: number,
+  fileId: number,
+  deleteFile: boolean
+): Promise<{ deleted: boolean }> {
+  const db = getDb();
+  const movie = db.select().from(schema.movies).where(eq(schema.movies.id, movieId)).get();
+  if (!movie) return { deleted: false };
+  const file = db
+    .select()
+    .from(schema.movieFiles)
+    .where(and(eq(schema.movieFiles.id, fileId), eq(schema.movieFiles.movieId, movieId)))
+    .get();
+  if (!file) return { deleted: false };
+
+  db.delete(schema.movieFiles).where(eq(schema.movieFiles.id, fileId)).run();
+
+  // Re-point the primary if we just deleted it (largest remaining version wins).
+  if (movie.movieFileId === fileId) {
+    const remaining = db
+      .select()
+      .from(schema.movieFiles)
+      .where(eq(schema.movieFiles.movieId, movieId))
+      .all()
+      .sort((a, b) => b.size - a.size);
+    db.update(schema.movies)
+      .set({ movieFileId: remaining[0]?.id ?? null })
+      .where(eq(schema.movies.id, movieId))
+      .run();
+  }
+
+  if (deleteFile) {
+    try {
+      await fs.rm(path.join(movie.path, file.relativePath), { force: true });
+    } catch {
+      /* file already gone — ignore */
+    }
+  }
+  emitEvent({ type: "movie.updated", movieId });
+  return { deleted: true };
 }

@@ -85,6 +85,16 @@ interface Me {
   role: "admin" | "user";
 }
 
+interface MediaVersion {
+  fileId: number;
+  /** Short resolution tag, e.g. "4K" / "1080p". */
+  resolution: string;
+  /** Fuller label, e.g. "4K · WEB-DL-2160p". */
+  label: string;
+  size: number;
+  isPrimary: boolean;
+}
+
 export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
   const { id } = use(params);
   const router = useRouter();
@@ -98,6 +108,9 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
   );
   const { data: progress, mutate: mutateProgress } = useApi<WatchProgress | null>(
     `/watch-progress?movieId=${id}`
+  );
+  const { data: versionsData, mutate: mutateVersions } = useApi<{ versions: MediaVersion[] }>(
+    `/versions?type=movie&id=${id}`
   );
   const isAdmin = me?.role === "admin";
   const [searching, setSearching] = useState(false);
@@ -200,7 +213,29 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
     router.push("/movies");
   }
 
+  async function deleteVersion(v: MediaVersion) {
+    const isLast = (versionsData?.versions.length ?? 0) <= 1;
+    if (
+      !(await confirm({
+        message: isLast
+          ? "Delete this version? It is the movie's only file, and it will be removed from disk."
+          : "Delete this version? Its file will be removed from disk.",
+        confirmLabel: "Delete",
+        danger: true,
+      }))
+    )
+      return;
+    try {
+      await apiFetch(`/movies/${id}/versions/${v.fileId}?deleteFile=true`, { method: "DELETE" });
+      await Promise.all([mutateVersions(), mutate()]);
+      toast.success(`Deleted ${v.resolution} version`);
+    } catch {
+      toast.error("Failed to delete version");
+    }
+  }
+
   const poster = tmdbPoster(data.posterPath);
+  const versions = versionsData?.versions ?? [];
 
   return (
     <div className="px-4 py-4 md:px-8 md:py-6">
@@ -294,6 +329,44 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
           )}
         </CardBody>
       </Card>
+
+      {versions.length > 0 && (
+        <Card className="mt-8">
+          <CardHeader>
+            <CardTitle>Versions</CardTitle>
+          </CardHeader>
+          <CardBody>
+            <ul className="space-y-2">
+              {versions.map((v) => {
+                // `label` starts with the resolution tag (e.g. "4K · WEB-DL-2160p");
+                // strip it so the prominent tag isn't repeated in the descriptor.
+                const detail =
+                  v.label === v.resolution
+                    ? null
+                    : v.label.startsWith(`${v.resolution} · `)
+                      ? v.label.slice(v.resolution.length + 3)
+                      : v.label;
+                return (
+                  <li
+                    key={v.fileId}
+                    className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-2"
+                  >
+                    <span className="text-base font-semibold text-zinc-100">{v.resolution}</span>
+                    {detail && <span className="min-w-0 text-sm text-zinc-400">{detail}</span>}
+                    {v.isPrimary && <Badge tone="success">Primary</Badge>}
+                    <span className="ml-auto text-sm text-zinc-400">{formatBytes(v.size)}</span>
+                    {isAdmin && (
+                      <Button variant="danger" size="sm" onClick={() => deleteVersion(v)}>
+                        Delete
+                      </Button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </CardBody>
+        </Card>
+      )}
 
       {credits?.cast && credits.cast.length > 0 && (
         <Card className="mt-8">

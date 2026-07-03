@@ -57,6 +57,13 @@
       "when": 1783066974738,
       "tag": "0007_same_anita_blake",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1783072549552,
+      "tag": "0008_unknown_titanium_man",
+      "breakpoints": true
     }
   ]
 }

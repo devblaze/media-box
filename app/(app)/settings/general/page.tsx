@@ -35,6 +35,7 @@ interface AppSettings {
   transcodeHwAccel: HwAccel;
   transcodeVaapiDevice: string;
   maxTranscodeSessions: number;
+  pushoverAppToken: string;
 }
 
 export default function GeneralSettingsPage() {
@@ -45,6 +46,7 @@ export default function GeneralSettingsPage() {
   const [transcodeHwAccel, setTranscodeHwAccel] = useState<HwAccel>("none");
   const [transcodeVaapiDevice, setTranscodeVaapiDevice] = useState("/dev/dri/renderD128");
   const [maxTranscodeSessions, setMaxTranscodeSessions] = useState(3);
+  const [pushoverAppToken, setPushoverAppToken] = useState("");
   const [testResult, setTestResult] = useState<null | { ok: boolean; message?: string }>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -56,6 +58,7 @@ export default function GeneralSettingsPage() {
       setTranscodeHwAccel(data.transcodeHwAccel);
       setTranscodeVaapiDevice(data.transcodeVaapiDevice);
       setMaxTranscodeSessions(data.maxTranscodeSessions);
+      setPushoverAppToken(data.pushoverAppToken);
     }
   }, [data]);
 
@@ -86,6 +89,7 @@ export default function GeneralSettingsPage() {
           transcodeHwAccel,
           transcodeVaapiDevice,
           maxTranscodeSessions,
+          pushoverAppToken,
         }),
       });
       await mutate();
@@ -181,6 +185,27 @@ export default function GeneralSettingsPage() {
               className="font-mono text-zinc-400"
             />
           </Field>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Notifications (Pushover)</CardTitle>
+        </CardHeader>
+        <CardBody className="space-y-4">
+          <Field label="Pushover app token" htmlFor="pushover-app-token">
+            <Input
+              id="pushover-app-token"
+              value={pushoverAppToken}
+              onChange={(e) => setPushoverAppToken(e.target.value)}
+              className="font-mono"
+              placeholder="Pushover Application API token"
+            />
+          </Field>
+          <p className="text-sm text-zinc-400">
+            Pushover Application API token. Each user then adds their personal user key under Account
+            to receive request-available notifications.
+          </p>
         </CardBody>
       </Card>
 
