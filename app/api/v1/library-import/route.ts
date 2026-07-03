@@ -5,6 +5,7 @@ import { requireAdmin } from "@/server/auth/guards";
 import { addMovie } from "@/server/library/movie-service";
 import { addSeries } from "@/server/library/series-service";
 import { scanMovie, scanSeries, importMovieFileAt } from "@/server/library/disk-scanner";
+import { markCandidateImported } from "@/server/library/library-import";
 import { ok, badRequest, serverError } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -51,6 +52,8 @@ export async function POST(request: NextRequest) {
       const files = input.videoPath
         ? await importMovieFileAt(movie.id, input.videoPath)
         : await scanMovie(movie.id);
+      // Drop this title from any persisted scan so it stays gone after navigation.
+      markCandidateImported(input.type, input.path);
       return ok({ id: movie.id, mediaType: "movie" as const, files }, { status: 201 });
     }
 
@@ -63,9 +66,12 @@ export async function POST(request: NextRequest) {
       isAnime: input.type === "anime",
     });
     const files = await scanSeries(series.id);
+    markCandidateImported(input.type, input.path);
     return ok({ id: series.id, mediaType: input.type, files }, { status: 201 });
   } catch (err) {
     if (err instanceof Error && /already in the library/i.test(err.message)) {
+      // Already present → also treat as imported for the persisted scan.
+      markCandidateImported(input.type, input.path);
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
     return serverError(err);

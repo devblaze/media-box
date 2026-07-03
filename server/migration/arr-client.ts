@@ -79,6 +79,7 @@ export interface SonarrSeries {
   imdbId?: string;
   tmdbId?: number;
   path: string;
+  rootFolderPath?: string;
   qualityProfileId: number;
   monitored: boolean;
   seasonFolder: boolean;
@@ -92,6 +93,7 @@ export interface RadarrMovie {
   tmdbId: number;
   imdbId?: string;
   path: string;
+  rootFolderPath?: string;
   qualityProfileId: number;
   monitored: boolean;
   minimumAvailability: string;

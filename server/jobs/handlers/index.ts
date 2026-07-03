@@ -9,6 +9,7 @@ import { fetchTorboxHandler } from "./fetch-torbox";
 import { wantedSearchHandler } from "./wanted-search";
 import { rssSyncHandler } from "./rss-sync";
 import { subtitleSearchHandler } from "./subtitle-search";
+import { libraryImportBatchHandler } from "./library-import-batch";
 import { importDownload } from "@/server/library/importer";
 
 registerHandler("Housekeeping", housekeeping);
@@ -19,6 +20,7 @@ registerHandler("RssSync", rssSyncHandler);
 registerHandler("WantedSearch", wantedSearchHandler);
 registerHandler("SubtitleSearch", subtitleSearchHandler);
 registerHandler("QueueMonitor", queueMonitorHandler, "monitor");
+registerHandler("LibraryImportBatch", libraryImportBatchHandler);
 registerHandler("FetchTorboxFiles", async (payload) => {
   return fetchTorboxHandler(payload);
 });

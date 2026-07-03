@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import { and, eq } from "drizzle-orm";
 import { getDb, schema, type Db } from "@/server/db";
 import { parseTitle } from "@/server/parser/release-parser";
 import { searchMovie, searchTv, posterUrl } from "@/server/metadata/tmdb";
@@ -286,4 +287,85 @@ export async function scanLibrary(type: ImportType, root: string): Promise<ScanR
   const db = getDb();
   if (type === "movie") return scanMoviesByFile(db, root);
   return scanFolders(db, type, root);
+}
+
+/** A stored candidate carries the root folder / quality profile the scan ran with. */
+export interface StoredCandidate extends ImportCandidate {
+  rootFolderId: number | null;
+  qualityProfileId: number | null;
+}
+
+/**
+ * Persist a fresh scan for a type: replace every prior row of that type with the
+ * new candidates so the unmatched list survives navigation without rescanning.
+ * The `rootFolderId` / `qualityProfileId` the scan ran with are stored per row so
+ * the background batch import can reproduce the same import as the single-import UI.
+ */
+export function persistScanCandidates(
+  type: ImportType,
+  rootFolderId: number,
+  qualityProfileId: number | null,
+  candidates: ImportCandidate[]
+): void {
+  const db = getDb();
+  db.delete(schema.scanCandidates).where(eq(schema.scanCandidates.type, type)).run();
+  if (candidates.length === 0) return;
+  const now = new Date();
+  db.insert(schema.scanCandidates)
+    .values(
+      candidates.map((c) => ({
+        type,
+        rootFolderId,
+        qualityProfileId,
+        path: c.path,
+        videoPath: c.videoPath || null,
+        name: c.name,
+        parsedTitle: c.parsedTitle,
+        parsedYear: c.parsedYear,
+        status: c.status,
+        suggestedTmdbId: c.suggestedTmdbId,
+        suggestions: c.suggestions,
+        imported: false,
+        createdAt: now,
+      }))
+    )
+    .run();
+}
+
+/**
+ * Mark a persisted candidate as imported so it drops off the reloaded list. Used
+ * by the single-import route (manual per-title imports of "unsure" rows) so those
+ * stay dropped after navigation, mirroring what the batch import does for matches.
+ * A no-op when there is no matching persisted candidate.
+ */
+export function markCandidateImported(type: ImportType, path: string): void {
+  const db = getDb();
+  db.update(schema.scanCandidates)
+    .set({ imported: true, error: null })
+    .where(and(eq(schema.scanCandidates.type, type), eq(schema.scanCandidates.path, path)))
+    .run();
+}
+
+/** The not-yet-imported candidates of a type, so the page can reload a prior scan. */
+export function loadScanCandidates(type: ImportType): StoredCandidate[] {
+  const db = getDb();
+  const rows = db
+    .select()
+    .from(schema.scanCandidates)
+    .where(and(eq(schema.scanCandidates.type, type), eq(schema.scanCandidates.imported, false)))
+    .all();
+  return rows.map((r) => ({
+    path: r.path,
+    videoPath: r.videoPath ?? "",
+    name: r.name,
+    parsedTitle: r.parsedTitle,
+    parsedYear: r.parsedYear,
+    // videoFileCount is not persisted; every candidate had at least one file.
+    videoFileCount: 1,
+    status: r.status,
+    suggestedTmdbId: r.suggestedTmdbId,
+    suggestions: (r.suggestions as ImportSuggestion[] | null) ?? [],
+    rootFolderId: r.rootFolderId,
+    qualityProfileId: r.qualityProfileId,
+  }));
 }

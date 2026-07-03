@@ -18,6 +18,7 @@ const executeSchema = z.object({
     importIndexers: z.boolean(),
     importClients: z.boolean(),
     rootFolderId: z.number().int(),
+    rootFolderMap: z.record(z.string(), z.number().int()).optional(),
   }),
 });
 

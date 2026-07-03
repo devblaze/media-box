@@ -550,3 +550,31 @@ export const organizeLog = sqliteTable(
   },
   (t) => [index("organize_log_created_idx").on(t.createdAt)]
 );
+
+// ---------- Library-import scan session (persisted so "Import all" runs in the
+// background and the unmatched list survives navigation without rescanning) ----------
+
+export const scanCandidates = sqliteTable(
+  "scan_candidates",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    type: text("type", { enum: ["movie", "series", "anime"] }).notNull(),
+    rootFolderId: integer("root_folder_id"),
+    qualityProfileId: integer("quality_profile_id"),
+    path: text("path").notNull(),
+    videoPath: text("video_path"),
+    name: text("name").notNull(),
+    parsedTitle: text("parsed_title").notNull(),
+    parsedYear: integer("parsed_year"),
+    status: text("status", { enum: ["matched", "unsure"] }).notNull(),
+    suggestedTmdbId: integer("suggested_tmdb_id"),
+    suggestions: text("suggestions", { mode: "json" }),
+    // playback of the import: false until it has been imported by "Import all" / manual.
+    imported: integer("imported", { mode: "boolean" }).notNull().default(false),
+    error: text("error"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  // No unique index: several loose movies can share a category folder (path =
+  // dirname), and persistScanCandidates replaces all rows for a type on each scan.
+  (t) => [index("scan_candidates_type_idx").on(t.type)]
+);

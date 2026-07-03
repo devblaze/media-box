@@ -6,6 +6,7 @@ import { useApi } from "@/lib/api";
 import { AdminPanel } from "@/components/admin-panel";
 import { NetflixHeader } from "@/components/netflix/netflix-header";
 import { SearchProvider } from "@/components/netflix/search-context";
+import { BackgroundTaskNotifier } from "@/components/background-task-notifier";
 
 interface Me {
   id: number;
@@ -29,14 +30,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   if (!me) return <div className="min-h-screen bg-black" />;
 
+  // Cross-page notifier for admins (e.g. background "Import all" completion).
+  const notifier = me.role === "admin" ? <BackgroundTaskNotifier /> : null;
+
   // Management chrome for the admin panel routes (server-side admin-guarded).
   if (pathname.startsWith("/settings") || pathname.startsWith("/system")) {
-    return <AdminPanel>{children}</AdminPanel>;
+    return (
+      <>
+        {notifier}
+        <AdminPanel>{children}</AdminPanel>
+      </>
+    );
   }
 
   // Netflix browse shell for every user.
   return (
     <SearchProvider>
+      {notifier}
       <NetflixHeader />
       <main
         className={cn(

@@ -1,0 +1,1 @@
+DROP INDEX `scan_candidates_path_unique`;

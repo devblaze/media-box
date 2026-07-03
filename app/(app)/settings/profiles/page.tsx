@@ -6,6 +6,7 @@ import type { QualityProfile } from "@/lib/types";
 import {
   Badge,
   Button,
+  Callout,
   Checkbox,
   EmptyState,
   Field,
@@ -26,9 +27,40 @@ interface QualityDefinition {
 }
 
 export default function ProfilesPage() {
+  const toast = useToast();
+  const confirm = useConfirm();
   const { data: profiles, mutate } = useApi<QualityProfile[]>("/qualityprofiles");
   const { data: qualities } = useApi<QualityDefinition[]>("/qualitydefinitions");
   const [editing, setEditing] = useState<Partial<QualityProfile> | null>(null);
+  const [merging, setMerging] = useState(false);
+
+  // Profiles sharing a name (case-insensitive) are duplicates; count how many
+  // rows are redundant (everything beyond the first per name).
+  const duplicateCount = profiles
+    ? profiles.length - new Set(profiles.map((p) => p.name.trim().toLowerCase())).size
+    : 0;
+
+  async function mergeDuplicates() {
+    if (
+      !(await confirm({
+        message:
+          "Merge duplicate quality profiles? Series and movies on a duplicate are reassigned to the kept profile, then the duplicates are deleted.",
+      }))
+    )
+      return;
+    setMerging(true);
+    try {
+      const res = await apiFetch<{ merged: number }>("/qualityprofiles/dedupe", { method: "POST" });
+      toast.success(
+        res.merged > 0 ? `Merged ${res.merged} duplicate profile(s)` : "No duplicates to merge"
+      );
+      await mutate();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Merge failed");
+    } finally {
+      setMerging(false);
+    }
+  }
 
   if (!qualities) {
     return (
@@ -75,6 +107,20 @@ export default function ProfilesPage() {
           </li>
         </ul>
       </HowTo>
+
+      {duplicateCount > 0 && (
+        <Callout tone="warning" title={`${duplicateCount} duplicate profile(s) found`}>
+          <div className="flex items-center justify-between gap-3">
+            <p>
+              Some profiles share a name (often from re-running a migration). Merging keeps the
+              oldest of each name, moves any series and movies onto it, and deletes the rest.
+            </p>
+            <Button size="sm" onClick={mergeDuplicates} loading={merging} disabled={merging}>
+              Merge duplicates
+            </Button>
+          </div>
+        </Callout>
+      )}
 
       {profiles === undefined ? (
         <div className="space-y-2">

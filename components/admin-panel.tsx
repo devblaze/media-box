@@ -8,7 +8,9 @@ import { cn } from "@/lib/cn";
 /** Management nav for the admin panel. Order mirrors the settings/system routes. */
 const NAV = [
   { label: "Dashboard", href: "/settings" },
+  { label: "Requests", href: "/settings/requests" },
   { label: "Media Management", href: "/settings/media-management" },
+  { label: "Monitoring", href: "/settings/monitoring" },
   { label: "Quality Profiles", href: "/settings/profiles" },
   { label: "Subtitles", href: "/settings/subtitles" },
   { label: "Indexers", href: "/settings/indexers" },

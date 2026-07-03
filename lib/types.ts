@@ -39,6 +39,8 @@ export interface SeriesSummary {
   posterPath: string | null;
   path: string;
   monitored: boolean;
+  monitorMode: "all" | "future" | "none";
+  isAnime: boolean;
   qualityProfileId: number;
   episodeCount: number;
   episodeFileCount: number;

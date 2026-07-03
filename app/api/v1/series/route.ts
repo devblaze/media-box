@@ -21,6 +21,8 @@ export async function GET() {
         posterPath: schema.series.posterPath,
         path: schema.series.path,
         monitored: schema.series.monitored,
+        monitorMode: schema.series.monitorMode,
+        isAnime: schema.series.isAnime,
         qualityProfileId: schema.series.qualityProfileId,
         episodeCount: sql<number>`(SELECT COUNT(*) FROM episodes e WHERE e.series_id = ${schema.series.id} AND e.season_number > 0)`,
         episodeFileCount: sql<number>`(SELECT COUNT(*) FROM episodes e WHERE e.series_id = ${schema.series.id} AND e.season_number > 0 AND e.episode_file_id IS NOT NULL)`,

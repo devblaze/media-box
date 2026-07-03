@@ -94,8 +94,15 @@ export interface MigrationDecisions {
   pathRewrites: { from: string; to: string }[];
   importIndexers: boolean;
   importClients: boolean;
-  /** media-box root folder id to attach migrated items to */
+  /** media-box root folder id to attach migrated items to (fallback) */
   rootFolderId: number;
+  /**
+   * Optional per-source-root override: Sonarr/Radarr root folder path ->
+   * media-box root folder id. Applied per item by its source root path,
+   * falling back to `rootFolderId`. Used e.g. to map `/tv/Anime` to the
+   * media-box Anime root (which also flags the series as anime).
+   */
+  rootFolderMap?: Record<string, number>;
 }
 
 export interface MigrationPayload {
@@ -112,20 +119,36 @@ function rewritePath(path: string, rewrites: { from: string; to: string }[]): st
   return path;
 }
 
-/** Resolve the decided media-box profile id for a source profile, creating on demand. */
+/**
+ * Resolve the decided media-box profile id for a source profile.
+ *
+ * A "create" decision reuses an existing profile with the same name
+ * (case-insensitive) when one exists instead of inserting a duplicate, so
+ * re-running a migration is idempotent for profiles (no more duplicate "Any").
+ */
 function resolveProfiles(
   sourceProfiles: ArrQualityProfile[],
   decisions: MigrationDecisions
 ): Map<number, number> {
   const db = getDb();
   const result = new Map<number, number>();
-  const fallback = db.select().from(schema.qualityProfiles).all()[0];
+  // Kept in sync with inserts below so several source profiles sharing a name
+  // all collapse onto a single created row.
+  const existing = db.select().from(schema.qualityProfiles).all();
+  const fallback = existing[0];
+  const findByName = (name: string) =>
+    existing.find((p) => p.name.trim().toLowerCase() === name.trim().toLowerCase());
   for (const source of sourceProfiles) {
     const decision = decisions.profileMap[String(source.id)];
     if (typeof decision === "number") {
       result.set(source.id, decision);
     } else if (decision === "create") {
       const mapped = mapProfile(source);
+      const match = findByName(mapped.name);
+      if (match) {
+        result.set(source.id, match.id);
+        continue;
+      }
       const row = db
         .insert(schema.qualityProfiles)
         .values({
@@ -134,14 +157,40 @@ function resolveProfiles(
           cutoffQualityId: mapped.cutoffQualityId,
           items: mapped.items,
         })
-        .returning({ id: schema.qualityProfiles.id })
+        .returning()
         .get();
+      existing.push(row);
       result.set(source.id, row.id);
     } else {
       result.set(source.id, fallback.id);
     }
   }
   return result;
+}
+
+/**
+ * Resolve the media-box root folder for an item by its source root path, and
+ * whether that root is the anime type. Honours the per-source-root override map
+ * (`rootFolderMap`), falling back to the single "attach to" root. The source
+ * root is taken from `rootFolderPath` when the arr provides it, else derived by
+ * longest-prefix match of the item path against the source root folder paths.
+ */
+function resolveItemRoot(
+  itemPath: string,
+  sourceRootPath: string | undefined,
+  sourceRootPaths: string[],
+  decisions: MigrationDecisions,
+  animeRootIds: Set<number>
+): { rootFolderId: number; isAnime: boolean } {
+  let srcRoot = sourceRootPath;
+  if (!srcRoot) {
+    srcRoot = [...sourceRootPaths]
+      .filter((p) => p && itemPath.startsWith(p))
+      .sort((a, b) => b.length - a.length)[0];
+  }
+  const mapped = srcRoot ? decisions.rootFolderMap?.[srcRoot] : undefined;
+  const rootFolderId = mapped ?? decisions.rootFolderId;
+  return { rootFolderId, isAnime: animeRootIds.has(rootFolderId) };
 }
 
 async function importIndexersAndClients(conn: ArrConnection, decisions: MigrationDecisions) {
@@ -213,6 +262,19 @@ export async function executeMigration(payload: MigrationPayload): Promise<strin
   const sourceProfiles = await arrGet<ArrQualityProfile[]>(conn, "/qualityprofile");
   const profileIdMap = resolveProfiles(sourceProfiles, decisions);
 
+  // Source root folder paths (for per-item root resolution) and the set of
+  // media-box root ids that are the "anime" type (so we can flag isAnime).
+  const sourceRootFolders = await arrGet<ArrRootFolder[]>(conn, "/rootfolder");
+  const sourceRootPaths = sourceRootFolders.map((r) => r.path);
+  const animeRootIds = new Set(
+    db
+      .select({ id: schema.rootFolders.id })
+      .from(schema.rootFolders)
+      .where(eq(schema.rootFolders.mediaType, "anime"))
+      .all()
+      .map((r) => r.id)
+  );
+
   const summary: string[] = [];
   let added = 0;
   let skipped = 0;
@@ -245,13 +307,21 @@ export async function executeMigration(payload: MigrationPayload): Promise<strin
 
         const details = await getTv(tmdbId);
         const mapped = mapSeries(details);
+        const { rootFolderId, isAnime } = resolveItemRoot(
+          src.path,
+          src.rootFolderPath,
+          sourceRootPaths,
+          decisions,
+          animeRootIds
+        );
         const row = db
           .insert(schema.series)
           .values({
             ...mapped,
             tvdbId: src.tvdbId,
             path: rewritePath(src.path, decisions.pathRewrites),
-            rootFolderId: decisions.rootFolderId,
+            rootFolderId,
+            isAnime,
             qualityProfileId: profileIdMap.get(src.qualityProfileId) ?? 1,
             monitored: src.monitored,
             seasonFolder: src.seasonFolder,
@@ -296,12 +366,19 @@ export async function executeMigration(payload: MigrationPayload): Promise<strin
         }
         const details = await getMovie(src.tmdbId);
         const mapped = mapMovie(details);
+        const { rootFolderId } = resolveItemRoot(
+          src.path,
+          src.rootFolderPath,
+          sourceRootPaths,
+          decisions,
+          animeRootIds
+        );
         const row = db
           .insert(schema.movies)
           .values({
             ...mapped,
             path: rewritePath(src.path, decisions.pathRewrites),
-            rootFolderId: decisions.rootFolderId,
+            rootFolderId,
             qualityProfileId: profileIdMap.get(src.qualityProfileId) ?? 1,
             monitored: src.monitored,
             minimumAvailability:

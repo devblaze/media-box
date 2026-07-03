@@ -62,6 +62,8 @@ export default function MigratePage() {
   const [importIndexers, setImportIndexers] = useState(true);
   const [importClients, setImportClients] = useState(true);
   const [rootFolderId, setRootFolderId] = useState<number | null>(null);
+  // Sonarr/Radarr root folder path -> media-box root folder id (per-root override).
+  const [rootFolderMap, setRootFolderMap] = useState<Record<string, number>>({});
 
   // Bazarr subtitle import (maps to Settings → Subtitles, separate from the arr flow above).
   const [bazarrUrl, setBazarrUrl] = useState("");
@@ -73,8 +75,11 @@ export default function MigratePage() {
   const { data: rootFolders } = useApi<RootFolder[]>("/rootfolders");
   useEvents();
 
-  const targetFolders = (rootFolders ?? []).filter(
-    (f) => f.mediaType === (app === "sonarr" ? "series" : "movies")
+  // Series migration can target both series and anime roots (mapping a Sonarr
+  // anime path to the Anime root flags those series as anime); movies target
+  // movie roots only.
+  const targetFolders = (rootFolders ?? []).filter((f) =>
+    app === "sonarr" ? f.mediaType === "series" || f.mediaType === "anime" : f.mediaType === "movies"
   );
 
   async function connect() {
@@ -86,7 +91,31 @@ export default function MigratePage() {
         body: JSON.stringify({ url, apiKey }),
       });
       setPreview(res);
-      setProfileMap(Object.fromEntries(res.profiles.map((p) => [String(p.sourceId), "create"])));
+      // Default each source profile to an existing media-box profile of the same
+      // name (case-insensitive) when one exists — so re-running is idempotent and
+      // we don't create a second "Any" — else fall back to creating it.
+      setProfileMap(
+        Object.fromEntries(
+          res.profiles.map((p) => {
+            const match = (profiles ?? []).find(
+              (mp) => mp.name.trim().toLowerCase() === p.mapped.name.trim().toLowerCase()
+            );
+            return [String(p.sourceId), match ? match.id : "create"];
+          })
+        )
+      );
+      // Seed the per-root mapping: point Sonarr roots that look like anime (path
+      // contains "anime") at the media-box Anime root when one exists.
+      const animeRoot = (rootFolders ?? []).find((f) => f.mediaType === "anime");
+      setRootFolderMap(
+        animeRoot && app === "sonarr"
+          ? Object.fromEntries(
+              res.rootFolders
+                .filter((rp) => /anime/i.test(rp))
+                .map((rp) => [rp, animeRoot.id])
+            )
+          : {}
+      );
       if (res.rootFolders[0]) setRewriteFrom(res.rootFolders[0]);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Connection failed");
@@ -109,6 +138,7 @@ export default function MigratePage() {
             importIndexers,
             importClients,
             rootFolderId,
+            rootFolderMap,
           },
         }),
       });
@@ -272,11 +302,15 @@ export default function MigratePage() {
                     }
                   >
                     <option value="create">Create &quot;{p.mapped.name}&quot;</option>
-                    {(profiles ?? []).map((mp) => (
-                      <option key={mp.id} value={mp.id}>
-                        Use existing: {mp.name}
-                      </option>
-                    ))}
+                    {(profiles ?? []).map((mp) => {
+                      const sameName =
+                        mp.name.trim().toLowerCase() === p.mapped.name.trim().toLowerCase();
+                      return (
+                        <option key={mp.id} value={mp.id}>
+                          {sameName ? `Use existing "${mp.name}"` : `Map to: ${mp.name}`}
+                        </option>
+                      );
+                    })}
                   </Select>
                 </div>
               ))}
@@ -299,11 +333,53 @@ export default function MigratePage() {
                   </option>
                   {targetFolders.map((f) => (
                     <option key={f.id} value={f.id}>
-                      {f.path}
+                      {f.path} ({f.mediaType})
                     </option>
                   ))}
                 </Select>
               </Field>
+
+              {preview.rootFolders.length > 0 && (
+                <Field
+                  label={`Map each ${app} root folder to a media-box root (optional)`}
+                  description={
+                    app === "sonarr"
+                      ? "Send e.g. /tv/Anime to the Anime root and /tv/Series to the Series root. Series under a root mapped to an Anime folder are flagged as anime. Unmapped roots use the folder chosen above."
+                      : "Send each source root to a specific media-box root. Unmapped roots use the folder chosen above."
+                  }
+                >
+                  <div className="space-y-2">
+                    {preview.rootFolders.map((rp) => (
+                      <div key={rp} className="grid grid-cols-[1fr_1fr] items-center gap-3">
+                        <span className="truncate font-mono text-xs text-zinc-400" title={rp}>
+                          {rp}
+                        </span>
+                        <Select
+                          aria-label={`Media-box root for ${rp}`}
+                          value={rootFolderMap[rp] ?? ""}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            setRootFolderMap((prev) => {
+                              const next = { ...prev };
+                              if (value === "") delete next[rp];
+                              else next[rp] = Number(value);
+                              return next;
+                            });
+                          }}
+                        >
+                          <option value="">Use folder chosen above</option>
+                          {targetFolders.map((f) => (
+                            <option key={f.id} value={f.id}>
+                              {f.path} ({f.mediaType})
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
+                    ))}
+                  </div>
+                </Field>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <Field label={`Rewrite path prefix (as ${app} sees it)`} htmlFor="migrate-rewrite-from">
                   <Input

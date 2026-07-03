@@ -26,6 +26,10 @@ export async function GET(request: NextRequest) {
         createdAt: schema.requests.createdAt,
         userId: schema.requests.userId,
         username: schema.users.username,
+        // Library ids once the request has been added (used by the admin
+        // interactive release search to target the movie/series).
+        movieId: schema.requests.movieId,
+        seriesId: schema.requests.seriesId,
       })
       .from(schema.requests)
       .innerJoin(schema.users, eq(schema.requests.userId, schema.users.id))

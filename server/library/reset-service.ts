@@ -31,6 +31,8 @@ export function resetLibrary(): ResetCounts {
   const movieFiles = del(schema.movieFiles);
   const movies = del(schema.movies);
   const series = del(schema.series);
+  // Also drop any persisted library-import scan so re-import starts from a clean slate.
+  del(schema.scanCandidates);
 
   return { watchProgress, subtitleFiles, episodeFiles, episodes, seasons, movieFiles, movies, series };
 }
