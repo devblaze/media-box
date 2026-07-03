@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, apiFetch, useApi } from "@/lib/api";
 import { formatBytes, type MovieSummary, type SeriesSummary } from "@/lib/types";
 import type { OrganizeItem } from "@/server/library/organizer-service";
@@ -8,6 +8,7 @@ import {
   Badge,
   Button,
   Callout,
+  Checkbox,
   EmptyState,
   Input,
   Select,
@@ -27,6 +28,29 @@ import { cn } from "@/lib/cn";
 interface ScanResponse {
   root: string;
   items: OrganizeItem[];
+}
+
+/** One entry POSTed to /organizer/organize/bulk. */
+interface BulkItem {
+  sourcePath: string;
+  kind: "series" | "anime" | "movie";
+  id: number;
+  seasonNumber?: number;
+  episodeNumbers?: number[];
+}
+
+interface BulkResultRow {
+  sourcePath: string;
+  status: "organized" | "failed" | "skipped";
+  detail?: string | null;
+  error?: string;
+}
+
+interface BulkResponse {
+  organized: number;
+  failed: number;
+  skipped: number;
+  results: BulkResultRow[];
 }
 
 interface OrganizeLogRow {
@@ -78,6 +102,25 @@ const STATUS_TONE: Record<OrganizeLogRow["status"], BadgeTone> = {
   skipped: "neutral",
 };
 
+/** Checkbox that can render the tri-state "indeterminate" dash (native only via ref). */
+function TriStateCheckbox({
+  checked,
+  indeterminate,
+  ...props
+}: React.ComponentProps<"input"> & { indeterminate?: boolean }) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = Boolean(indeterminate) && !checked;
+  }, [indeterminate, checked]);
+  return <Checkbox ref={ref} checked={checked} {...props} />;
+}
+
+/** The "filename → S01E05" mapping for assigning a file to a chosen series. */
+function episodeMappingOf(item: OrganizeItem): string | null {
+  if (item.type !== "episode") return null;
+  return formatSxxExx(item.season, item.episodes);
+}
+
 // ================= page =================
 
 export default function OrganizerPage() {
@@ -119,6 +162,7 @@ export default function OrganizerPage() {
 // ================= files tab =================
 
 function FilesTab() {
+  const toast = useToast();
   const [scanning, setScanning] = useState(false);
   const [scan, setScan] = useState<ScanResponse | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -128,6 +172,12 @@ function FilesTab() {
   const [typeFilter, setTypeFilter] = useState<"all" | FileCategory>("all");
   const [matchFilter, setMatchFilter] = useState<"all" | "matched" | "unmatched">("all");
 
+  // --- bulk / multi-select state ---
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkSeriesId, setBulkSeriesId] = useState<number | null>(null);
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkErrors, setBulkErrors] = useState<{ sourcePath: string; error: string }[]>([]);
+
   const { data: series } = useApi<SeriesSummary[]>("/series");
   const { data: movies } = useApi<MovieSummary[]>("/movies");
 
@@ -136,6 +186,9 @@ function FilesTab() {
     setScan(null);
     setScanError(null);
     setOrganized(new Set());
+    setSelected(new Set());
+    setBulkErrors([]);
+    setBulkSeriesId(null);
     try {
       const res = await apiFetch<ScanResponse>("/organizer/scan");
       setScan(res);
@@ -148,6 +201,29 @@ function FilesTab() {
 
   function markOrganized(sourcePath: string) {
     setOrganized((prev) => new Set(prev).add(sourcePath));
+  }
+
+  function markOrganizedMany(paths: string[]) {
+    if (paths.length === 0) return;
+    setOrganized((prev) => {
+      const next = new Set(prev);
+      for (const p of paths) next.add(p);
+      return next;
+    });
+  }
+
+  function toggleSelect(sourcePath: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(sourcePath)) next.delete(sourcePath);
+      else next.add(sourcePath);
+      return next;
+    });
+  }
+
+  function clearSelection() {
+    setSelected(new Set());
+    setBulkSeriesId(null);
   }
 
   const items = useMemo(() => scan?.items ?? [], [scan]);
@@ -163,6 +239,109 @@ function FilesTab() {
       return true;
     });
   }, [items, search, typeFilter, matchFilter]);
+
+  // Only not-yet-organized, not-already-organized rows can be (de)selected.
+  const selectableVisible = useMemo(
+    () => visible.filter((i) => !i.alreadyOrganized && !organized.has(i.sourcePath)),
+    [visible, organized]
+  );
+  // The set the bulk bar acts on: filtered ∩ selectable ∩ selected.
+  const selectedItems = useMemo(
+    () => selectableVisible.filter((i) => selected.has(i.sourcePath)),
+    [selectableVisible, selected]
+  );
+  const allSelected =
+    selectableVisible.length > 0 && selectableVisible.every((i) => selected.has(i.sourcePath));
+  const someSelected = selectableVisible.some((i) => selected.has(i.sourcePath));
+
+  const bulkSeries = useMemo(
+    () => (series ?? []).find((s) => s.id === bulkSeriesId) ?? null,
+    [series, bulkSeriesId]
+  );
+  const assignMappable = useMemo(
+    () => selectedItems.filter((i) => episodeMappingOf(i) != null),
+    [selectedItems]
+  );
+
+  function toggleSelectAll() {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const paths = selectableVisible.map((i) => i.sourcePath);
+      if (paths.length > 0 && paths.every((p) => next.has(p))) {
+        for (const p of paths) next.delete(p);
+      } else {
+        for (const p of paths) next.add(p);
+      }
+      return next;
+    });
+  }
+
+  async function runBulk(bulkItems: BulkItem[], notSent = 0) {
+    if (bulkItems.length === 0) return;
+    setBulkRunning(true);
+    try {
+      const res = await apiFetch<BulkResponse>("/organizer/organize/bulk", {
+        method: "POST",
+        body: JSON.stringify({ items: bulkItems }),
+      });
+      // Organized (and "already in the library" skips) drop out of the list.
+      const donePaths = res.results
+        .filter((r) => r.status === "organized" || (r.status === "skipped" && /already/i.test(r.error ?? "")))
+        .map((r) => r.sourcePath);
+      markOrganizedMany(donePaths);
+      // Real problems (failures + "not in the library" skips) get surfaced.
+      const errs = res.results
+        .filter((r) => r.status === "failed" || (r.status === "skipped" && !/already/i.test(r.error ?? "")))
+        .map((r) => ({ sourcePath: r.sourcePath, error: r.error ?? "Unknown error" }));
+      setBulkErrors(errs);
+
+      let msg = `Organized ${res.organized} · skipped ${res.skipped} · failed ${res.failed}`;
+      if (notSent > 0) msg += ` · ${notSent} not mappable`;
+      if (res.failed > 0) toast.error(msg);
+      else toast.success(msg);
+
+      clearSelection();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Bulk organize failed");
+    } finally {
+      setBulkRunning(false);
+    }
+  }
+
+  /** Assign every mappable selected file to the chosen series (its own S/E). */
+  function assignSelectedToSeries() {
+    if (!bulkSeries) return;
+    if (assignMappable.length === 0) {
+      toast.error("No selected file has a season/episode to map");
+      return;
+    }
+    const bulkItems: BulkItem[] = assignMappable.map((f) => ({
+      sourcePath: f.sourcePath,
+      kind: bulkSeries.isAnime ? "anime" : "series",
+      id: bulkSeries.id,
+      seasonNumber: f.season as number,
+      episodeNumbers: f.episodes,
+    }));
+    runBulk(bulkItems, selectedItems.length - assignMappable.length);
+  }
+
+  /** Organize selected files using each file's own detected library match. */
+  function organizeSelectedAuto() {
+    const matched = selectedItems.filter((f) => f.match.kind !== "none" && f.match.id != null);
+    const notSent = selectedItems.length - matched.length;
+    if (matched.length === 0) {
+      toast.error("None of the selected files have a library match");
+      return;
+    }
+    const bulkItems: BulkItem[] = matched.map((f) => ({
+      sourcePath: f.sourcePath,
+      kind: f.match.kind as "series" | "anime" | "movie",
+      id: f.match.id as number,
+      seasonNumber: f.season ?? undefined,
+      episodeNumbers: f.episodes.length ? f.episodes : undefined,
+    }));
+    runBulk(bulkItems, notSent);
+  }
 
   return (
     <div className="space-y-4">
@@ -235,12 +414,119 @@ function FilesTab() {
             </Select>
           </div>
 
+          {selectedItems.length > 0 && (
+            <div className="sticky top-0 z-10 space-y-3 rounded-lg border border-amber-500/30 bg-zinc-950/95 p-3 shadow-lg backdrop-blur">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-sm font-medium text-zinc-100">
+                  {selectedItems.length} selected
+                </span>
+                <Button size="sm" variant="ghost" onClick={clearSelection} disabled={bulkRunning}>
+                  Clear
+                </Button>
+                <div className="ml-auto">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={organizeSelectedAuto}
+                    loading={bulkRunning}
+                  >
+                    Organize selected (auto-match)
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-2 border-t border-zinc-800 pt-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-zinc-400">Assign all to a series:</span>
+                  <Select
+                    aria-label="Assign selected files to a series"
+                    value={bulkSeriesId ?? ""}
+                    onChange={(e) => setBulkSeriesId(e.target.value ? Number(e.target.value) : null)}
+                    className="min-w-64"
+                  >
+                    <option value="">Select a series / anime…</option>
+                    {(series ?? []).map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.title}
+                        {s.year ? ` (${s.year})` : ""}
+                        {s.isAnime ? " — anime" : ""}
+                      </option>
+                    ))}
+                  </Select>
+                  {bulkSeries && (
+                    <Button
+                      size="sm"
+                      onClick={assignSelectedToSeries}
+                      loading={bulkRunning}
+                      disabled={assignMappable.length === 0}
+                    >
+                      Assign &amp; organize {assignMappable.length}
+                    </Button>
+                  )}
+                </div>
+
+                {bulkSeries && (
+                  <ul className="max-h-44 space-y-1 overflow-auto rounded border border-zinc-800 bg-zinc-900/40 p-2 text-xs">
+                    {selectedItems.map((f) => {
+                      const sxe = episodeMappingOf(f);
+                      return (
+                        <li key={f.sourcePath} className="flex items-center gap-2 font-mono">
+                          <span className="min-w-0 flex-1 truncate text-zinc-400" title={f.name}>
+                            {f.name}
+                          </span>
+                          <span className="text-zinc-600">→</span>
+                          {sxe ? (
+                            <span className="shrink-0 text-emerald-300">{sxe}</span>
+                          ) : (
+                            <span className="shrink-0 text-amber-400">can&apos;t map — no episode</span>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
+
+          {bulkErrors.length > 0 && (
+            <Callout tone="danger" title={`${bulkErrors.length} file${bulkErrors.length === 1 ? "" : "s"} couldn't be organized`}>
+              <details>
+                <summary className="cursor-pointer select-none text-sm text-red-300">
+                  Show details
+                </summary>
+                <ul className="mt-2 space-y-1 text-xs">
+                  {bulkErrors.map((e) => (
+                    <li key={e.sourcePath}>
+                      <span className="font-mono text-zinc-300">{basename(e.sourcePath)}</span>
+                      <span className="text-red-300"> — {e.error}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+              <div className="mt-2">
+                <Button size="sm" variant="ghost" onClick={() => setBulkErrors([])}>
+                  Dismiss
+                </Button>
+              </div>
+            </Callout>
+          )}
+
           {visible.length === 0 ? (
             <EmptyState title="No files match your filters" />
           ) : (
             <Table>
               <THead>
                 <TR>
+                  <TH className="w-8">
+                    <TriStateCheckbox
+                      checked={allSelected}
+                      indeterminate={someSelected}
+                      disabled={selectableVisible.length === 0}
+                      onChange={toggleSelectAll}
+                      aria-label="Select all filtered files"
+                    />
+                  </TH>
                   <TH>File</TH>
                   <TH className="w-24">Type</TH>
                   <TH>Detected</TH>
@@ -257,6 +543,8 @@ function FilesTab() {
                     series={series ?? []}
                     movies={movies ?? []}
                     done={organized.has(item.sourcePath)}
+                    selected={selected.has(item.sourcePath)}
+                    onToggleSelect={toggleSelect}
                     onOrganized={markOrganized}
                   />
                 ))}
@@ -283,12 +571,16 @@ function FileRow({
   series,
   movies,
   done,
+  selected,
+  onToggleSelect,
   onOrganized,
 }: {
   item: OrganizeItem;
   series: SeriesSummary[];
   movies: MovieSummary[];
   done: boolean;
+  selected: boolean;
+  onToggleSelect: (sourcePath: string) => void;
   onOrganized: (sourcePath: string) => void;
 }) {
   const toast = useToast();
@@ -393,6 +685,14 @@ function FileRow({
   return (
     <>
       <TR className={cn("align-top", dim && "opacity-50")}>
+        <TD className="w-8">
+          <Checkbox
+            checked={selected && !dim}
+            disabled={dim}
+            onChange={() => onToggleSelect(item.sourcePath)}
+            aria-label={`Select ${item.name}`}
+          />
+        </TD>
         <TD className="max-w-xs">
           <div className="truncate font-mono text-xs text-zinc-300" title={item.name}>
             {item.name}
@@ -442,7 +742,7 @@ function FileRow({
 
       {assigning && !hasMatch && !done && (
         <TR className="bg-zinc-900/40">
-          <TD colSpan={6}>
+          <TD colSpan={7}>
             <div className="space-y-3 py-1">
               <div className="flex flex-wrap items-center gap-2">
                 <div className="flex gap-1">
