@@ -4,6 +4,9 @@ import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, schema } from "@/server/db";
 import { getRequestUser } from "@/server/auth/auth-service";
+import { approveRequest } from "@/server/requests/request-service";
+import { getSettings } from "@/server/settings/settings-service";
+import { recordLog } from "@/server/logging/logger";
 import { emitEvent } from "@/server/events/bus";
 import { ok, serverError } from "@/lib/http";
 
@@ -88,6 +91,24 @@ export async function POST(request: NextRequest) {
       .returning()
       .get();
     emitEvent({ type: "request.updated", requestId: row.id });
+
+    // Auto-approve mode: add straight to the library (no admin gate). If approval
+    // fails (e.g. no root folder / quality profile configured yet), leave the
+    // request pending so an admin can still act on it — never fail the request.
+    if (getSettings().requestsAutoApprove) {
+      try {
+        await approveRequest(row.id, 0);
+        const approved =
+          db.select().from(schema.requests).where(eq(schema.requests.id, row.id)).get() ?? row;
+        return ok(approved, { status: 201 });
+      } catch (err) {
+        recordLog("warn", `Auto-approve failed for "${row.title}"; left pending`, {
+          source: "requests",
+          context: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     return ok(row, { status: 201 });
   } catch (err) {
     return serverError(err);

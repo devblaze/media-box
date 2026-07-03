@@ -9,6 +9,7 @@ import { cn } from "@/lib/cn";
 const NAV = [
   { label: "Dashboard", href: "/settings" },
   { label: "Requests", href: "/settings/requests" },
+  { label: "Users", href: "/settings/users" },
   { label: "Media Management", href: "/settings/media-management" },
   { label: "Monitoring", href: "/settings/monitoring" },
   { label: "Quality Profiles", href: "/settings/profiles" },

@@ -457,6 +457,9 @@ export const users = sqliteTable(
     role: text("role", { enum: ["admin", "user"] }).notNull().default("user"),
     // Personal Pushover user key for request-available notifications (null = off).
     pushoverUserKey: text("pushover_user_key"),
+    // Last authenticated activity (throttled heartbeat), drives online/offline in
+    // the admin Users panel. Null until the user makes their first request post-migration.
+    lastSeenAt: integer("last_seen_at", { mode: "timestamp" }),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   },
   (t) => [uniqueIndex("users_username_unique").on(t.username)]

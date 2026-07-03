@@ -42,6 +42,18 @@ interface HistoryRow {
   movieTitle: string | null;
 }
 
+interface ActiveStream {
+  userId: number;
+  username: string;
+  stream: {
+    kind: "movie" | "episode";
+    title: string;
+    subtitle: string | null;
+    poster: string | null;
+    progressPct: number;
+  };
+}
+
 type Tone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
 
 const TONE_TEXT: Record<Tone, string> = {
@@ -119,6 +131,8 @@ export default function DashboardPage() {
   const { data: wanted, error: wantedError } = useApi<WantedData>("/wanted");
   const { data: history, error: historyError } = useApi<HistoryRow[]>("/history");
   const { data: rootFolders, error: rootFoldersError } = useApi<RootFolder[]>("/rootfolders");
+  // Live "who's watching right now" — poll so it stays current between renders.
+  const { data: streams } = useApi<ActiveStream[]>("/streams", { refreshInterval: 10_000 });
 
   // Keep counts and activity live as the server emits events.
   useEvents();
@@ -265,6 +279,70 @@ export default function DashboardPage() {
         </Card>
 
         <div className="space-y-4">
+          {/* Who's watching right now */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Now streaming</CardTitle>
+              <Link href="/settings/users" className="text-xs text-amber-400 hover:underline">
+                All users
+              </Link>
+            </CardHeader>
+            <CardBody>
+              {streams === undefined ? (
+                <ul className="space-y-3">
+                  {Array.from({ length: 2 }).map((_, i) => (
+                    <li key={i} className="flex items-center gap-3">
+                      <Skeleton className="h-12 w-8 rounded" />
+                      <div className="flex-1 space-y-1">
+                        <Skeleton className="h-3.5 w-2/3" />
+                        <Skeleton className="h-3 w-1/3" />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : streams.length === 0 ? (
+                <EmptyState
+                  title="Nobody's watching"
+                  description="Active streams appear here in real time."
+                />
+              ) : (
+                <ul>
+                  {streams.map((s) => (
+                    <li
+                      key={s.userId}
+                      className="flex items-center gap-3 border-t border-zinc-800/60 py-2 first:border-t-0 first:pt-0"
+                    >
+                      {s.stream.poster ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={s.stream.poster}
+                          alt=""
+                          className="h-12 w-8 shrink-0 rounded object-cover"
+                        />
+                      ) : (
+                        <div className="h-12 w-8 shrink-0 rounded bg-zinc-800" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm text-zinc-200">{s.stream.title}</div>
+                        <div className="truncate text-xs text-zinc-500">
+                          <span className="text-emerald-400">{s.username}</span>
+                          {s.stream.subtitle ? ` · ${s.stream.subtitle}` : ""}
+                        </div>
+                        <div className="mt-1 h-1 overflow-hidden rounded-full bg-zinc-800">
+                          <div
+                            className="h-full rounded-full bg-emerald-500"
+                            style={{ width: `${s.stream.progressPct}%` }}
+                          />
+                        </div>
+                      </div>
+                      <span className="shrink-0 text-xs text-zinc-500">{s.stream.progressPct}%</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardBody>
+          </Card>
+
           {/* Storage per root folder */}
           <Card>
             <CardHeader>

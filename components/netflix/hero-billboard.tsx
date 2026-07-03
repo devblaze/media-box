@@ -143,7 +143,7 @@ function HeroContent({ item }: { item: DiscoverItem }) {
   async function request() {
     setRequesting(true);
     try {
-      await apiFetch("/requests", {
+      const created = await apiFetch<{ status: string }>("/requests", {
         method: "POST",
         body: JSON.stringify({
           mediaType: item.mediaType,
@@ -154,7 +154,7 @@ function HeroContent({ item }: { item: DiscoverItem }) {
         }),
       });
       setStatus("requested");
-      toast.success("Requested");
+      toast.success(created.status === "pending" ? "Requested" : "Added to your library");
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         setStatus("requested");

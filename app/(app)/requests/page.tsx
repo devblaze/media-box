@@ -74,7 +74,7 @@ export default function RequestsPage() {
 
   async function requestItem(item: LookupResult) {
     try {
-      await apiFetch("/requests", {
+      const created = await apiFetch<{ status: RequestRow["status"] }>("/requests", {
         method: "POST",
         body: JSON.stringify({
           mediaType,
@@ -84,7 +84,11 @@ export default function RequestsPage() {
           posterPath: item.poster ? item.poster.replace(/^.*\/t\/p\/w\d+/, "") : null,
         }),
       });
-      toast.success(`Requested "${item.title}" — waiting for approval.`);
+      toast.success(
+        created.status === "pending"
+          ? `Requested "${item.title}" — waiting for approval.`
+          : `"${item.title}" is being added to your library.`
+      );
       await mutate();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Request failed");

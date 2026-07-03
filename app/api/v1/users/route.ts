@@ -1,27 +1,17 @@
 import type { NextRequest } from "next/server";
-import { asc } from "drizzle-orm";
 import { z } from "zod";
-import { getDb, schema } from "@/server/db";
 import { createUser } from "@/server/auth/auth-service";
 import { requireAdmin } from "@/server/auth/guards";
+import { listUsersWithActivity } from "@/server/users/user-activity-service";
 import { ok, serverError } from "@/lib/http";
+
+export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   try {
     const denied = requireAdmin(request);
     if (denied) return denied;
-    const db = getDb();
-    const rows = db
-      .select({
-        id: schema.users.id,
-        username: schema.users.username,
-        role: schema.users.role,
-        createdAt: schema.users.createdAt,
-      })
-      .from(schema.users)
-      .orderBy(asc(schema.users.username))
-      .all();
-    return ok(rows);
+    return ok(listUsersWithActivity());
   } catch (err) {
     return serverError(err);
   }

@@ -1,6 +1,6 @@
 "use client";
 
-import useSWR from "swr";
+import useSWR, { type SWRConfiguration } from "swr";
 
 export class ApiError extends Error {
   constructor(
@@ -29,6 +29,6 @@ export async function apiFetch<T = unknown>(path: string, init?: RequestInit): P
   return res.json() as Promise<T>;
 }
 
-export function useApi<T = unknown>(path: string | null) {
-  return useSWR<T>(path, (p: string) => apiFetch<T>(p));
+export function useApi<T = unknown>(path: string | null, config?: SWRConfiguration<T>) {
+  return useSWR<T>(path, (p: string) => apiFetch<T>(p), config);
 }

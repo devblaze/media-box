@@ -66,6 +66,9 @@ export interface SessionUser {
   role: "admin" | "user";
 }
 
+/** Don't rewrite lastSeenAt more than once per minute per user (keeps write load trivial). */
+const HEARTBEAT_THROTTLE_MS = 60_000;
+
 export function getSessionUser(token: string | undefined | null): SessionUser | null {
   if (!token) return null;
   const db = getDb();
@@ -74,12 +77,25 @@ export function getSessionUser(token: string | undefined | null): SessionUser | 
       id: schema.users.id,
       username: schema.users.username,
       role: schema.users.role,
+      lastSeenAt: schema.users.lastSeenAt,
     })
     .from(schema.sessions)
     .innerJoin(schema.users, eq(schema.sessions.userId, schema.users.id))
     .where(and(eq(schema.sessions.token, token), gt(schema.sessions.expiresAt, new Date())))
     .get();
-  return row ?? null;
+  if (!row) return null;
+
+  // Heartbeat: record activity so the admin Users panel can show online/offline.
+  // Throttled so a burst of API calls doesn't hammer the single SQLite writer.
+  const now = Date.now();
+  if (!row.lastSeenAt || now - row.lastSeenAt.getTime() > HEARTBEAT_THROTTLE_MS) {
+    db.update(schema.users)
+      .set({ lastSeenAt: new Date(now) })
+      .where(eq(schema.users.id, row.id))
+      .run();
+  }
+
+  return { id: row.id, username: row.username, role: row.role };
 }
 
 /** Resolve the requesting user from a Request (session cookie or X-Api-Key = admin). */

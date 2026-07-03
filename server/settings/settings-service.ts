@@ -34,6 +34,10 @@ export const appSettingsSchema = z.object({
   openSubtitlesPassword: z.string().default(""),
   // Pushover Application API token (admin) — enables per-user request notifications.
   pushoverAppToken: z.string().default(""),
+  // When true, user requests are added to the library immediately (no admin
+  // approval step). When false, requests land as "pending" for an admin to
+  // approve or decline.
+  requestsAutoApprove: z.coerce.boolean().default(false),
   // Remembered migration-wizard credentials (last successful connection) so the
   // admin doesn't retype URL + API key each time. Only ever read back by admins.
   sonarrUrl: z.string().default(""),

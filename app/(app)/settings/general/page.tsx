@@ -10,18 +10,10 @@ import {
   CardBody,
   CardHeader,
   CardTitle,
-  EmptyState,
   Field,
   HowTo,
   Input,
   Select,
-  Table,
-  TBody,
-  TD,
-  TH,
-  THead,
-  TR,
-  useConfirm,
   useToast,
 } from "@/components/ui";
 
@@ -372,142 +364,6 @@ export default function GeneralSettingsPage() {
       <Button onClick={save} loading={saving} disabled={saving || !data}>
         {saving ? "Saving…" : "Save changes"}
       </Button>
-
-      <UsersSection />
     </div>
-  );
-}
-
-interface UserRow {
-  id: number;
-  username: string;
-  role: "admin" | "user";
-  createdAt: number | string;
-}
-
-function UsersSection() {
-  const { data: users, mutate } = useApi<UserRow[]>("/users");
-  const toast = useToast();
-  const confirm = useConfirm();
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [role, setRole] = useState<"admin" | "user">("user");
-
-  // non-admins get a 403 here; hide the section entirely
-  if (!users) return null;
-
-  async function addUser() {
-    try {
-      await apiFetch("/users", {
-        method: "POST",
-        body: JSON.stringify({ username, password, role }),
-      });
-      setUsername("");
-      setPassword("");
-      await mutate();
-      toast.success("User added");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to add user");
-    }
-  }
-
-  async function removeUser(id: number, name: string) {
-    if (
-      !(await confirm({
-        message: `Delete user "${name}"? Their requests are removed too.`,
-        danger: true,
-      }))
-    )
-      return;
-    try {
-      await apiFetch(`/users/${id}`, { method: "DELETE" });
-      await mutate();
-      toast.success("User deleted");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Delete failed");
-    }
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Users</CardTitle>
-      </CardHeader>
-      <CardBody className="space-y-4">
-        <p className="text-sm text-zinc-400">
-          Regular users can browse the library and request movies/series; admins manage everything.
-        </p>
-
-        {users.length === 0 ? (
-          <EmptyState
-            title="No users yet"
-            description="Add your first user with the form below."
-          />
-        ) : (
-          <Table>
-            <THead>
-              <TR>
-                <TH>Username</TH>
-                <TH>Role</TH>
-                <TH>Created</TH>
-                <TH className="text-right">Actions</TH>
-              </TR>
-            </THead>
-            <TBody>
-              {users.map((u) => (
-                <TR key={u.id}>
-                  <TD className="text-zinc-100">{u.username}</TD>
-                  <TD>
-                    <Badge tone={u.role === "admin" ? "accent" : "neutral"}>{u.role}</Badge>
-                  </TD>
-                  <TD className="text-zinc-500">{new Date(u.createdAt).toLocaleDateString()}</TD>
-                  <TD className="text-right">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-red-400 hover:text-red-300"
-                      onClick={() => removeUser(u.id, u.username)}
-                    >
-                      Delete
-                    </Button>
-                  </TD>
-                </TR>
-              ))}
-            </TBody>
-          </Table>
-        )}
-
-        <div className="grid grid-cols-[1fr_1fr_110px_auto] items-end gap-2">
-          <Field label="Username" htmlFor="new-username">
-            <Input
-              id="new-username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-            />
-          </Field>
-          <Field label="Password" htmlFor="new-password">
-            <Input
-              id="new-password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </Field>
-          <Field label="Role" htmlFor="new-role">
-            <Select
-              id="new-role"
-              value={role}
-              onChange={(e) => setRole(e.target.value as "admin" | "user")}
-            >
-              <option value="user">user</option>
-              <option value="admin">admin</option>
-            </Select>
-          </Field>
-          <Button onClick={addUser} disabled={!username || password.length < 8}>
-            Add user
-          </Button>
-        </div>
-      </CardBody>
-    </Card>
   );
 }

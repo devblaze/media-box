@@ -8,10 +8,13 @@ import { ReleaseSearchDrawer, type SearchScope } from "@/components/release-sear
 import {
   Badge,
   Button,
+  Card,
+  CardBody,
   EmptyState,
   Input,
   Select,
   Skeleton,
+  Switch,
   Table,
   THead,
   TBody,
@@ -46,6 +49,10 @@ interface QualityDefinition {
   name: string;
 }
 
+interface RequestSettings {
+  requestsAutoApprove: boolean;
+}
+
 const STATUS_TONE: Record<Status, BadgeTone> = {
   pending: "accent",
   approved: "info",
@@ -77,12 +84,39 @@ function searchScopeFor(r: RequestRow): { scope: SearchScope; label: string } | 
 export default function AdminRequestsPage() {
   const { data: requests, mutate } = useApi<RequestRow[]>("/requests");
   const { data: qualityDefs } = useApi<QualityDefinition[]>("/qualitydefinitions");
+  const { data: settings, mutate: mutateSettings } = useApi<RequestSettings>("/settings");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState<{ scope: SearchScope; label: string } | null>(null);
   const [deciding, setDeciding] = useState<number | null>(null);
+  const [savingAuto, setSavingAuto] = useState(false);
   const toast = useToast();
   useEvents();
+
+  const autoApprove = settings?.requestsAutoApprove ?? false;
+
+  async function toggleAutoApprove(next: boolean) {
+    setSavingAuto(true);
+    // Optimistic: reflect the flip immediately, roll back on failure.
+    void mutateSettings((s) => (s ? { ...s, requestsAutoApprove: next } : s), false);
+    try {
+      await apiFetch("/settings", {
+        method: "PUT",
+        body: JSON.stringify({ requestsAutoApprove: next }),
+      });
+      await mutateSettings();
+      toast.success(
+        next
+          ? "Requests are now approved automatically."
+          : "Requests now require admin approval."
+      );
+    } catch (err) {
+      await mutateSettings();
+      toast.error(err instanceof ApiError ? err.message : "Failed to update setting");
+    } finally {
+      setSavingAuto(false);
+    }
+  }
 
   const qualityNames = useMemo(
     () => new Map((qualityDefs ?? []).map((q) => [q.id, q.name])),
@@ -143,6 +177,28 @@ export default function AdminRequestsPage() {
         Every request across all users. Approve a pending request to add it to the library, then run
         an interactive search to grab a release the automatic search missed.
       </p>
+
+      <Card>
+        <CardBody className="flex flex-wrap items-center justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-zinc-100">Auto-approve requests</span>
+              <Badge tone={autoApprove ? "success" : "neutral"}>{autoApprove ? "On" : "Off"}</Badge>
+            </div>
+            <p className="mt-1 max-w-xl text-sm text-zinc-400">
+              {autoApprove
+                ? "Anyone can request and it's added to the library right away — no approval needed."
+                : "New requests wait as “pending” until an admin approves or declines them."}
+            </p>
+          </div>
+          <Switch
+            checked={autoApprove}
+            onChange={toggleAutoApprove}
+            disabled={!settings || savingAuto}
+            aria-label="Auto-approve requests"
+          />
+        </CardBody>
+      </Card>
 
       {!filtered ? (
         <div className="space-y-2">
