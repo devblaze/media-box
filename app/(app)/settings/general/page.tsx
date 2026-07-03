@@ -50,6 +50,12 @@ export default function GeneralSettingsPage() {
   const [testResult, setTestResult] = useState<null | { ok: boolean; message?: string }>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [transcodeTest, setTranscodeTest] = useState<null | {
+    ok: boolean;
+    ffmpegAvailable: boolean;
+    message: string;
+  }>(null);
+  const [testingTranscode, setTestingTranscode] = useState(false);
 
   useEffect(() => {
     if (data) {
@@ -75,6 +81,29 @@ export default function GeneralSettingsPage() {
       setTestResult({ ok: false, message: err instanceof Error ? err.message : "Test failed" });
     } finally {
       setTesting(false);
+    }
+  }
+
+  async function testTranscode() {
+    setTestingTranscode(true);
+    setTranscodeTest(null);
+    try {
+      const result = await apiFetch<{ ok: boolean; ffmpegAvailable: boolean; message: string }>(
+        "/settings/transcode-test",
+        {
+          method: "POST",
+          body: JSON.stringify({ transcodeHwAccel, transcodeVaapiDevice }),
+        }
+      );
+      setTranscodeTest(result);
+    } catch (err) {
+      setTranscodeTest({
+        ok: false,
+        ffmpegAvailable: false,
+        message: err instanceof Error ? err.message : "Test failed",
+      });
+    } finally {
+      setTestingTranscode(false);
     }
   }
 
@@ -244,7 +273,10 @@ export default function GeneralSettingsPage() {
             <Select
               id="transcode-hwaccel"
               value={transcodeHwAccel}
-              onChange={(e) => setTranscodeHwAccel(e.target.value as HwAccel)}
+              onChange={(e) => {
+                setTranscodeHwAccel(e.target.value as HwAccel);
+                setTranscodeTest(null);
+              }}
             >
               <option value="none">None (CPU)</option>
               <option value="vaapi">Intel VAAPI</option>
@@ -258,7 +290,10 @@ export default function GeneralSettingsPage() {
               <Input
                 id="transcode-vaapi-device"
                 value={transcodeVaapiDevice}
-                onChange={(e) => setTranscodeVaapiDevice(e.target.value)}
+                onChange={(e) => {
+                  setTranscodeVaapiDevice(e.target.value);
+                  setTranscodeTest(null);
+                }}
                 className="font-mono"
                 placeholder="/dev/dri/renderD128"
               />
@@ -275,6 +310,40 @@ export default function GeneralSettingsPage() {
               onChange={(e) => setMaxTranscodeSessions(Number(e.target.value))}
             />
           </Field>
+
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={testTranscode}
+                loading={testingTranscode}
+                disabled={testingTranscode}
+              >
+                {testingTranscode ? "Testing…" : "Test"}
+              </Button>
+              {transcodeTest && (
+                <Badge tone={transcodeTest.ok ? "success" : "danger"}>
+                  {transcodeTest.ok
+                    ? transcodeHwAccel === "none"
+                      ? "Software encoding works"
+                      : "Hardware acceleration works"
+                    : transcodeTest.ffmpegAvailable
+                      ? "Not working"
+                      : "ffmpeg missing"}
+                </Badge>
+              )}
+            </div>
+            {transcodeTest && (
+              <p className={transcodeTest.ok ? "text-xs text-emerald-400/90" : "text-xs text-red-400/90"}>
+                {transcodeTest.message}
+              </p>
+            )}
+            <p className="text-xs text-zinc-500">
+              Runs a quick encode with the selected mode to confirm it works. Test the mode before
+              saving; hardware modes need the GPU passed through to the container.
+            </p>
+          </div>
 
           <HowTo title="GPU transcoding (Unraid passthrough)">
             <p>

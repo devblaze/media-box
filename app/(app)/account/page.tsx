@@ -2,6 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { apiFetch, useApi } from "@/lib/api";
+import { cn } from "@/lib/cn";
+import {
+  DEFAULT_SUBTITLE_STYLE,
+  loadSubtitleStyle,
+  saveSubtitleStyle,
+  subtitleTextStyle,
+  SUBTITLE_COLOR_PRESETS,
+  type SubtitleStyle,
+} from "@/lib/subtitle-style";
 import {
   Button,
   Callout,
@@ -11,6 +20,7 @@ import {
   CardTitle,
   Field,
   Input,
+  Select,
   useToast,
 } from "@/components/ui";
 
@@ -36,9 +46,22 @@ export default function AccountPage() {
   const [pushoverUserKey, setPushoverUserKey] = useState("");
   const [savingKey, setSavingKey] = useState(false);
 
+  // Subtitle appearance — stored in the browser and applied by the video player.
+  const [subStyle, setSubStyle] = useState<SubtitleStyle>(DEFAULT_SUBTITLE_STYLE);
+
   useEffect(() => {
     if (data) setPushoverUserKey(data.pushoverUserKey);
   }, [data]);
+
+  useEffect(() => {
+    setSubStyle(loadSubtitleStyle());
+  }, []);
+
+  function updateSubStyle(patch: Partial<SubtitleStyle>) {
+    const next = { ...subStyle, ...patch };
+    setSubStyle(next);
+    saveSubtitleStyle(next);
+  }
 
   async function changePassword() {
     setPwError(null);
@@ -166,6 +189,118 @@ export default function AccountPage() {
             </Field>
             <Button onClick={savePushover} loading={savingKey} disabled={savingKey || !data}>
               {savingKey ? "Saving…" : "Save"}
+            </Button>
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Subtitle style</CardTitle>
+          </CardHeader>
+          <CardBody className="space-y-4">
+            <p className="text-sm text-zinc-400">
+              Choose how subtitles look during playback. Changes are saved instantly on this device
+              and apply the next time you open a video.
+            </p>
+
+            {/* Live preview */}
+            <div className="flex min-h-28 items-end justify-center rounded-md bg-gradient-to-b from-zinc-600 via-zinc-800 to-zinc-950 p-4">
+              <span style={subtitleTextStyle(subStyle, { preview: true })}>
+                The quick brown fox
+              </span>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Size" htmlFor="sub-size">
+                <Select
+                  id="sub-size"
+                  value={subStyle.fontSize}
+                  onChange={(e) =>
+                    updateSubStyle({ fontSize: e.target.value as SubtitleStyle["fontSize"] })
+                  }
+                >
+                  <option value="sm">Small</option>
+                  <option value="md">Medium</option>
+                  <option value="lg">Large</option>
+                  <option value="xl">Extra large</option>
+                </Select>
+              </Field>
+
+              <Field label="Font" htmlFor="sub-font">
+                <Select
+                  id="sub-font"
+                  value={subStyle.fontFamily}
+                  onChange={(e) =>
+                    updateSubStyle({ fontFamily: e.target.value as SubtitleStyle["fontFamily"] })
+                  }
+                >
+                  <option value="sans">Sans-serif</option>
+                  <option value="serif">Serif</option>
+                  <option value="mono">Monospace</option>
+                </Select>
+              </Field>
+
+              <Field label="Background" htmlFor="sub-bg">
+                <Select
+                  id="sub-bg"
+                  value={subStyle.background}
+                  onChange={(e) =>
+                    updateSubStyle({ background: e.target.value as SubtitleStyle["background"] })
+                  }
+                >
+                  <option value="none">None</option>
+                  <option value="semi">Semi-transparent</option>
+                  <option value="solid">Solid box</option>
+                </Select>
+              </Field>
+
+              <Field label="Edge" htmlFor="sub-edge">
+                <Select
+                  id="sub-edge"
+                  value={subStyle.edge}
+                  onChange={(e) =>
+                    updateSubStyle({ edge: e.target.value as SubtitleStyle["edge"] })
+                  }
+                >
+                  <option value="none">None</option>
+                  <option value="outline">Outline</option>
+                  <option value="shadow">Drop shadow</option>
+                </Select>
+              </Field>
+            </div>
+
+            <Field label="Text color">
+              <div className="flex flex-wrap items-center gap-2">
+                {SUBTITLE_COLOR_PRESETS.map((c) => (
+                  <button
+                    key={c.value}
+                    type="button"
+                    aria-label={c.label}
+                    title={c.label}
+                    onClick={() => updateSubStyle({ color: c.value })}
+                    className={cn(
+                      "size-8 rounded-full border-2 transition-transform hover:scale-110",
+                      subStyle.color.toLowerCase() === c.value.toLowerCase()
+                        ? "border-amber-400"
+                        : "border-zinc-700"
+                    )}
+                    style={{ backgroundColor: c.value }}
+                  />
+                ))}
+                <label className="ml-1 inline-flex cursor-pointer items-center gap-2 text-xs text-zinc-400">
+                  <input
+                    type="color"
+                    value={subStyle.color}
+                    onChange={(e) => updateSubStyle({ color: e.target.value })}
+                    className="size-8 cursor-pointer rounded border border-zinc-700 bg-transparent p-0"
+                  />
+                  Custom
+                </label>
+              </div>
+            </Field>
+
+            <Button variant="outline" size="sm" onClick={() => updateSubStyle(DEFAULT_SUBTITLE_STYLE)}>
+              Reset to defaults
             </Button>
           </CardBody>
         </Card>

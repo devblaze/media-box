@@ -5,6 +5,11 @@ import { createPortal } from "react-dom";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Callout, Spinner } from "@/components/ui";
 import { cn } from "@/lib/cn";
+import {
+  loadSubtitleStyle,
+  subtitleTextStyle,
+  type SubtitleStyle,
+} from "@/lib/subtitle-style";
 import type { MediaInfo } from "@/server/library/media-info";
 
 // Type-only import of the hls.js instance type. The runtime class is loaded via
@@ -251,30 +256,71 @@ function useWatchProgress(
   }, [videoRef, target.type, target.id]);
 }
 
+/** Strip WebVTT inline markup (e.g. `<i>`, `<c.foo>`) to plain display text. */
+function stripCueTags(text: string): string {
+  return text.replace(/<[^>]+>/g, "");
+}
+
 /**
  * Drives the `<video>`'s TextTrack modes from the selected subtitle index
- * (`-1` = off). Runs after render so the `<track>` elements — and therefore the
- * matching `video.textTracks` entries — already exist, and re-applies once the
- * media loads because some browsers reset track modes on metadata load.
+ * (`-1` = off) and pipes the active cue text into a styled overlay element
+ * (`sinkRef`). The selected track is set to `hidden` — the browser still parses
+ * its cues (so `activeCues` is populated) but does NOT paint them, leaving our
+ * own overlay as the sole, fully user-styleable renderer. Re-applies on
+ * `loadedmetadata` because some browsers reset track modes on media load.
  */
-function useSubtitleSelection(
+function useStyledSubtitles(
   videoRef: React.RefObject<HTMLVideoElement | null>,
   tracks: SubtitleTrack[],
-  selectedIndex: number
+  selectedIndex: number,
+  sinkRef: React.RefObject<HTMLDivElement | null>
 ) {
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    const apply = () => {
+
+    const setModes = () => {
       const list = video.textTracks;
       for (let i = 0; i < list.length; i++) {
-        list[i].mode = i === selectedIndex ? "showing" : "disabled";
+        list[i].mode = i === selectedIndex ? "hidden" : "disabled";
       }
     };
-    apply();
-    video.addEventListener("loadedmetadata", apply);
-    return () => video.removeEventListener("loadedmetadata", apply);
-  }, [videoRef, tracks, selectedIndex]);
+
+    const currentTrack = (): TextTrack | null => {
+      const list = video.textTracks;
+      return selectedIndex >= 0 && selectedIndex < list.length ? list[selectedIndex] : null;
+    };
+
+    // Push the currently-active cue text into the overlay imperatively (no React
+    // state) so a caption change never re-renders the whole player.
+    const render = () => {
+      const sink = sinkRef.current;
+      if (!sink) return;
+      const cues = currentTrack()?.activeCues;
+      if (!cues || cues.length === 0) {
+        sink.textContent = "";
+        sink.style.visibility = "hidden";
+        return;
+      }
+      const parts: string[] = [];
+      for (let i = 0; i < cues.length; i++) {
+        parts.push(stripCueTags((cues[i] as VTTCue).text));
+      }
+      sink.textContent = parts.join("\n");
+      sink.style.visibility = "visible";
+    };
+
+    setModes();
+    render();
+
+    const track = currentTrack();
+    track?.addEventListener("cuechange", render);
+    video.addEventListener("loadedmetadata", setModes);
+    return () => {
+      track?.removeEventListener("cuechange", render);
+      video.removeEventListener("loadedmetadata", setModes);
+    };
+  }, [videoRef, tracks, selectedIndex, sinkRef]);
 }
 
 /** Subtitle `<track>` children shared by both players (modes set imperatively). */
@@ -285,6 +331,21 @@ function SubtitleTracks({ tracks }: { tracks: SubtitleTrack[] }) {
         <track key={t.id} kind="subtitles" src={t.url} srcLang={t.language} label={t.label} />
       ))}
     </>
+  );
+}
+
+/** Bottom-centred overlay that shows the active cue in the viewer's chosen style. */
+function SubtitleOverlay({
+  sinkRef,
+  style,
+}: {
+  sinkRef: React.RefObject<HTMLDivElement | null>;
+  style: SubtitleStyle;
+}) {
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-[12%] z-[5] flex justify-center px-6">
+      <div ref={sinkRef} style={{ ...subtitleTextStyle(style), visibility: "hidden" }} />
+    </div>
   );
 }
 
@@ -326,6 +387,8 @@ export function VideoPlayerModal({
   const [ccOpen, setCcOpen] = useState(false);
   const [tracks, setTracks] = useState<SubtitleTrack[]>([]);
   const [selectedSub, setSelectedSub] = useState(-1); // -1 = off (default)
+  // The viewer's saved caption appearance, read once when the player opens.
+  const [subtitleStyle] = useState<SubtitleStyle>(() => loadSubtitleStyle());
 
   // Available file versions (qualities) and the one currently playing. `null`
   // fileId means "server default/primary" (used until the list resolves, or when
@@ -452,6 +515,7 @@ export function VideoPlayerModal({
           fileId={selectedFileId}
           tracks={tracks}
           selectedSub={selectedSub}
+          subtitleStyle={subtitleStyle}
           onFallback={() => setMode("transcode")}
         />
       ) : (
@@ -461,6 +525,7 @@ export function VideoPlayerModal({
           fileId={selectedFileId}
           tracks={tracks}
           selectedSub={selectedSub}
+          subtitleStyle={subtitleStyle}
         />
       )}
 
@@ -726,19 +791,22 @@ function DirectPlayer({
   fileId,
   tracks,
   selectedSub,
+  subtitleStyle,
   onFallback,
 }: {
   target: PlaybackTarget;
   fileId: number | null;
   tracks: SubtitleTrack[];
   selectedSub: number;
+  subtitleStyle: SubtitleStyle;
   onFallback: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const subtitleSinkRef = useRef<HTMLDivElement>(null);
   const [errored, setErrored] = useState(false);
 
   useWatchProgress(videoRef, target);
-  useSubtitleSelection(videoRef, tracks, selectedSub);
+  useStyledSubtitles(videoRef, tracks, selectedSub, subtitleSinkRef);
 
   // A specific version streams from `?file=<id>`; the primary/default omits it.
   const src = `/api/v1/stream/${target.type}/${target.id}${fileId != null ? `?file=${fileId}` : ""}`;
@@ -756,6 +824,7 @@ function DirectPlayer({
       >
         <SubtitleTracks tracks={tracks} />
       </video>
+      <SubtitleOverlay sinkRef={subtitleSinkRef} style={subtitleStyle} />
       {errored && (
         <div className="absolute inset-0 z-0 flex items-center justify-center p-6">
           <Callout tone="warning" title="Direct play failed" className="max-w-md bg-zinc-900/90">
@@ -786,19 +855,22 @@ function TranscodePlayer({
   fileId,
   tracks,
   selectedSub,
+  subtitleStyle,
 }: {
   target: PlaybackTarget;
   fileId: number | null;
   tracks: SubtitleTrack[];
   selectedSub: number;
+  subtitleStyle: SubtitleStyle;
 }) {
   const { type, id } = target;
   const videoRef = useRef<HTMLVideoElement>(null);
+  const subtitleSinkRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<"starting" | "playing" | "error">("starting");
   const [error, setError] = useState<string | null>(null);
 
   useWatchProgress(videoRef, target);
-  useSubtitleSelection(videoRef, tracks, selectedSub);
+  useStyledSubtitles(videoRef, tracks, selectedSub, subtitleSinkRef);
 
   useEffect(() => {
     let cancelled = false;
@@ -877,6 +949,7 @@ function TranscodePlayer({
       <video ref={videoRef} controls autoPlay className="h-full w-full bg-black object-contain">
         <SubtitleTracks tracks={tracks} />
       </video>
+      <SubtitleOverlay sinkRef={subtitleSinkRef} style={subtitleStyle} />
       {status === "starting" && (
         <div className="absolute inset-0 z-0 flex flex-col items-center justify-center gap-2 bg-black/70 text-sm text-zinc-300">
           <Spinner className="size-6" />

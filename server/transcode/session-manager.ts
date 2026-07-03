@@ -188,6 +188,116 @@ async function ffmpegAvailable(): Promise<boolean> {
   }
 }
 
+// ---- hardware-acceleration self-test ----
+
+const HW_LABELS: Record<HwAccel, string> = {
+  none: "Software (CPU / libx264)",
+  vaapi: "Intel VAAPI",
+  qsv: "Intel QSV",
+  nvenc: "NVIDIA NVENC",
+};
+
+/**
+ * A tiny synthetic encode used to verify that a given encode path actually
+ * works on this machine. It feeds ffmpeg a 1-second generated clip and encodes
+ * a few frames with the selected encoder to a null muxer — no real file needed.
+ * For VAAPI the frames are uploaded to the GPU (which also exercises the device).
+ */
+function buildHwTestArgs(mode: HwAccel, vaapiDevice: string): string[] {
+  const src = ["-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=10"];
+  const base = ["-hide_banner", "-loglevel", "error"];
+  switch (mode) {
+    case "vaapi":
+      return [
+        ...base,
+        "-vaapi_device",
+        vaapiDevice || "/dev/dri/renderD128",
+        ...src,
+        "-vf",
+        "format=nv12,hwupload",
+        "-c:v",
+        "h264_vaapi",
+        "-f",
+        "null",
+        "-",
+      ];
+    case "qsv":
+      return [...base, ...src, "-c:v", "h264_qsv", "-f", "null", "-"];
+    case "nvenc":
+      return [...base, ...src, "-c:v", "h264_nvenc", "-f", "null", "-"];
+    case "none":
+    default:
+      return [...base, ...src, "-c:v", "libx264", "-preset", "ultrafast", "-f", "null", "-"];
+  }
+}
+
+export interface TranscodeTestResult {
+  ok: boolean;
+  /** False when the ffmpeg binary itself is missing (distinct from an encoder failure). */
+  ffmpegAvailable: boolean;
+  mode: HwAccel;
+  label: string;
+  message: string;
+}
+
+/** Pull the most useful line out of ffmpeg's stderr for a failed self-test. */
+function summarizeFfmpegError(stderr: string): string {
+  const lines = stderr
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const meaningful = lines.reverse().find((l) => !/^\[/.test(l)) ?? lines[0];
+  return meaningful ? meaningful.slice(0, 300) : "ffmpeg failed with no output.";
+}
+
+/**
+ * Verify that the configured transcoding path works end-to-end. Returns a
+ * structured result (never throws): whether ffmpeg exists, whether the selected
+ * encoder ran, and a human-readable message for the settings UI.
+ */
+export async function testTranscode(
+  mode: HwAccel,
+  vaapiDevice: string
+): Promise<TranscodeTestResult> {
+  const label = HW_LABELS[mode];
+  if (!(await ffmpegAvailable())) {
+    return {
+      ok: false,
+      ffmpegAvailable: false,
+      mode,
+      label,
+      message: "ffmpeg is not installed on the server, so transcoding is unavailable.",
+    };
+  }
+  try {
+    await execFileAsync("ffmpeg", buildHwTestArgs(mode, vaapiDevice), { timeout: 25_000 });
+    return {
+      ok: true,
+      ffmpegAvailable: true,
+      mode,
+      label,
+      message:
+        mode === "none"
+          ? "Software encoding works."
+          : `${label} hardware encoding works and is ready to use.`,
+    };
+  } catch (err) {
+    const stderr =
+      err && typeof err === "object" && "stderr" in err ? String((err as { stderr: unknown }).stderr) : "";
+    const detail = summarizeFfmpegError(stderr);
+    return {
+      ok: false,
+      ffmpegAvailable: true,
+      mode,
+      label,
+      message:
+        mode === "none"
+          ? `Software encoding failed: ${detail}`
+          : `${label} is not working — check the GPU is passed through to the container. (${detail})`,
+    };
+  }
+}
+
 /**
  * Start an HLS transcode of `absPath`. Resolves once the ffmpeg process has been
  * spawned — it does NOT wait for the transcode to finish; segments stream to disk
