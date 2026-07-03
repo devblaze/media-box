@@ -17,7 +17,10 @@ function targetFrom(movieId?: number, episodeId?: number): SubtitleTarget | null
   return null;
 }
 
-/** Interactive subtitle search — list candidates for a movie/episode + language. */
+/**
+ * Interactive subtitle search — candidates for a movie/episode. Accepts a single
+ * `language` or a comma-separated `languages` list (searched together, merged).
+ */
 export async function GET(request: NextRequest) {
   const denied = requireAdmin(request);
   if (denied) return denied;
@@ -26,10 +29,13 @@ export async function GET(request: NextRequest) {
     Number(sp.get("movieId")) || undefined,
     Number(sp.get("episodeId")) || undefined
   );
-  const language = sp.get("language");
-  if (!target || !language) return badRequest("Provide movieId or episodeId, and language");
+  const langsParam = sp.get("languages") || sp.get("language");
+  if (!target || !langsParam) return badRequest("Provide movieId or episodeId, and language(s)");
+  const languages = [...new Set(langsParam.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean))];
+  if (languages.length === 0) return badRequest("Provide at least one language");
   try {
-    return ok(await searchSubtitleCandidates(target, language));
+    const perLang = await Promise.all(languages.map((l) => searchSubtitleCandidates(target, l)));
+    return ok(perLang.flat());
   } catch (err) {
     return serverError(err);
   }
