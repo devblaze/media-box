@@ -268,10 +268,12 @@ function SubtitleTracks({ tracks }: { tracks: SubtitleTrack[] }) {
  * an overlay toggle lets the user switch, and a failed direct play offers a
  * one-click transcode fallback.
  *
- * Presentation is a full-viewport black overlay that best-effort enters real
- * fullscreen on open. A top control bar (title, subtitles, fullscreen toggle,
- * Direct/Transcode toggle, close) auto-hides after a few seconds of no mouse
- * movement. `F` toggles fullscreen; `Esc` exits fullscreen or closes.
+ * Presentation is a full-window black overlay that fills the whole browser page
+ * but stays windowed — the browser chrome/tabs remain visible. Native fullscreen
+ * is opt-in only, via the bottom-right maximize button or the `F` key. A top-left
+ * Back control returns to the page, and a bottom-right cluster (Direct/Transcode
+ * toggle, subtitles, and the fullscreen toggle) auto-hides after a few seconds of
+ * no mouse movement. `F` toggles fullscreen; `Esc` exits fullscreen or closes.
  *
  * Mount it only while a title is selected so state resets between plays.
  */
@@ -300,10 +302,8 @@ export function VideoPlayerModal({
 
   const barVisible = controlsVisible || ccOpen;
 
-  // Best-effort real fullscreen on open.
-  useEffect(() => {
-    enterFullscreen(containerRef.current);
-  }, []);
+  // Opens windowed (full-page overlay, browser chrome still visible). Native
+  // fullscreen is opt-in via the maximize button / `F` — no auto-request here.
 
   // Fetch available subtitle tracks once on open (silent on failure).
   useEffect(() => {
@@ -386,120 +386,22 @@ export function VideoPlayerModal({
         <TranscodePlayer target={target} tracks={tracks} selectedSub={selectedSub} />
       )}
 
-      {/* Top control bar — auto-hides, reappears on mouse movement. */}
+      {/* Top-left: Back button + title. Auto-hides, reappears on mouse move. */}
       <div
         className={cn(
-          "absolute inset-x-0 top-0 z-10 flex items-center gap-3 bg-gradient-to-b from-black/80 via-black/50 to-transparent px-4 py-3 transition-opacity duration-300",
+          "absolute inset-x-0 top-0 z-10 flex items-center gap-2 bg-gradient-to-b from-black/80 via-black/40 to-transparent px-3 py-3 pb-10 transition-opacity duration-300 sm:px-4 sm:gap-3",
           barVisible ? "opacity-100" : "pointer-events-none opacity-0"
         )}
       >
-        <Button variant="ghost" size="icon" onClick={handleClose} aria-label="Close player">
-          <svg viewBox="0 0 24 24" className="size-5" fill="none" aria-hidden="true">
-            <path
-              d="M6 6l12 12M18 6L6 18"
-              stroke="currentColor"
-              strokeWidth={2}
-              strokeLinecap="round"
-            />
-          </svg>
-        </Button>
-
-        <div className="min-w-0 flex-1 truncate text-base font-semibold text-white sm:text-lg">
-          {title}
-        </div>
-
-        {/* Direct / Transcode toggle */}
-        <div className="flex items-center overflow-hidden rounded-md border border-white/15">
-          <button
-            type="button"
-            onClick={() => {
-              setMode("direct");
-              showControls();
-            }}
-            className={cn(
-              "px-3 py-1.5 text-xs font-medium transition-colors",
-              mode === "direct"
-                ? "bg-amber-500 text-zinc-950"
-                : "text-zinc-200 hover:bg-white/10"
-            )}
-          >
-            Direct
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setMode("transcode");
-              showControls();
-            }}
-            className={cn(
-              "px-3 py-1.5 text-xs font-medium transition-colors",
-              mode === "transcode"
-                ? "bg-amber-500 text-zinc-950"
-                : "text-zinc-200 hover:bg-white/10"
-            )}
-          >
-            Transcode
-          </button>
-        </div>
-
-        {/* Subtitles (CC) */}
-        <div className="relative">
-          <Button
-            variant={selectedSub >= 0 ? "primary" : "ghost"}
-            size="icon"
-            onClick={() => {
-              setCcOpen((o) => !o);
-              showControls();
-            }}
-            aria-label="Subtitles"
-            aria-haspopup="menu"
-            aria-expanded={ccOpen}
-          >
-            <span className="text-xs font-bold tracking-tight">CC</span>
-          </Button>
-          {ccOpen && (
-            <div
-              role="menu"
-              className="absolute right-0 top-full mt-2 max-h-64 min-w-44 overflow-auto rounded-md border border-white/10 bg-zinc-900/95 py-1 shadow-xl backdrop-blur"
-            >
-              <SubtitleMenuItem
-                label="Off"
-                active={selectedSub === -1}
-                onSelect={() => {
-                  setSelectedSub(-1);
-                  setCcOpen(false);
-                  showControls();
-                }}
-              />
-              {tracks.length === 0 && (
-                <p className="px-3 py-2 text-xs text-zinc-500">No subtitles available</p>
-              )}
-              {tracks.map((t, i) => (
-                <SubtitleMenuItem
-                  key={t.id}
-                  label={t.label}
-                  active={selectedSub === i}
-                  onSelect={() => {
-                    setSelectedSub(i);
-                    setCcOpen(false);
-                    showControls();
-                  }}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Fullscreen toggle */}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={toggleFullscreen}
-          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+        <button
+          type="button"
+          onClick={handleClose}
+          aria-label="Back"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1.5 font-semibold text-white outline-none transition-colors hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-amber-500/50"
         >
           <svg
             viewBox="0 0 24 24"
-            className="size-5"
+            className="size-7 sm:size-8"
             fill="none"
             stroke="currentColor"
             strokeWidth={2}
@@ -507,13 +409,141 @@ export function VideoPlayerModal({
             strokeLinejoin="round"
             aria-hidden="true"
           >
-            {isFullscreen ? (
-              <path d="M8 3v3a2 2 0 0 1-2 2H3M16 3v3a2 2 0 0 0 2 2h3M8 21v-3a2 2 0 0 0-2-2H3M16 21v-3a2 2 0 0 1 2-2h3" />
-            ) : (
-              <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
-            )}
+            <path d="M15 18l-6-6 6-6" />
           </svg>
-        </Button>
+          <span className="text-base sm:text-lg">Back</span>
+        </button>
+
+        <div className="min-w-0 flex-1 truncate text-base font-semibold text-white sm:text-lg">
+          {title}
+        </div>
+      </div>
+
+      {/* Bottom control cluster — Direct/Transcode, CC (opens upward), fullscreen.
+          The wrapper is click-through so it never blocks the native <video>
+          controls; only the chip itself captures pointer events, and it sits
+          above the native control bar. */}
+      <div
+        className={cn(
+          "pointer-events-none absolute inset-x-0 bottom-0 z-10 transition-opacity duration-300",
+          barVisible ? "opacity-100" : "opacity-0"
+        )}
+      >
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-black/80 via-black/40 to-transparent" />
+
+        <div
+          className={cn(
+            "absolute right-3 bottom-16 flex items-center gap-2 rounded-lg bg-black/50 p-1.5 backdrop-blur-sm sm:right-4",
+            barVisible ? "pointer-events-auto" : "pointer-events-none"
+          )}
+        >
+          {/* Direct / Transcode toggle */}
+          <div className="flex items-center overflow-hidden rounded-md border border-white/15">
+            <button
+              type="button"
+              onClick={() => {
+                setMode("direct");
+                showControls();
+              }}
+              className={cn(
+                "px-3 py-1.5 text-xs font-medium transition-colors",
+                mode === "direct"
+                  ? "bg-amber-500 text-zinc-950"
+                  : "text-zinc-200 hover:bg-white/10"
+              )}
+            >
+              Direct
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMode("transcode");
+                showControls();
+              }}
+              className={cn(
+                "px-3 py-1.5 text-xs font-medium transition-colors",
+                mode === "transcode"
+                  ? "bg-amber-500 text-zinc-950"
+                  : "text-zinc-200 hover:bg-white/10"
+              )}
+            >
+              Transcode
+            </button>
+          </div>
+
+          {/* Subtitles (CC) — menu opens upward so it isn't clipped at the edge */}
+          <div className="relative">
+            <Button
+              variant={selectedSub >= 0 ? "primary" : "ghost"}
+              size="icon"
+              onClick={() => {
+                setCcOpen((o) => !o);
+                showControls();
+              }}
+              aria-label="Subtitles"
+              aria-haspopup="menu"
+              aria-expanded={ccOpen}
+            >
+              <span className="text-xs font-bold tracking-tight">CC</span>
+            </Button>
+            {ccOpen && (
+              <div
+                role="menu"
+                className="absolute right-0 bottom-full mb-2 max-h-64 min-w-44 overflow-auto rounded-md border border-white/10 bg-zinc-900/95 py-1 shadow-xl backdrop-blur"
+              >
+                <SubtitleMenuItem
+                  label="Off"
+                  active={selectedSub === -1}
+                  onSelect={() => {
+                    setSelectedSub(-1);
+                    setCcOpen(false);
+                    showControls();
+                  }}
+                />
+                {tracks.length === 0 && (
+                  <p className="px-3 py-2 text-xs text-zinc-500">No subtitles available</p>
+                )}
+                {tracks.map((t, i) => (
+                  <SubtitleMenuItem
+                    key={t.id}
+                    label={t.label}
+                    active={selectedSub === i}
+                    onSelect={() => {
+                      setSelectedSub(i);
+                      setCcOpen(false);
+                      showControls();
+                    }}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Fullscreen toggle (opt-in; also bound to F) */}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={toggleFullscreen}
+            aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              className="size-5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              {isFullscreen ? (
+                <path d="M8 3v3a2 2 0 0 1-2 2H3M16 3v3a2 2 0 0 0 2 2h3M8 21v-3a2 2 0 0 0-2-2H3M16 21v-3a2 2 0 0 1 2-2h3" />
+              ) : (
+                <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
+              )}
+            </svg>
+          </Button>
+        </div>
       </div>
     </div>
   );

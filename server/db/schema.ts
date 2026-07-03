@@ -528,3 +528,25 @@ export const logEntries = sqliteTable(
   },
   (t) => [index("log_created_idx").on(t.createdAt)]
 );
+
+// ---------- Downloads organizer: log of files organized into the library ----------
+
+export const organizeLog = sqliteTable(
+  "organize_log",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    sourcePath: text("source_path").notNull(),
+    destPath: text("dest_path"),
+    mediaType: text("media_type", { enum: ["movie", "series", "anime"] }),
+    /** Matched library title (series/movie name). */
+    title: text("title"),
+    /** e.g. "S01E03" for an episode, or the year for a movie. */
+    detail: text("detail"),
+    /** hardlink | copy | move | skip */
+    action: text("action"),
+    status: text("status", { enum: ["organized", "failed", "skipped"] }).notNull(),
+    message: text("message"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [index("organize_log_created_idx").on(t.createdAt)]
+);

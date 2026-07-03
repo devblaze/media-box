@@ -262,3 +262,138 @@ export function subtitleAbsPath(id: number): string | null {
   }
   return null;
 }
+
+// ---------- Discover existing on-disk subtitle files (sidecars + Subs/ subfolders) ----------
+
+const SUB_EXTS = new Set([".srt", ".vtt", ".ass", ".ssa", ".sub"]);
+
+const SUB_LANG_MAP: Record<string, string> = {
+  english: "en", eng: "en", en: "en",
+  spanish: "es", spa: "es", esp: "es", es: "es",
+  french: "fr", fre: "fr", fra: "fr", fr: "fr",
+  german: "de", ger: "de", deu: "de", de: "de",
+  italian: "it", ita: "it",
+  portuguese: "pt", por: "pt", pt: "pt", brazilian: "pt",
+  dutch: "nl", nld: "nl", dut: "nl", nl: "nl",
+  japanese: "jpn", jpn: "ja", ja: "ja",
+  korean: "kor", kor: "ko", ko: "ko",
+  chinese: "chi", chi: "zh", zho: "zh", zh: "zh",
+  russian: "rus", rus: "ru", ru: "ru",
+  arabic: "ara", ara: "ar", ar: "ar",
+  greek: "gre", gre: "el", ell: "el", el: "el",
+  hindi: "hin", hin: "hi",
+  turkish: "tur", tur: "tr",
+  polish: "pol", pol: "pl",
+  swedish: "swe", swe: "sv",
+};
+
+/** Best-effort ISO-639-1 from a subtitle filename (first language token found). */
+function langFromName(name: string): string {
+  const tokens = name.toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  for (const t of tokens) {
+    const hit = SUB_LANG_MAP[t];
+    if (hit) return SUB_LANG_MAP[hit] ?? hit; // normalize 3-letter → 2-letter
+  }
+  return "und";
+}
+
+async function discoverSubtitleFiles(
+  absVideo: string
+): Promise<{ absPath: string; language: string }[]> {
+  const videoDir = path.dirname(absVideo);
+  const videoBase = path.basename(absVideo, path.extname(absVideo));
+  const videoBaseLc = videoBase.toLowerCase();
+  const out: { absPath: string; language: string }[] = [];
+
+  let entries;
+  try {
+    entries = await fs.readdir(videoDir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    const abs = path.join(videoDir, e.name);
+    if (e.isFile()) {
+      if (!SUB_EXTS.has(path.extname(e.name).toLowerCase())) continue;
+      const base = path.basename(e.name, path.extname(e.name));
+      // Sidecar sharing the video basename: "Movie.2020.en.srt" next to "Movie.2020.mkv".
+      if (base.toLowerCase().startsWith(videoBaseLc)) {
+        out.push({ absPath: abs, language: langFromName(base.slice(videoBase.length)) });
+      }
+    } else if (e.isDirectory()) {
+      // A subtitles subfolder ("Subs"/"Subtitles") or one named after the video.
+      const dirLc = e.name.toLowerCase();
+      if (/^(subs?|subtitles?)$/.test(dirLc) || dirLc === videoBaseLc) {
+        let subEntries;
+        try {
+          subEntries = await fs.readdir(abs, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const s of subEntries) {
+          if (s.isFile() && SUB_EXTS.has(path.extname(s.name).toLowerCase())) {
+            out.push({
+              absPath: path.join(abs, s.name),
+              language: langFromName(path.basename(s.name, path.extname(s.name))),
+            });
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Scan a movie/episode's on-disk folder for existing subtitle files and record any
+ * not already known (provider "disk"), so the player lists them. Never throws.
+ */
+export async function syncDiskSubtitles(target: {
+  movieId?: number;
+  episodeId?: number;
+}): Promise<void> {
+  try {
+    const ref = target.movieId
+      ? movieVideo(target.movieId)
+      : target.episodeId
+        ? episodeVideo(target.episodeId)
+        : null;
+    if (!ref) return;
+    const found = await discoverSubtitleFiles(ref.absVideo);
+    if (found.length === 0) return;
+
+    const db = getDb();
+    const known = new Set(
+      (target.movieId
+        ? db
+            .select({ rp: schema.subtitleFiles.relativePath })
+            .from(schema.subtitleFiles)
+            .where(eq(schema.subtitleFiles.movieId, target.movieId))
+            .all()
+        : db
+            .select({ rp: schema.subtitleFiles.relativePath })
+            .from(schema.subtitleFiles)
+            .where(eq(schema.subtitleFiles.episodeId, target.episodeId!))
+            .all()
+      ).map((r) => r.rp)
+    );
+    for (const f of found) {
+      const relativePath = path.relative(ref.root, f.absPath);
+      if (known.has(relativePath)) continue;
+      db.insert(schema.subtitleFiles)
+        .values({
+          movieId: target.movieId ?? null,
+          episodeId: target.episodeId ?? null,
+          language: f.language,
+          relativePath,
+          provider: "disk",
+          hearingImpaired: /\b(sdh|hi|cc)\b/i.test(path.basename(f.absPath)),
+          addedAt: new Date(),
+        })
+        .run();
+      known.add(relativePath);
+    }
+  } catch {
+    /* discovery is best-effort — never block playback */
+  }
+}

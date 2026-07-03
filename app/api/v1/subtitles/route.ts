@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getRequestUser } from "@/server/auth/auth-service";
-import { listSubtitleTracks } from "@/server/subtitles/subtitle-service";
+import { listSubtitleTracks, syncDiskSubtitles } from "@/server/subtitles/subtitle-service";
 import { ok, badRequest, serverError } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -32,6 +32,8 @@ export async function GET(request: NextRequest) {
   const episodeId = Number(request.nextUrl.searchParams.get("episodeId")) || undefined;
   if (!movieId && !episodeId) return badRequest("?movieId= or ?episodeId= is required");
   try {
+    // Pick up subtitle files already sitting on disk (sidecars / Subs subfolders).
+    await syncDiskSubtitles({ movieId, episodeId });
     const tracks = listSubtitleTracks({ movieId, episodeId }).map((t) => ({
       id: t.id,
       language: t.language,

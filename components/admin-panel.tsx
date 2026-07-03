@@ -14,6 +14,7 @@ const NAV = [
   { label: "Indexers", href: "/settings/indexers" },
   { label: "Download Clients", href: "/settings/download-clients" },
   { label: "Library Import", href: "/settings/library-import" },
+  { label: "Organizer", href: "/settings/organizer" },
   { label: "Migrate", href: "/settings/migrate" },
   { label: "General", href: "/settings/general" },
   { label: "Logs", href: "/settings/logs" },
