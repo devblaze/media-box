@@ -26,7 +26,19 @@ interface Preview {
   app: App;
   version: string;
   itemCount: number;
-  items: { title: string; year: number | null; path: string; monitored: boolean }[];
+  /** Items already in the media-box library (by TMDB id); skipped by the migration. */
+  existingCount?: number;
+  /** itemCount - existingCount: the items that will actually be migrated. */
+  newCount?: number;
+  items: {
+    title: string;
+    year: number | null;
+    path: string;
+    monitored: boolean;
+    tmdbId?: number | null;
+    /** True when this title is already in the media-box library and will be skipped. */
+    exists?: boolean;
+  }[];
   profiles: {
     sourceId: number;
     sourceName: string;
@@ -155,6 +167,12 @@ export default function MigratePage() {
         : 0,
     [app, preview, resolveAnime]
   );
+
+  // How many previewed items are already in the library (skipped) vs. will
+  // actually migrate. Fall back gracefully for older preview responses that
+  // predate existingCount/newCount.
+  const existingCount = preview?.existingCount ?? 0;
+  const newCount = preview?.newCount ?? preview?.itemCount ?? 0;
 
   async function connect() {
     setBusy(true);
@@ -339,14 +357,24 @@ export default function MigratePage() {
               </CardTitle>
             </CardHeader>
             <CardBody>
+              {existingCount > 0 && (
+                <p className="mb-2 text-xs text-zinc-400">
+                  <span className="font-semibold text-zinc-300">{newCount}</span> new ·{" "}
+                  <span className="font-semibold text-zinc-300">{existingCount}</span> already in
+                  library
+                </p>
+              )}
               <div className="max-h-48 overflow-y-auto rounded border border-zinc-800">
                 {preview.items.map((item) => (
                   <div
                     key={item.path}
-                    className="flex items-center justify-between gap-3 border-b border-zinc-800/60 px-3 py-1 text-xs last:border-0"
+                    className={`flex items-center justify-between gap-3 border-b border-zinc-800/60 px-3 py-1 text-xs last:border-0${
+                      item.exists ? " opacity-60" : ""
+                    }`}
                   >
                     <span className="flex items-center gap-2">
                       {item.title} {item.year ? `(${item.year})` : ""}
+                      {item.exists && <Badge tone="neutral">In library</Badge>}
                       {!item.monitored && <Badge tone="neutral">unmonitored</Badge>}
                       {app === "sonarr" && resolveAnime(item.path) && (
                         <Badge tone="info">Anime</Badge>
@@ -532,12 +560,29 @@ export default function MigratePage() {
           </Card>
 
           <div className="mt-4">
-            <Button onClick={execute} loading={busy} disabled={busy || !rootFolderId}>
-              {busy ? "Starting…" : `Migrate ${preview.itemCount} items`}
-            </Button>
-            {!rootFolderId && (
-              <p className="mt-2 text-xs text-zinc-500">Choose a root folder to enable migration.</p>
-            )}
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                onClick={execute}
+                loading={busy}
+                disabled={busy || !rootFolderId || newCount === 0}
+              >
+                {busy ? "Starting…" : `Migrate ${newCount} items`}
+              </Button>
+              {existingCount > 0 && (
+                <span className="text-xs text-zinc-500">
+                  {existingCount} already in your library
+                </span>
+              )}
+            </div>
+            {newCount === 0 ? (
+              <p className="mt-2 text-xs text-zinc-500">
+                Everything here is already in your library — nothing to migrate.
+              </p>
+            ) : !rootFolderId ? (
+              <p className="mt-2 text-xs text-zinc-500">
+                Choose a root folder to enable migration.
+              </p>
+            ) : null}
           </div>
         </>
       )}

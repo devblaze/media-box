@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import {
   arrGet,
@@ -25,7 +25,19 @@ export interface MigrationPreview {
   app: App;
   version: string;
   itemCount: number;
-  items: { title: string; year: number | null; path: string; monitored: boolean }[];
+  /** How many of the items are already in the media-box library (skipped on migrate). */
+  existingCount: number;
+  /** New items that would actually be migrated (itemCount - existingCount). */
+  newCount: number;
+  items: {
+    title: string;
+    year: number | null;
+    path: string;
+    monitored: boolean;
+    tmdbId: number | null;
+    /** Already in the library (by TMDB id) — will be skipped. */
+    exists: boolean;
+  }[];
   profiles: { sourceId: number; sourceName: string; mapped: MappedProfile }[];
   rootFolders: string[];
   torznabIndexers: { name: string; url: string; hasApiKey: boolean }[];
@@ -43,20 +55,48 @@ export async function preview(app: App, conn: ArrConnection): Promise<MigrationP
     arrGet<ArrDownloadClient[]>(conn, "/downloadclient"),
   ]);
 
-  const items =
+  const rawItems =
     app === "sonarr"
       ? (await arrGet<SonarrSeries[]>(conn, "/series")).map((s) => ({
           title: s.title,
           year: s.year ?? null,
           path: s.path,
           monitored: s.monitored,
+          tmdbId: s.tmdbId ?? null,
         }))
       : (await arrGet<RadarrMovie[]>(conn, "/movie")).map((m) => ({
           title: m.title,
           year: m.year ?? null,
           path: m.path,
           monitored: m.monitored,
+          tmdbId: m.tmdbId ?? null,
         }));
+
+  // Flag items already in the library (by TMDB id) so the UI can show how many
+  // will be skipped; the execute step dedupes on the same key.
+  const db = getDb();
+  const tmdbIds = rawItems.map((i) => i.tmdbId).filter((x): x is number => x != null);
+  const existingIds = new Set<number>();
+  if (tmdbIds.length) {
+    const rows =
+      app === "sonarr"
+        ? db
+            .select({ t: schema.series.tmdbId })
+            .from(schema.series)
+            .where(inArray(schema.series.tmdbId, tmdbIds))
+            .all()
+        : db
+            .select({ t: schema.movies.tmdbId })
+            .from(schema.movies)
+            .where(inArray(schema.movies.tmdbId, tmdbIds))
+            .all();
+    for (const r of rows) existingIds.add(r.t);
+  }
+  const items = rawItems.map((i) => ({
+    ...i,
+    exists: i.tmdbId != null && existingIds.has(i.tmdbId),
+  }));
+  const existingCount = items.filter((i) => i.exists).length;
 
   const torznab = indexers.filter((i) => i.implementation === "Torznab");
   const qbit = clients.filter((c) => c.implementation === "QBittorrent");
@@ -65,6 +105,8 @@ export async function preview(app: App, conn: ArrConnection): Promise<MigrationP
     app,
     version: status.version,
     itemCount: items.length,
+    existingCount,
+    newCount: items.length - existingCount,
     items,
     profiles: profiles.map((p) => ({ sourceId: p.id, sourceName: p.name, mapped: mapProfile(p) })),
     rootFolders: rootFolders.map((r) => r.path),
