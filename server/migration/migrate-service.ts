@@ -387,6 +387,9 @@ export async function executeMigration(payload: MigrationPayload): Promise<strin
         }
         added++;
         emitEvent({ type: "series.updated", seriesId: row.id });
+        // Match + import the show's existing on-disk files (they're already sorted
+        // in Sonarr) so the episodes are immediately watchable — no manual matching.
+        enqueueCommand("DiskScan", { seriesId: row.id }, "system");
       } catch (err) {
         failed++;
         console.error(`[migrate] series '${src.title}' failed:`, err);
@@ -434,6 +437,8 @@ export async function executeMigration(payload: MigrationPayload): Promise<strin
           .get();
         added++;
         emitEvent({ type: "movie.updated", movieId: row.id });
+        // Match + import the movie's existing on-disk file so it's watchable now.
+        enqueueCommand("DiskScan", { movieId: row.id }, "system");
       } catch (err) {
         failed++;
         console.error(`[migrate] movie '${src.title}' failed:`, err);

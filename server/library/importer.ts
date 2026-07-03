@@ -14,6 +14,7 @@ import { markRequestsAvailable } from "@/server/requests/request-service";
 import { getSettings } from "@/server/settings/settings-service";
 import { getClient } from "@/server/download/client";
 import { recordDownloadFailure } from "@/server/download/failure-log";
+import { enqueueCommand } from "@/server/jobs/scheduler";
 
 type DownloadRow = typeof schema.downloads.$inferSelect;
 
@@ -229,6 +230,9 @@ async function importEpisodes(
 
   if (imported === 0) throw new ImportWarning("No importable video files matched the target episodes");
   markRequestsAvailable("series", s.id);
+  // Fetch subtitles for what just landed — but skip anime (usually has embedded
+  // subs; the user triggers those manually).
+  if (!s.isAnime) enqueueCommand("SubtitleSearch", { seriesId: s.id }, "system");
   return imported;
 }
 
@@ -327,6 +331,8 @@ async function importMovie(
     .run();
   emitEvent({ type: "movie.updated", movieId: m.id });
   markRequestsAvailable("movie", m.id);
+  // Fetch subtitles for the freshly-imported movie right away.
+  enqueueCommand("SubtitleSearch", { movieId: m.id }, "system");
   return 1;
 }
 

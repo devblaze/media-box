@@ -165,10 +165,18 @@ export function wantedSubtitles(scope?: SubtitleScope): WantedSubtitle[] {
             .map((r) => r.id)
         : scope
           ? []
-          : db
+          : // Whole-library backlog: skip anime (usually has embedded subs) — anime
+            // is only fetched when explicitly scoped (a manual search).
+            db
               .select({ id: schema.episodes.id })
               .from(schema.episodes)
-              .where(isNotNull(schema.episodes.episodeFileId))
+              .innerJoin(schema.series, eq(schema.series.id, schema.episodes.seriesId))
+              .where(
+                and(
+                  isNotNull(schema.episodes.episodeFileId),
+                  eq(schema.series.isAnime, false)
+                )
+              )
               .all()
               .map((r) => r.id);
   for (const id of episodeIds) {
