@@ -3,7 +3,8 @@ import { inArray } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, schema } from "@/server/db";
 import { requireAdmin } from "@/server/auth/guards";
-import { ok, serverError } from "@/lib/http";
+import { applyMonitorMode } from "@/server/library/series-service";
+import { ok, badRequest, serverError } from "@/lib/http";
 import { emitEvent } from "@/server/events/bus";
 
 export const runtime = "nodejs";
@@ -14,10 +15,13 @@ const bulkSchema = z.object({
       z.object({
         type: z.enum(["movie", "series"]),
         id: z.number().int().positive(),
-        monitored: z.boolean(),
+        monitored: z.boolean().optional(),
       })
     )
     .min(1),
+  // When set, bulk-apply this monitor mode to the (series) items instead of a
+  // plain monitored on/off.
+  monitorMode: z.enum(["all", "future", "none"]).optional(),
 });
 
 /**
@@ -33,14 +37,25 @@ export async function POST(request: NextRequest) {
     const denied = requireAdmin(request);
     if (denied) return denied;
 
-    const { items } = bulkSchema.parse(await request.json());
+    const { items, monitorMode } = bulkSchema.parse(await request.json());
     const db = getDb();
 
-    // Dedupe by row; a later entry for the same row wins.
+    // Bulk monitor-MODE: re-derive episode/season flags for each series item.
+    if (monitorMode) {
+      const seriesIds = [...new Set(items.filter((i) => i.type === "series").map((i) => i.id))];
+      for (const id of seriesIds) applyMonitorMode(id, monitorMode); // emits series.updated
+      return ok({ updated: seriesIds.length });
+    }
+
+    // Otherwise a plain monitored on/off. Dedupe by row; a later entry wins.
     const seriesState = new Map<number, boolean>();
     const movieState = new Map<number, boolean>();
     for (const item of items) {
+      if (item.monitored === undefined) continue;
       (item.type === "series" ? seriesState : movieState).set(item.id, item.monitored);
+    }
+    if (seriesState.size === 0 && movieState.size === 0) {
+      return badRequest("Provide `monitored` on items or a `monitorMode`");
     }
 
     const idsWhere = (state: Map<number, boolean>, monitored: boolean) =>

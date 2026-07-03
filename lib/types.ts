@@ -1,9 +1,22 @@
+/** Library/global request state of a TMDB title, mirrors the discover feed. */
+export type AvailabilityStatus = "available" | "requested" | "unavailable";
+
 export interface LookupResult {
   tmdbId: number;
   title: string;
   year: number | null;
   overview: string;
   poster: string | null;
+  /** Raw TMDB poster path (e.g. "/abc.jpg") — stored verbatim when requesting. */
+  posterPath?: string | null;
+  /**
+   * Availability relative to this media-box library, when the endpoint provides
+   * it: `available` = in the library with files, `requested` = someone already
+   * has a pending/approved request (or it is downloading), `unavailable` = new.
+   */
+  status?: AvailabilityStatus;
+  /** True when the signed-in caller already has a request for this title. */
+  requestedByMe?: boolean;
 }
 
 export interface RootFolder {

@@ -177,6 +177,29 @@ export default function MonitoringPage() {
     }
   }
 
+  async function applyBulkMode(ids: number[], mode: MonitorMode) {
+    if (ids.length === 0) return;
+    // Monitor mode only applies to series (Series + Anime tabs), so type is always "series".
+    const items = ids.map((id) => ({ type: "series" as ApiType, id }));
+    setBusy(true);
+    try {
+      const res = await apiFetch<{ updated: number }>("/monitoring/bulk", {
+        method: "POST",
+        body: JSON.stringify({ items, monitorMode: mode }),
+      });
+      await mutateSeries();
+      setSelected(new Set());
+      const label = MODES.find((m) => m.value === mode)?.label ?? mode;
+      toast.success(
+        `Set ${res.updated} series to ${label}`
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Bulk update failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function toggleMonitored(row: Row) {
     markSaving(row.id, true);
     try {
@@ -300,6 +323,29 @@ export default function MonitoringPage() {
           </span>
         </label>
         <div className="flex items-center gap-2">
+          {/* Set monitor mode — series/anime only (movies have no monitor mode) */}
+          {tab !== "movies" && (
+            <div className="flex items-center gap-2">
+              <span className="hidden text-xs text-zinc-500 sm:inline">Set mode</span>
+              <div className="inline-flex overflow-hidden rounded-md border border-zinc-700">
+                {MODES.map((m) => (
+                  <button
+                    key={m.value}
+                    type="button"
+                    disabled={selected.size === 0 || busy}
+                    onClick={() => applyBulkMode([...selected], m.value)}
+                    title={`Set selected series to monitor ${m.label.toLowerCase()} episodes`}
+                    className={cn(
+                      "px-2 py-1 text-[11px] font-medium text-zinc-400 transition-colors",
+                      "hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-zinc-400"
+                    )}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <Button
             size="sm"
             variant="secondary"

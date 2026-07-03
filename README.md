@@ -5,8 +5,19 @@
 <h1 align="center">media-box</h1>
 
 <p align="center">
-  Self-hosted, all-in-one <b>movies + series PVR</b> with a built-in Netflix-style player —
-  one container that replaces Sonarr, Radarr, Jellyseerr, and (for basic playback) Jellyfin.
+  A self-hosted, all-in-one PVR + media server in a single container — a replacement for
+  <b>Sonarr</b>, <b>Radarr</b>, <b>Bazarr</b>, <b>Jellyseerr</b>, and <b>Jellyfin</b>.
+  The only thing you need to bring is an indexer.
+</p>
+
+<br />
+
+<h1 align="center">🚧 UNDER DEVELOPMENT — USE AT YOUR OWN RISK 🚧</h1>
+
+<p align="center">
+  <b>This is an early work in progress and is NOT optimized or hardened for public / production use.</b><br />
+  Expect rough edges, breaking changes, and bugs. If you stumbled on this and want to try it:
+  keep backups, don't point it at data you can't afford to lose, and run it entirely at your own risk.
 </p>
 
 ---

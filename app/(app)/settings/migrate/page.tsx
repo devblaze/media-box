@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { apiFetch, useApi } from "@/lib/api";
 import { useEvents } from "@/lib/use-events";
 import type { QualityProfile, RootFolder } from "@/lib/types";
@@ -80,6 +80,46 @@ export default function MigratePage() {
   // movie roots only.
   const targetFolders = (rootFolders ?? []).filter((f) =>
     app === "sonarr" ? f.mediaType === "series" || f.mediaType === "anime" : f.mediaType === "movies"
+  );
+
+  // Media-box root folder ids that are the anime type. A series is flagged as
+  // anime when its resolved media-box root is one of these (movies are never
+  // anime, so this only matters for the Sonarr/series migration).
+  const animeRootIds = useMemo(
+    () => new Set((rootFolders ?? []).filter((f) => f.mediaType === "anime").map((f) => f.id)),
+    [rootFolders]
+  );
+
+  // Source (arr) root paths from the preview, longest first — so the first
+  // startsWith match is the longest-prefix match, mirroring the server.
+  const sourceRootsByLength = useMemo(
+    () => [...(preview?.rootFolders ?? [])].filter(Boolean).sort((a, b) => b.length - a.length),
+    [preview]
+  );
+
+  // Client-side mirror of the server's resolveItemRoot anime check: find the
+  // item's source root by longest-prefix match, map it to a media-box root via
+  // the per-root override (falling back to the "attach to" root id), and report
+  // whether that root is the anime type. Unmatched/unmapped roots fall to the
+  // fallback, so if the fallback is an anime root everything unmapped is anime.
+  const resolveAnime = useCallback(
+    (itemPath: string): boolean => {
+      const srcRoot = sourceRootsByLength.find((p) => itemPath.startsWith(p));
+      const mappedRootId = srcRoot ? rootFolderMap[srcRoot] : undefined;
+      const resolvedRootId = mappedRootId ?? rootFolderId;
+      return resolvedRootId != null && animeRootIds.has(resolvedRootId);
+    },
+    [sourceRootsByLength, rootFolderMap, rootFolderId, animeRootIds]
+  );
+
+  // How many previewed series resolve to an anime root, recomputed whenever the
+  // mapping or fallback changes (series migration only — movies aren't anime).
+  const animeCount = useMemo(
+    () =>
+      app === "sonarr" && preview
+        ? preview.items.reduce((n, item) => n + (resolveAnime(item.path) ? 1 : 0), 0)
+        : 0,
+    [app, preview, resolveAnime]
   );
 
   async function connect() {
@@ -270,6 +310,9 @@ export default function MigratePage() {
                     <span className="flex items-center gap-2">
                       {item.title} {item.year ? `(${item.year})` : ""}
                       {!item.monitored && <Badge tone="neutral">unmonitored</Badge>}
+                      {app === "sonarr" && resolveAnime(item.path) && (
+                        <Badge tone="info">Anime</Badge>
+                      )}
                     </span>
                     <span className="font-mono text-zinc-500">{item.path}</span>
                   </div>
@@ -378,6 +421,22 @@ export default function MigratePage() {
                     ))}
                   </div>
                 </Field>
+              )}
+
+              {app === "sonarr" && (
+                <p className="flex items-center gap-1.5 text-xs text-zinc-400">
+                  <Badge tone="info">Anime</Badge>
+                  <span>
+                    <span
+                      className={
+                        animeCount > 0 ? "font-semibold text-sky-300" : "font-semibold text-zinc-300"
+                      }
+                    >
+                      {animeCount}
+                    </span>{" "}
+                    of {preview.items.length} series will be flagged as anime with this mapping.
+                  </span>
+                </p>
               )}
 
               <div className="grid grid-cols-2 gap-3">
