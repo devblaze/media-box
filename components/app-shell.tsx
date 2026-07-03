@@ -17,11 +17,15 @@ interface Me {
 /**
  * Route-aware application frame. Everyone — admin and user alike — browses in
  * the Netflix shell; management routes get the admin-panel chrome.
- *   /settings/* or /system/* → <AdminPanel/> (a clean management sidebar).
- *   everything else          → a Netflix-style shell: a fixed <NetflixHeader/>
- *                              over a full-bleed, near-black <main>. Discover is
- *                              edge-to-edge under the transparent header; other
- *                              pages get top room to clear it.
+ *   /settings/* or /system/*        → <AdminPanel/> (a clean management sidebar).
+ *   movie/series detail (admins)    → also <AdminPanel/>, so drilling into a
+ *                                     title from Monitoring to manage its
+ *                                     episodes keeps the management sidebar.
+ *   everything else                 → a Netflix-style shell: a fixed
+ *                                     <NetflixHeader/> over a full-bleed,
+ *                                     near-black <main>. Discover is edge-to-edge
+ *                                     under the transparent header; other pages
+ *                                     get top room to clear it.
  * While /auth/me is loading we render a black screen so nothing flashes.
  */
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -33,8 +37,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Cross-page notifier for admins (e.g. background "Import all" completion).
   const notifier = me.role === "admin" ? <BackgroundTaskNotifier /> : null;
 
-  // Management chrome for the admin panel routes (server-side admin-guarded).
-  if (pathname.startsWith("/settings") || pathname.startsWith("/system")) {
+  // A movie/series *detail* page (has an id segment) — these are management
+  // surfaces for admins (monitoring, refresh/rescan/remove, per-episode search).
+  const isDetailPage =
+    pathname.startsWith("/movies/") || pathname.startsWith("/series/");
+
+  // Management chrome for the admin panel routes (server-side admin-guarded), and
+  // for admins on detail pages so the sidebar stays put while managing a title.
+  if (
+    pathname.startsWith("/settings") ||
+    pathname.startsWith("/system") ||
+    (me.role === "admin" && isDetailPage)
+  ) {
     return (
       <>
         {notifier}

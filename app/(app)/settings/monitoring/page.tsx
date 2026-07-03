@@ -370,7 +370,7 @@ export default function MonitoringPage() {
   const active = counts[tab];
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5">
+    <div className="space-y-5">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">Monitoring</h1>
