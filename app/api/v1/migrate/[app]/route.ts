@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { preview, type App } from "@/server/migration/migrate-service";
 import { enqueueCommand } from "@/server/jobs/scheduler";
+import { setSetting } from "@/server/settings/settings-service";
 import { badRequest, ok, serverError } from "@/lib/http";
 import { requireAdmin } from "@/server/auth/guards";
 
@@ -35,7 +36,17 @@ export async function POST(request: NextRequest, ctx: RouteContext<"/api/v1/migr
     const parsedApp = parseApp(app);
     if (!parsedApp) return badRequest("Unknown app — use sonarr or radarr");
     const conn = connSchema.parse(await request.json());
-    return ok(await preview(parsedApp, conn));
+    const result = await preview(parsedApp, conn);
+    // Connection worked — remember the credentials so the wizard can prefill
+    // them next time (per app, so Sonarr and Radarr are kept separately).
+    if (parsedApp === "sonarr") {
+      setSetting("sonarrUrl", conn.url);
+      setSetting("sonarrApiKey", conn.apiKey);
+    } else {
+      setSetting("radarrUrl", conn.url);
+      setSetting("radarrApiKey", conn.apiKey);
+    }
+    return ok(result);
   } catch (err) {
     return serverError(err);
   }

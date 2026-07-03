@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiFetch, useApi } from "@/lib/api";
 import { useEvents } from "@/lib/use-events";
 import type { QualityProfile, RootFolder } from "@/lib/types";
@@ -46,11 +46,29 @@ interface BazarrImport {
   note?: string;
 }
 
+/** Subset of app settings: the last-used migration credentials we prefill. */
+interface SavedCreds {
+  sonarrUrl?: string;
+  sonarrApiKey?: string;
+  radarrUrl?: string;
+  radarrApiKey?: string;
+  bazarrUrl?: string;
+  bazarrApiKey?: string;
+}
+
 export default function MigratePage() {
   const toast = useToast();
   const [app, setApp] = useState<App>("sonarr");
-  const [url, setUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
+  // Per-app connection creds, so Sonarr and Radarr are each remembered and the
+  // right pair appears when you toggle between them.
+  const [conns, setConns] = useState<Record<App, { url: string; apiKey: string }>>({
+    sonarr: { url: "", apiKey: "" },
+    radarr: { url: "", apiKey: "" },
+  });
+  const url = conns[app].url;
+  const apiKey = conns[app].apiKey;
+  const setUrl = (v: string) => setConns((c) => ({ ...c, [app]: { ...c[app], url: v } }));
+  const setApiKey = (v: string) => setConns((c) => ({ ...c, [app]: { ...c[app], apiKey: v } }));
   const [preview, setPreview] = useState<Preview | null>(null);
   const [busy, setBusy] = useState(false);
   const [executed, setExecuted] = useState(false);
@@ -73,7 +91,23 @@ export default function MigratePage() {
 
   const { data: profiles } = useApi<QualityProfile[]>("/qualityprofiles");
   const { data: rootFolders } = useApi<RootFolder[]>("/rootfolders");
+  const { data: savedCreds } = useApi<SavedCreds>("/settings");
   useEvents();
+
+  // Prefill the wizard with the last-used credentials once settings load.
+  // Guarded so it seeds exactly once and never clobbers what's being typed.
+  const [seeded, setSeeded] = useState(false);
+  useEffect(() => {
+    if (savedCreds && !seeded) {
+      setConns({
+        sonarr: { url: savedCreds.sonarrUrl ?? "", apiKey: savedCreds.sonarrApiKey ?? "" },
+        radarr: { url: savedCreds.radarrUrl ?? "", apiKey: savedCreds.radarrApiKey ?? "" },
+      });
+      setBazarrUrl(savedCreds.bazarrUrl ?? "");
+      setBazarrApiKey(savedCreds.bazarrApiKey ?? "");
+      setSeeded(true);
+    }
+  }, [savedCreds, seeded]);
 
   // Series migration can target both series and anime roots (mapping a Sonarr
   // anime path to the Anime root flags those series as anime); movies target
@@ -288,6 +322,10 @@ export default function MigratePage() {
               {busy && !preview ? "Connecting…" : "Connect"}
             </Button>
           </div>
+          <p className="mt-2 text-xs text-zinc-500">
+            Your last-used credentials are remembered after a successful connect, so you won&apos;t
+            have to type them again.
+          </p>
         </CardBody>
       </Card>
 
@@ -564,6 +602,9 @@ export default function MigratePage() {
                 {bazarrBusy ? "Importing…" : "Import"}
               </Button>
             </div>
+            <p className="mt-2 text-xs text-zinc-500">
+              Your last-used Bazarr credentials are remembered after a successful import.
+            </p>
           </CardBody>
         </Card>
 

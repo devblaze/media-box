@@ -30,6 +30,14 @@ export const appSettingsSchema = z.object({
   openSubtitlesPassword: z.string().default(""),
   // Pushover Application API token (admin) — enables per-user request notifications.
   pushoverAppToken: z.string().default(""),
+  // Remembered migration-wizard credentials (last successful connection) so the
+  // admin doesn't retype URL + API key each time. Only ever read back by admins.
+  sonarrUrl: z.string().default(""),
+  sonarrApiKey: z.string().default(""),
+  radarrUrl: z.string().default(""),
+  radarrApiKey: z.string().default(""),
+  bazarrUrl: z.string().default(""),
+  bazarrApiKey: z.string().default(""),
 });
 
 export type AppSettings = z.infer<typeof appSettingsSchema>;

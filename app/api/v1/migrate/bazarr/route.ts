@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { importFromBazarr } from "@/server/migration/bazarr-client";
+import { setSetting } from "@/server/settings/settings-service";
 import { ok, serverError } from "@/lib/http";
 import { requireAdmin } from "@/server/auth/guards";
 
@@ -17,7 +18,11 @@ export async function POST(request: NextRequest) {
   if (denied) return denied;
   try {
     const { url, apiKey } = bodySchema.parse(await request.json());
-    return ok(await importFromBazarr({ baseUrl: url, apiKey }));
+    const result = await importFromBazarr({ baseUrl: url, apiKey });
+    // Import worked — remember the credentials for prefill next time.
+    setSetting("bazarrUrl", url);
+    setSetting("bazarrApiKey", apiKey);
+    return ok(result);
   } catch (err) {
     return serverError(err);
   }
