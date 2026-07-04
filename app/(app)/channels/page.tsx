@@ -36,9 +36,9 @@ export default function ChannelsPage() {
   const { data: me } = useApi<Me>("/auth/me");
 
   return (
-    <div>
+    <div className="px-4 py-6 md:px-12">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Channels</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Channels</h1>
         <Link
           href="/channels/guide"
           className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-amber-500/60 hover:text-amber-300"
