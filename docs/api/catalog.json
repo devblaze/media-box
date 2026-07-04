@@ -91,13 +91,13 @@
       "method": "GET",
       "path": "/api/v1/command",
       "auth": "admin",
-      "summary": ""
+      "summary": "List commands, newest first."
     },
     {
       "method": "POST",
       "path": "/api/v1/command",
       "auth": "admin",
-      "summary": ""
+      "summary": "List commands, newest first."
     },
     {
       "method": "GET",

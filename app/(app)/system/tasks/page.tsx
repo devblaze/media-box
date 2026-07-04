@@ -116,9 +116,19 @@ function deriveInterval(minutes: number): { value: number; unit: "minutes" | "ho
   return { value: minutes > 0 ? minutes : 1, unit: "minutes" };
 }
 
+const COMMANDS_PAGE_SIZE = 20;
+type CommandPage = { items: CommandRow[]; total: number; page: number; pageSize: number };
+
 export default function TasksPage() {
+  const [cmdPage, setCmdPage] = useState(0);
   const { data: tasks, mutate: mutateTasks } = useApi<TaskRow[]>("/system/tasks");
-  const { data: commands, mutate: mutateCommands } = useApi<CommandRow[]>("/command");
+  const { data: cmdData, mutate: mutateCommands } = useApi<CommandPage>(
+    `/command?page=${cmdPage}&pageSize=${COMMANDS_PAGE_SIZE}`,
+    { keepPreviousData: true }
+  );
+  const commands = cmdData?.items;
+  const cmdTotal = cmdData?.total ?? 0;
+  const cmdPageCount = Math.max(1, Math.ceil(cmdTotal / COMMANDS_PAGE_SIZE));
   const toast = useToast();
   const [running, setRunning] = useState<Record<string, boolean>>({});
   const [editing, setEditing] = useState<TaskRow | null>(null);
@@ -129,6 +139,7 @@ export default function TasksPage() {
     setRunning((r) => ({ ...r, [name]: true }));
     try {
       await apiFetch("/command", { method: "POST", body: JSON.stringify({ name }) });
+      setCmdPage(0); // jump to the newest page so the just-queued command is visible
       await Promise.all([mutateTasks(), mutateCommands()]);
       toast.success(`Queued ${name}`);
     } catch (e) {
@@ -226,45 +237,77 @@ export default function TasksPage() {
       </section>
 
       <section className="mt-8">
-        <h2 className="mb-3 text-sm font-medium text-zinc-300">Recent commands</h2>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 className="text-sm font-medium text-zinc-300">Recent commands</h2>
+          {cmdTotal > 0 && (
+            <span className="text-xs text-zinc-500">{cmdTotal.toLocaleString()} total</span>
+          )}
+        </div>
         {!commands ? (
           <div className="space-y-2">
             {Array.from({ length: 4 }).map((_, i) => (
               <Skeleton key={i} className="h-9 w-full" />
             ))}
           </div>
-        ) : commands.length === 0 ? (
+        ) : cmdTotal === 0 ? (
           <EmptyState
             title="No commands yet."
             description="Manually triggered and scheduled commands will show up here."
           />
         ) : (
-          <Table>
-            <THead>
-              <TR>
-                <TH>Command</TH>
-                <TH>Trigger</TH>
-                <TH>Queued</TH>
-                <TH className="text-right">Status</TH>
-              </TR>
-            </THead>
-            <TBody>
-              {commands.map((c) => (
-                <TR key={c.id}>
-                  <TD>{c.name}</TD>
-                  <TD className="text-xs text-zinc-500">{c.trigger}</TD>
-                  <TD className="text-xs text-zinc-400">
-                    {new Date(c.queuedAt).toLocaleTimeString()}
-                  </TD>
-                  <TD className="text-right">
-                    <Badge tone={STATUS_TONE[c.status]} title={c.error ?? ""}>
-                      {c.status}
-                    </Badge>
-                  </TD>
+          <>
+            <Table>
+              <THead>
+                <TR>
+                  <TH>Command</TH>
+                  <TH>Trigger</TH>
+                  <TH>Queued</TH>
+                  <TH className="text-right">Status</TH>
                 </TR>
-              ))}
-            </TBody>
-          </Table>
+              </THead>
+              <TBody>
+                {commands.map((c) => (
+                  <TR key={c.id}>
+                    <TD>{c.name}</TD>
+                    <TD className="text-xs text-zinc-500">{c.trigger}</TD>
+                    <TD className="text-xs text-zinc-400">
+                      {new Date(c.queuedAt).toLocaleTimeString()}
+                    </TD>
+                    <TD className="text-right">
+                      <Badge tone={STATUS_TONE[c.status]} title={c.error ?? ""}>
+                        {c.status}
+                      </Badge>
+                    </TD>
+                  </TR>
+                ))}
+              </TBody>
+            </Table>
+            {cmdPageCount > 1 && (
+              <div className="mt-3 flex items-center justify-between text-xs text-zinc-400">
+                <span>
+                  Page {cmdPage + 1} of {cmdPageCount}
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={cmdPage <= 0}
+                    onClick={() => setCmdPage((p) => Math.max(0, p - 1))}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={cmdPage >= cmdPageCount - 1}
+                    onClick={() => setCmdPage((p) => Math.min(cmdPageCount - 1, p + 1))}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </section>
 

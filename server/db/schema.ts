@@ -448,7 +448,11 @@ export const commands = sqliteTable(
     // The handler's return string (per-run log line), for the task run history.
     result: text("result"),
   },
-  (t) => [index("commands_status_idx").on(t.status, t.priority)]
+  (t) => [
+    index("commands_status_idx").on(t.status, t.priority),
+    // Newest-first listing + pagination on the Tasks page (large after a re-import).
+    index("commands_queued_at_idx").on(t.queuedAt),
+  ]
 );
 
 // ---------- Users & requests ----------

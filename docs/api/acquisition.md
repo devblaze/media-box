@@ -322,10 +322,18 @@ failures calendar.
 
 ## `GET /api/v1/command`
 
-List the 50 most recently queued commands.
+List queued commands, newest first.
 
 - **Auth:** admin
-- **Response:** `200` — array of command rows (`id`, `name`, `payload`, `trigger`, `priority`, `status`, `queuedAt`, `startedAt`, `endedAt`, `result`/`error`, …).
+- **Query params (pagination is opt-in via `page`):**
+
+  | param | type | default | notes |
+  | --- | --- | --- | --- |
+  | page | integer | — | 0-based page index. Presence switches on paginated mode. |
+  | pageSize | integer | 20 | rows per page (max 100) |
+
+- **Response (default, no `page`):** `200` — array of the 50 most recent command rows (`id`, `name`, `payload`, `trigger`, `priority`, `status`, `queuedAt`, `startedAt`, `endedAt`, `result`/`error`, …).
+- **Response (paginated, with `page`):** `200` — `{ items: CommandRow[], total, page, pageSize }`. `total` is the full row count so a UI can render "page N of M" (useful when a mass re-import queues thousands of commands).
 
 ## `POST /api/v1/command`
 

@@ -1,0 +1,1 @@
+CREATE INDEX `commands_queued_at_idx` ON `commands` (`queued_at`);
