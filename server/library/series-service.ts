@@ -5,6 +5,8 @@ import { getDb, schema } from "@/server/db";
 import { getTv, getTvSeason } from "@/server/metadata/tmdb";
 import { mapSeries } from "@/server/metadata/tmdb-map";
 import { renderSeriesFolder } from "./naming";
+import { removeMedia } from "./filesystem";
+import { assertFileOperationsEnabled } from "./media-guard";
 import { emitEvent } from "@/server/events/bus";
 
 export interface AddSeriesInput {
@@ -202,9 +204,11 @@ export async function deleteSeries(seriesId: number, deleteFiles: boolean) {
   const db = getDb();
   const row = db.select().from(schema.series).where(eq(schema.series.id, seriesId)).get();
   if (!row) return;
+  // Refuse before touching the DB so read-only mode leaves DB and disk consistent.
+  if (deleteFiles) assertFileOperationsEnabled();
   db.delete(schema.series).where(eq(schema.series.id, seriesId)).run();
   if (deleteFiles) {
-    await fs.rm(row.path, { recursive: true, force: true });
+    await removeMedia(row.path, { recursive: true });
   }
   emitEvent({ type: "series.updated", seriesId });
 }

@@ -1,4 +1,3 @@
-import { eq } from "drizzle-orm";
 import { z } from "zod";
 import crypto from "node:crypto";
 import { getDb, schema } from "@/server/db";
@@ -6,6 +5,10 @@ import { getDb, schema } from "@/server/db";
 export const appSettingsSchema = z.object({
   tmdbApiKey: z.string().default(""),
   apiKey: z.string().default(""),
+  // Shared secret embedded in kiosk/cast URLs (/tv/<channel>?key=...). A TV or a
+  // Fully Kiosk tablet exchanges it for a limited session so channels play with
+  // no login. Empty = no link issued yet; admins mint/rotate it from Channels.
+  kioskToken: z.string().default(""),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
   urlBase: z.string().default(""),
   // Library paths (Unraid: separate shares). Seeded from env on first boot.
@@ -15,6 +18,10 @@ export const appSettingsSchema = z.object({
   animePath: z.string().default(""),
   // How imports place files into the library.
   importMode: z.enum(["auto", "hardlink", "copy", "move"]).default("auto"),
+  // Master read-only switch. When false, media-box never moves, renames, or deletes
+  // files: imports/organizing are refused, replaced-file and library deletes are
+  // refused, and downloads simply wait to be imported until it's turned back on.
+  fileOperationsEnabled: z.coerce.boolean().default(true),
   // HLS transcoding pipeline.
   transcodeHwAccel: z.enum(["none", "vaapi", "qsv", "nvenc"]).default("none"),
   transcodeVaapiDevice: z.string().default("/dev/dri/renderD128"),

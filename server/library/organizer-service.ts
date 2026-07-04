@@ -5,7 +5,7 @@ import { getDb, schema } from "@/server/db";
 import type { QualityModel } from "@/server/parser/quality";
 import { parseTitle } from "@/server/parser/release-parser";
 import { renderEpisodeFilename, renderMovieFilename, renderSeasonFolder } from "./naming";
-import { applyOwnership, freeSpace, mkdirp, placeFile } from "./filesystem";
+import { applyOwnership, freeSpace, mkdirp, placeFile, removeMedia } from "./filesystem";
 import { probeMediaInfo } from "./media-info";
 import { walkVideoFiles } from "./disk-scanner";
 import { emitEvent } from "@/server/events/bus";
@@ -281,7 +281,10 @@ export async function organizeFile(
           .where(eq(schema.movieFiles.id, oldFileId))
           .get();
         if (old) {
-          await fs.rm(path.join(m.path, old.relativePath), { force: true });
+          const oldPath = path.join(m.path, old.relativePath);
+          if (path.resolve(oldPath) !== path.resolve(dest)) {
+            await removeMedia(oldPath);
+          }
           db.delete(schema.movieFiles).where(eq(schema.movieFiles.id, oldFileId)).run();
         }
       }
@@ -410,7 +413,10 @@ export async function organizeFile(
           .where(eq(schema.episodeFiles.id, ep.episodeFileId))
           .get();
         if (old) {
-          await fs.rm(path.join(s.path, old.relativePath), { force: true });
+          const oldPath = path.join(s.path, old.relativePath);
+          if (path.resolve(oldPath) !== path.resolve(dest)) {
+            await removeMedia(oldPath);
+          }
           db.delete(schema.episodeFiles).where(eq(schema.episodeFiles.id, old.id)).run();
         }
       }

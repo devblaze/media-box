@@ -6,7 +6,8 @@ import { parseTitle } from "@/server/parser/release-parser";
 import { isUpgrade, type ProfileLike } from "@/server/parser/scoring";
 import type { QualityModel } from "@/server/parser/quality";
 import { renderEpisodeFilename, renderMovieFilename, renderSeasonFolder } from "./naming";
-import { applyOwnership, freeSpace, mkdirp, placeFile, type ImportMode } from "./filesystem";
+import { applyOwnership, freeSpace, mkdirp, placeFile, removeMedia, type ImportMode } from "./filesystem";
+import { fileOperationsEnabled } from "./media-guard";
 import { probeMediaInfo } from "./media-info";
 import { VIDEO_EXTENSIONS } from "./disk-scanner";
 import { emitEvent } from "@/server/events/bus";
@@ -200,7 +201,12 @@ async function importEpisodes(
           .where(eq(schema.episodeFiles.id, ep.episodeFileId))
           .get();
         if (old) {
-          await fs.rm(path.join(s.path, old.relativePath), { force: true });
+          const oldPath = path.join(s.path, old.relativePath);
+          // Don't delete the file we just placed when the replacement renders to
+          // the same path (e.g. a same-quality override re-import).
+          if (path.resolve(oldPath) !== path.resolve(dest)) {
+            await removeMedia(oldPath);
+          }
           db.delete(schema.episodeFiles).where(eq(schema.episodeFiles.id, old.id)).run();
         }
       }
@@ -311,7 +317,10 @@ async function importMovie(
   if (oldFileId && !download.override) {
     const old = db.select().from(schema.movieFiles).where(eq(schema.movieFiles.id, oldFileId)).get();
     if (old) {
-      await fs.rm(path.join(m.path, old.relativePath), { force: true });
+      const oldPath = path.join(m.path, old.relativePath);
+      if (path.resolve(oldPath) !== path.resolve(dest)) {
+        await removeMedia(oldPath);
+      }
       db.delete(schema.movieFiles).where(eq(schema.movieFiles.id, oldFileId)).run();
     }
   }
@@ -370,6 +379,21 @@ export async function importDownload(downloadId: number): Promise<string> {
     .get();
   if (!download) throw new Error(`Download ${downloadId} not found`);
   if (!download.outputPath) throw new Error(`Download ${downloadId} has no output path yet`);
+
+  // Read-only mode: don't touch files and don't record a failure. Leave the
+  // download in an active state so QueueMonitor re-imports it once file
+  // operations are turned back on.
+  if (!fileOperationsEnabled()) {
+    db.update(schema.downloads)
+      .set({
+        status: "downloading",
+        statusMessage: "File operations are disabled — this download will import when you re-enable them.",
+      })
+      .where(eq(schema.downloads.id, downloadId))
+      .run();
+    emitEvent({ type: "queue.updated" });
+    return `file operations disabled — deferred import of '${download.title}'`;
+  }
 
   db.update(schema.downloads)
     .set({ status: "importing", statusMessage: null })

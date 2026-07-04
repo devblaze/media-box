@@ -5,6 +5,8 @@ import { getDb, schema } from "@/server/db";
 import { getMovie } from "@/server/metadata/tmdb";
 import { mapMovie } from "@/server/metadata/tmdb-map";
 import { renderMovieFolder } from "./naming";
+import { removeMedia } from "./filesystem";
+import { assertFileOperationsEnabled } from "./media-guard";
 import { emitEvent } from "@/server/events/bus";
 
 export interface AddMovieInput {
@@ -87,9 +89,11 @@ export async function deleteMovie(movieId: number, deleteFiles: boolean) {
   const db = getDb();
   const row = db.select().from(schema.movies).where(eq(schema.movies.id, movieId)).get();
   if (!row) return;
+  // Refuse before touching the DB so read-only mode leaves DB and disk consistent.
+  if (deleteFiles) assertFileOperationsEnabled();
   db.delete(schema.movies).where(eq(schema.movies.id, movieId)).run();
   if (deleteFiles) {
-    await fs.rm(row.path, { recursive: true, force: true });
+    await removeMedia(row.path, { recursive: true });
   }
   emitEvent({ type: "movie.updated", movieId });
 }
@@ -113,6 +117,8 @@ export async function deleteMovieVersion(
     .where(and(eq(schema.movieFiles.id, fileId), eq(schema.movieFiles.movieId, movieId)))
     .get();
   if (!file) return { deleted: false };
+  // Refuse before touching the DB so read-only mode leaves DB and disk consistent.
+  if (deleteFile) assertFileOperationsEnabled();
 
   db.delete(schema.movieFiles).where(eq(schema.movieFiles.id, fileId)).run();
 
@@ -132,7 +138,7 @@ export async function deleteMovieVersion(
 
   if (deleteFile) {
     try {
-      await fs.rm(path.join(movie.path, file.relativePath), { force: true });
+      await removeMedia(path.join(movie.path, file.relativePath));
     } catch {
       /* file already gone — ignore */
     }

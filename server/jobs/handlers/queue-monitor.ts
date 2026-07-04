@@ -4,6 +4,7 @@ import { getClient } from "@/server/download/client";
 import { enqueueCommand } from "@/server/jobs/scheduler";
 import { emitEvent } from "@/server/events/bus";
 import { recordDownloadFailure } from "@/server/download/failure-log";
+import { fileOperationsEnabled } from "@/server/library/media-guard";
 import type { QualityModel } from "@/server/parser/quality";
 
 /** Persist a durable failure row for a download the monitor just marked failed. */
@@ -93,9 +94,18 @@ export async function queueMonitorHandler(): Promise<string> {
           break;
         case "localComplete":
           if (download.status !== "importPending") {
-            patch.status = "importPending";
-            patch.outputPath = item.savePath ?? null;
-            enqueueCommand("ImportDownload", { downloadId: download.id }, "system", 5);
+            // Read-only mode: don't kick off an import. Leave the download active
+            // (with an explanatory message) so this same branch re-triggers the
+            // import automatically on a later tick once it's turned back on.
+            if (fileOperationsEnabled()) {
+              patch.status = "importPending";
+              patch.outputPath = item.savePath ?? null;
+              enqueueCommand("ImportDownload", { downloadId: download.id }, "system", 5);
+            } else {
+              patch.outputPath = item.savePath ?? null;
+              patch.statusMessage =
+                "File operations are disabled — will import when you re-enable them.";
+            }
           }
           break;
         case "remoteCompleted":

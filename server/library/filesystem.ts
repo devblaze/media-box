@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import fscb from "node:fs";
 import path from "node:path";
+import { assertFileOperationsEnabled } from "./media-guard";
 
 export type ImportMode = "auto" | "hardlink" | "copy" | "move";
 
@@ -90,6 +91,10 @@ export async function placeFile(
   dest: string,
   mode: ImportMode = "auto"
 ): Promise<PlaceFileResult> {
+  // Read-only guard: refuse to create/move/rename anything (incl. dest dirs) when
+  // file operations are disabled. This is the single choke point every import and
+  // organize goes through, so it blocks all placement in one place.
+  assertFileOperationsEnabled();
   const destDir = path.dirname(dest);
   await fs.mkdir(destDir, { recursive: true });
 
@@ -124,6 +129,21 @@ export async function placeFile(
   // copy
   await streamCopy(src, dest);
   return { method: "copy" };
+}
+
+/**
+ * Delete a media file (or, with `recursive`, a media folder). The single guarded
+ * choke point for every destructive delete of the user's library — the importer's
+ * and organizer's replaced-file cleanup and the movie/series delete endpoints all
+ * route through here so read-only mode can never be bypassed. Uses `force` so a
+ * file that already vanished is a no-op, never an error.
+ */
+export async function removeMedia(
+  target: string,
+  opts: { recursive?: boolean } = {}
+): Promise<void> {
+  assertFileOperationsEnabled();
+  await fs.rm(target, { force: true, recursive: opts.recursive ?? false });
 }
 
 function envInt(name: string, dflt: number): number {

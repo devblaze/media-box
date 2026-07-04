@@ -19,6 +19,7 @@ import {
   Select,
   Skeleton,
   Spinner,
+  Switch,
   TBody,
   TD,
   TR,
@@ -61,6 +62,8 @@ export default function MediaManagementPage() {
   return (
     <div className="max-w-3xl space-y-6">
       <h1 className="text-xl font-semibold">Media Management</h1>
+
+      <FileOperationsSection />
 
       {(["series", "movies", "anime"] as const).map((type) => {
         const rows = (folders ?? []).filter((f) => f.mediaType === type);
@@ -146,6 +149,78 @@ export default function MediaManagementPage() {
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Master read-only switch. When OFF, media-box never moves, renames, or deletes
+ * files anywhere — imports/organizing pause and delete-from-disk is refused —
+ * enforced server-side by the media-guard. Turning it OFF asks for confirmation;
+ * turning it back ON resumes automation.
+ */
+function FileOperationsSection() {
+  const { data, mutate } = useApi<{ fileOperationsEnabled: boolean }>("/settings");
+  const [saving, setSaving] = useState(false);
+  const toast = useToast();
+  const confirm = useConfirm();
+
+  const enabled = data?.fileOperationsEnabled ?? true;
+
+  async function toggle(next: boolean) {
+    if (!next) {
+      const confirmed = await confirm({
+        title: "Turn on read-only mode?",
+        message:
+          "media-box will stop moving, renaming, and deleting files. Imports and organizing pause — downloads keep running and import automatically once you turn this back on — and deleting a movie or series will only remove it from the library, never from disk.",
+        confirmLabel: "Turn on read-only",
+        danger: true,
+      });
+      if (!confirmed) return;
+    }
+    setSaving(true);
+    // Optimistic: reflect the flip immediately, roll back on failure.
+    void mutate((s) => (s ? { ...s, fileOperationsEnabled: next } : s), false);
+    try {
+      await apiFetch("/settings", {
+        method: "PUT",
+        body: JSON.stringify({ fileOperationsEnabled: next }),
+      });
+      await mutate();
+      toast.success(
+        next
+          ? "File operations enabled — imports, moves, and deletes are active."
+          : "Read-only mode on — media files will not be moved, renamed, or deleted."
+      );
+    } catch (err) {
+      await mutate();
+      toast.error(err instanceof Error ? err.message : "Failed to update setting");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardBody className="flex flex-wrap items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-zinc-100">Allow file operations</span>
+            <Badge tone={enabled ? "success" : "danger"}>{enabled ? "On" : "Read-only"}</Badge>
+          </div>
+          <p className="mt-1 max-w-xl text-sm text-zinc-400">
+            {enabled
+              ? "media-box may move, rename, and delete files: imports and organizing run normally, and deleting a title can remove its files from disk."
+              : "Read-only mode. media-box will never move, rename, or delete files. Imports and organizing are paused (downloads keep running and import automatically once you re-enable this), and deleting a title only removes it from the library — never from disk."}
+          </p>
+        </div>
+        <Switch
+          checked={enabled}
+          onChange={toggle}
+          disabled={!data || saving}
+          aria-label="Allow file operations"
+        />
+      </CardBody>
+    </Card>
   );
 }
 
