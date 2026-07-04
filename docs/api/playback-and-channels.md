@@ -130,11 +130,22 @@ Serve the HLS playlist or a media segment for an active transcode session. Consu
 
 ## `GET /api/v1/subtitles`
 
-List downloaded subtitle sidecar tracks available for a movie/episode (for the player's caption menu). First syncs any subtitle files sitting on disk.
+List subtitle tracks available for a movie/episode (for the player's caption menu): downloaded sidecars **and** text-based streams embedded in the video file itself. First syncs any subtitle files sitting on disk.
 
 - **Auth:** Any authenticated (`getRequestUser`); `401` `{ error: "Not signed in" }` otherwise.
 - **Query params:** `movieId` **or** `episodeId` (one required).
-- **Response:** `200` — `{ "tracks": [{ "id": 5, "language": "en", "label": "English (SDH)", "url": "/api/v1/subtitles/5/vtt" }] }`. Errors: `400` if neither id given, `500`.
+- **Response:** `200` —
+  ```json
+  {
+    "tracks": [
+      { "id": "ext-5", "kind": "external", "language": "en", "label": "English (SDH)", "url": "/api/v1/subtitles/5/vtt" },
+      { "id": "emb-1", "kind": "embedded", "language": "jpn", "label": "Japanese (embedded)", "url": "/api/v1/subtitles/embedded/vtt?movieId=12&index=1" }
+    ],
+    "languages": ["en"],
+    "canSearchOnline": true
+  }
+  ```
+  `kind` distinguishes downloaded sidecars from embedded streams (image-based subs like PGS/VobSub are omitted — they can't be shown as text). `languages` is the wanted-language list and `canSearchOnline` (admin only) tells the UI whether to offer a live "Search online" action. Errors: `400` if neither id given, `500`.
 - **Example:**
   ```bash
   curl -sS "$MEDIABOX_URL/api/v1/subtitles?movieId=12" -H "x-api-key: $MEDIABOX_API_KEY"
@@ -219,6 +230,20 @@ Serve a subtitle sidecar as WebVTT for the in-app player, converting SRT/ASS/SSA
 - **Example:**
   ```bash
   curl -sS "$MEDIABOX_URL/api/v1/subtitles/5/vtt" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
+---
+
+## `GET /api/v1/subtitles/embedded/vtt`
+
+Extract a **text-based embedded** subtitle stream from a movie/episode file (via ffmpeg) and serve it as WebVTT for the player. The stream index comes from the `emb-<index>` tracks in `GET /api/v1/subtitles`; it maps to ffmpeg's `0:s:index`. Requires ffmpeg on the server. Extraction is cached by the browser for the session.
+
+- **Auth:** Any authenticated (`getRequestUser`); `401` `{ error: "Not signed in" }` otherwise.
+- **Query params:** `movieId` **or** `episodeId` (one required); `index` — non-negative subtitle-stream index (required).
+- **Response:** `200` — WebVTT text, `Content-Type: text/vtt; charset=utf-8`, `Cache-Control: private, max-age=86400`. Errors: `400` (missing/invalid params), `404` (unresolved file, ffmpeg missing, or a non-extractable stream).
+- **Example:**
+  ```bash
+  curl -sS "$MEDIABOX_URL/api/v1/subtitles/embedded/vtt?movieId=12&index=1" -H "x-api-key: $MEDIABOX_API_KEY"
   ```
 
 ---

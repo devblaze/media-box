@@ -13,6 +13,8 @@ import { getSettings } from "@/server/settings/settings-service";
 import { enabledProviders } from "./providers/registry";
 import type { ProviderCandidate, ProviderSearchQuery } from "./providers/types";
 import { emitEvent } from "@/server/events/bus";
+import { resolveMediaPath } from "@/server/library/resolve-media";
+import { probeMediaInfo, type MediaInfo } from "@/server/library/media-info";
 
 export type SubtitleTarget =
   | { kind: "movie"; id: number }
@@ -390,6 +392,71 @@ export function listSubtitleTracks(target: { movieId?: number; episodeId?: numbe
       ? db.select().from(schema.subtitleFiles).where(eq(schema.subtitleFiles.episodeId, target.episodeId)).all()
       : [];
   return rows.map((r) => ({ id: r.id, language: r.language, hearingImpaired: r.hearingImpaired }));
+}
+
+/** Codecs we can turn into a WebVTT text track (image subs like PGS/VobSub can't). */
+const TEXT_SUBTITLE_CODECS = new Set([
+  "subrip",
+  "srt",
+  "ass",
+  "ssa",
+  "mov_text",
+  "webvtt",
+  "vtt",
+  "text",
+  "subviewer",
+]);
+
+export interface EmbeddedSubtitleTrack {
+  /** 0-based position among the file's subtitle streams → ffmpeg `-map 0:s:index`. */
+  index: number;
+  language: string | null;
+  codec: string;
+}
+
+/**
+ * Text-based subtitle streams muxed inside the video file itself (e.g. an anime
+ * MKV carrying soft ASS/SRT tracks). Image-based subs (PGS/VobSub) are excluded —
+ * they can't be rendered as WebVTT text. Uses the stored ffprobe result when
+ * present, otherwise probes on demand so it also works for files imported before
+ * media-info probing existed. The returned `index` maps directly to ffmpeg's
+ * `0:s:index` for on-the-fly extraction.
+ */
+export async function listEmbeddedSubtitleTracks(
+  target: SubtitleTarget
+): Promise<EmbeddedSubtitleTrack[]> {
+  const resolved = resolveMediaPath(target.kind, target.id);
+  if (!resolved) return [];
+
+  const db = getDb();
+  let info: MediaInfo | null | undefined;
+  if (target.kind === "movie") {
+    const movie = db.select().from(schema.movies).where(eq(schema.movies.id, target.id)).get();
+    if (movie?.movieFileId) {
+      info = db
+        .select({ mediaInfo: schema.movieFiles.mediaInfo })
+        .from(schema.movieFiles)
+        .where(eq(schema.movieFiles.id, movie.movieFileId))
+        .get()?.mediaInfo as MediaInfo | null | undefined;
+    }
+  } else {
+    const ep = db.select().from(schema.episodes).where(eq(schema.episodes.id, target.id)).get();
+    if (ep?.episodeFileId) {
+      info = db
+        .select({ mediaInfo: schema.episodeFiles.mediaInfo })
+        .from(schema.episodeFiles)
+        .where(eq(schema.episodeFiles.id, ep.episodeFileId))
+        .get()?.mediaInfo as MediaInfo | null | undefined;
+    }
+  }
+
+  // Stored probe present → trust it (even if it lists no subtitles). Absent → probe now.
+  let streams = info ? (info.subtitles ?? []) : null;
+  if (streams === null) streams = (await probeMediaInfo(resolved.absPath))?.subtitles ?? [];
+
+  return streams
+    .map((s, index) => ({ index, language: s.language, codec: (s.codec || "").toLowerCase() }))
+    .filter((s) => TEXT_SUBTITLE_CODECS.has(s.codec));
 }
 
 /** Absolute on-disk path of a subtitle sidecar file, or null if unknown. */

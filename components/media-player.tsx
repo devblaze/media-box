@@ -193,8 +193,30 @@ function canDirectPlay(info: MediaInfo | null | undefined): boolean {
   return support === "probably" || support === "maybe";
 }
 
-/** A downloaded subtitle sidecar, as served by `GET /api/v1/subtitles`. */
-type SubtitleTrack = { id: number; language: string; label: string; url: string };
+/** A subtitle track (downloaded sidecar or embedded stream) from `GET /api/v1/subtitles`. */
+type SubtitleTrack = {
+  id: string;
+  kind?: "external" | "embedded";
+  language: string;
+  label: string;
+  url: string;
+};
+
+/** The full `GET /api/v1/subtitles` payload: tracks + live-search context. */
+type SubtitlesResponse = {
+  tracks: SubtitleTrack[];
+  languages?: string[];
+  canSearchOnline?: boolean;
+};
+
+/** One provider hit from `GET /api/v1/subtitles/manual` (live online search). */
+type SubtitleCandidate = {
+  id: string;
+  providerName: string;
+  language: string;
+  release: string;
+  hearingImpaired: boolean;
+};
 
 /** Shape of `GET /api/v1/watch-progress` (or `null` when nothing is stored). */
 type WatchProgress = { positionSeconds: number; durationSeconds: number; watched: boolean };
@@ -491,6 +513,13 @@ export function VideoPlayerModal({
   const [ccOpen, setCcOpen] = useState(false);
   const [tracks, setTracks] = useState<SubtitleTrack[]>([]);
   const [selectedSub, setSelectedSub] = useState(-1); // -1 = off (default)
+  // Live "Search online" state for the CC menu (admins only).
+  const [subLanguages, setSubLanguages] = useState<string[]>([]);
+  const [canSearchOnline, setCanSearchOnline] = useState(false);
+  const [subSearching, setSubSearching] = useState(false);
+  const [subCandidates, setSubCandidates] = useState<SubtitleCandidate[] | null>(null);
+  const [subSearchError, setSubSearchError] = useState<string | null>(null);
+  const [subDownloadingId, setSubDownloadingId] = useState<string | null>(null);
   // The viewer's saved caption appearance, read once when the player opens.
   const [subtitleStyle] = useState<SubtitleStyle>(() => loadSubtitleStyle());
   // Subtitle sync offset in seconds (+ = later, − = earlier), nudged live with
@@ -517,20 +546,77 @@ export function VideoPlayerModal({
   // Opens windowed (full-page overlay, browser chrome still visible). Native
   // fullscreen is opt-in via the maximize button / `F` — no auto-request here.
 
-  // Fetch available subtitle tracks for the current title (silent on failure).
+  // Fetch available subtitle tracks (sidecar + embedded) for the current title,
+  // plus the wanted languages and whether this user may search providers live.
   // Refetches whenever `current` changes (e.g. navigating to a neighbour episode).
   useEffect(() => {
     const key = current.type === "movie" ? "movieId" : "episodeId";
     let active = true;
-    void apiFetch<{ tracks: SubtitleTrack[] }>(`/subtitles?${key}=${current.id}`)
+    // Clear any prior online-search results when the title changes.
+    setSubCandidates(null);
+    setSubSearchError(null);
+    void apiFetch<SubtitlesResponse>(`/subtitles?${key}=${current.id}`)
       .then((res) => {
-        if (active) setTracks(res.tracks ?? []);
+        if (!active) return;
+        setTracks(res.tracks ?? []);
+        setSubLanguages(res.languages ?? []);
+        setCanSearchOnline(!!res.canSearchOnline);
       })
       .catch(() => {});
     return () => {
       active = false;
     };
   }, [current.type, current.id]);
+
+  // Live provider search from the CC menu ("Search online"). Admin-gated server-side.
+  const runOnlineSearch = useCallback(async () => {
+    const key = current.type === "movie" ? "movieId" : "episodeId";
+    const langs = subLanguages.length > 0 ? subLanguages : ["en"];
+    setSubSearching(true);
+    setSubSearchError(null);
+    setSubCandidates(null);
+    try {
+      const res = await apiFetch<SubtitleCandidate[]>(
+        `/subtitles/manual?${key}=${current.id}&languages=${encodeURIComponent(langs.join(","))}`
+      );
+      setSubCandidates(res);
+      if (res.length === 0) setSubSearchError("No subtitles found from your providers.");
+    } catch (e) {
+      setSubSearchError(e instanceof ApiError ? e.message : "Search failed. Try again.");
+    } finally {
+      setSubSearching(false);
+    }
+  }, [current.type, current.id, subLanguages]);
+
+  // Download a chosen candidate, then refetch tracks and auto-select the new one.
+  const downloadCandidate = useCallback(
+    async (candidate: SubtitleCandidate) => {
+      const key = current.type === "movie" ? "movieId" : "episodeId";
+      setSubDownloadingId(candidate.id);
+      setSubSearchError(null);
+      try {
+        await apiFetch(`/subtitles/manual`, {
+          method: "POST",
+          body: JSON.stringify({ [key]: current.id, candidateId: candidate.id }),
+        });
+        const res = await apiFetch<SubtitlesResponse>(`/subtitles?${key}=${current.id}`);
+        const next = res.tracks ?? [];
+        setTracks(next);
+        // Prefer the freshly-downloaded language among external tracks.
+        const idx = next.findIndex(
+          (t) => t.kind !== "embedded" && t.language === candidate.language
+        );
+        setSelectedSub(idx >= 0 ? idx : next.length > 0 ? 0 : -1);
+        setSubCandidates(null);
+        setCcOpen(false);
+      } catch (e) {
+        setSubSearchError(e instanceof ApiError ? e.message : "Download failed. Try another.");
+      } finally {
+        setSubDownloadingId(null);
+      }
+    },
+    [current.type, current.id]
+  );
 
   // Fetch the available file versions for the current title. Silent on failure —
   // we then treat it as a single default version (no picker, fileId stays null).
@@ -1033,6 +1119,66 @@ export function VideoPlayerModal({
                     }}
                   />
                 ))}
+
+                {/* Live provider search — fetch more subtitles on demand (admins). */}
+                {canSearchOnline && (
+                  <div className="mt-1 border-t border-white/10 px-2 pb-1 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void runOnlineSearch();
+                        showControls();
+                      }}
+                      disabled={subSearching}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs font-medium text-zinc-100 transition-colors hover:bg-white/10 disabled:opacity-60"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        className={cn("size-4 shrink-0", subSearching && "animate-pulse")}
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <circle cx="11" cy="11" r="7" />
+                        <path d="m21 21-4.3-4.3" />
+                      </svg>
+                      {subSearching ? "Searching providers…" : "Search online for subtitles"}
+                    </button>
+                    {subSearchError && (
+                      <p className="px-2 py-1 text-[11px] text-amber-400/90">{subSearchError}</p>
+                    )}
+                    {subCandidates && subCandidates.length > 0 && (
+                      <ul className="mt-1 max-h-40 overflow-auto">
+                        {subCandidates.map((c) => (
+                          <li key={c.id}>
+                            <button
+                              type="button"
+                              onClick={() => void downloadCandidate(c)}
+                              disabled={subDownloadingId !== null}
+                              className="flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left transition-colors hover:bg-white/10 disabled:opacity-60"
+                            >
+                              <span className="min-w-0">
+                                <span className="block truncate text-[11px] text-zinc-100">
+                                  {c.release || c.providerName}
+                                </span>
+                                <span className="block truncate text-[10px] text-zinc-500">
+                                  {c.language.toUpperCase()} · {c.providerName}
+                                  {c.hearingImpaired ? " · SDH" : ""}
+                                </span>
+                              </span>
+                              <span className="shrink-0 text-[10px] font-medium text-amber-300">
+                                {subDownloadingId === c.id ? "…" : "Add"}
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
 
                 {/* Subtitle-sync timing — nudge the delay earlier / later. */}
                 {selectedSub >= 0 && (
