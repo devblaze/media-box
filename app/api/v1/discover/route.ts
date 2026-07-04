@@ -120,7 +120,10 @@ function annotate(base: BaseItem[]): DiscoverItem[] {
   const avail = annotateAvailability(base.map((b) => ({ tmdbId: b.tmdbId, mediaType: b.mediaType })));
   return base.map((b) => {
     const a = avail.get(availabilityKey(b.mediaType, b.tmdbId));
-    return { ...b, status: a?.status ?? "unavailable", mediaId: a?.mediaId ?? null };
+    // For a series already in the library, trust the library's isAnime flag over
+    // the TMDB genre/language heuristic so it lands in the right category.
+    const isAnime = a?.mediaId != null && b.mediaType === "series" ? a.isAnime : b.isAnime;
+    return { ...b, isAnime, status: a?.status ?? "unavailable", mediaId: a?.mediaId ?? null };
   });
 }
 
@@ -154,6 +157,7 @@ function recentlyAdded(): DiscoverItem[] {
       posterPath: schema.series.posterPath,
       backdropPath: schema.series.backdropPath,
       overview: schema.series.overview,
+      isAnime: schema.series.isAnime,
       dateAdded: schema.episodeFiles.dateAdded,
     })
     .from(schema.episodeFiles)
@@ -181,7 +185,7 @@ function recentlyAdded(): DiscoverItem[] {
     poster: posterUrl(r.posterPath),
     posterPath: r.posterPath,
     backdrop: backdropUrl(r.backdropPath),
-    isAnime: false,
+    isAnime: r.kind === "series" ? r.isAnime : false,
     overview: r.overview ?? "",
     status: "available" as const,
     mediaId: r.id,
@@ -227,7 +231,15 @@ export async function GET(request: NextRequest) {
     };
 
     if (feeds[category]) {
-      return ok(annotate(await feeds[category]()));
+      const items = annotate(await feeds[category]());
+      // Keep anime out of the Series category and non-anime out of the Anime
+      // category (library titles use their real flag; TMDB browse the heuristic).
+      const filtered = category.startsWith("series-")
+        ? items.filter((i) => !i.isAnime)
+        : category.startsWith("anime-")
+          ? items.filter((i) => i.isAnime)
+          : items;
+      return ok(filtered);
     }
 
     // default: trending (mixed movies + TV)

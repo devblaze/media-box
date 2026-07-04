@@ -15,6 +15,8 @@ export interface Availability {
   status: AvailabilityStatus;
   /** Library id (movies.id / series.id) when the title is in the library, else null. */
   mediaId: number | null;
+  /** The library's authoritative anime flag for an in-library series (else false). */
+  isAnime: boolean;
 }
 
 export function availabilityKey(mediaType: MediaKind, tmdbId: number): string {
@@ -52,7 +54,7 @@ export function annotateAvailability(
   // --- library series + which of them have any episode file ---
   const seriesRows = seriesTmdbIds.length
     ? db
-        .select({ tmdbId: schema.series.tmdbId, id: schema.series.id })
+        .select({ tmdbId: schema.series.tmdbId, id: schema.series.id, isAnime: schema.series.isAnime })
         .from(schema.series)
         .where(inArray(schema.series.tmdbId, seriesTmdbIds))
         .all()
@@ -95,16 +97,17 @@ export function annotateAvailability(
 
     if (item.mediaType === "movie") {
       const lib = movieByTmdb.get(item.tmdbId);
-      if (lib?.movieFileId != null) out.set(key, { status: "available", mediaId: lib.id });
-      else if (lib) out.set(key, { status: "requested", mediaId: lib.id });
-      else if (requested.has(key)) out.set(key, { status: "requested", mediaId: null });
-      else out.set(key, { status: "unavailable", mediaId: null });
+      if (lib?.movieFileId != null) out.set(key, { status: "available", mediaId: lib.id, isAnime: false });
+      else if (lib) out.set(key, { status: "requested", mediaId: lib.id, isAnime: false });
+      else if (requested.has(key)) out.set(key, { status: "requested", mediaId: null, isAnime: false });
+      else out.set(key, { status: "unavailable", mediaId: null, isAnime: false });
     } else {
       const lib = seriesByTmdb.get(item.tmdbId);
-      if (lib && seriesWithFiles.has(lib.id)) out.set(key, { status: "available", mediaId: lib.id });
-      else if (lib) out.set(key, { status: "requested", mediaId: lib.id });
-      else if (requested.has(key)) out.set(key, { status: "requested", mediaId: null });
-      else out.set(key, { status: "unavailable", mediaId: null });
+      const isAnime = lib?.isAnime ?? false;
+      if (lib && seriesWithFiles.has(lib.id)) out.set(key, { status: "available", mediaId: lib.id, isAnime });
+      else if (lib) out.set(key, { status: "requested", mediaId: lib.id, isAnime });
+      else if (requested.has(key)) out.set(key, { status: "requested", mediaId: null, isAnime: false });
+      else out.set(key, { status: "unavailable", mediaId: null, isAnime: false });
     }
   }
 
