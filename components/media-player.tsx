@@ -139,22 +139,57 @@ const UP_NEXT_LEAD_SECONDS = 25;
 /** Seconds the "Up next" auto-advance countdown starts from. */
 const UP_NEXT_COUNTDOWN = 10;
 
-const DIRECT_CONTAINERS = new Set(["mp4", "m4v", "mov"]);
+// Containers a browser can demux natively (MKV/AVI/TS always need transcoding).
+const NATIVE_CONTAINERS = new Set(["mp4", "m4v", "mov", "webm"]);
+// Audio codecs browsers can decode (AC3/EAC3/DTS/TrueHD can't → transcode).
+const WEB_AUDIO = new Set(["aac", "mp4a", "mp3", "opus", "vorbis", "flac"]);
+// SSR fallback baseline (no DOM to probe): the near-universal H.264/AAC set.
 const DIRECT_VIDEO = new Set(["h264", "avc", "avc1"]);
-const DIRECT_AUDIO = new Set(["aac"]);
+const DIRECT_AUDIO = new Set(["aac", "mp4a"]);
+
+/** RFC-6381 codecs MIME for `canPlayType`, from probed codec names (best-effort). */
+function directMime(info: MediaInfo): string | null {
+  const c = info.container.toLowerCase();
+  const mime = c === "webm" ? "video/webm" : NATIVE_CONTAINERS.has(c) ? "video/mp4" : null;
+  if (!mime) return null;
+  const codecs: string[] = [];
+  const v = (info.video?.codec ?? "").toLowerCase();
+  if (["h264", "avc", "avc1"].includes(v)) codecs.push("avc1.640029");
+  else if (["hevc", "h265", "hvc1", "hev1"].includes(v)) codecs.push("hvc1.1.6.L120.90");
+  else if (v === "av1") codecs.push("av01.0.08M.08");
+  else if (["vp9", "vp09"].includes(v)) codecs.push("vp09.00.10.08");
+  else if (v) return null; // unknown video codec — don't risk direct play
+  const a = (info.audio?.codec ?? "").toLowerCase();
+  if (a === "aac" || a === "mp4a") codecs.push("mp4a.40.2");
+  else if (a === "mp3") codecs.push("mp4a.69");
+  else if (a === "opus") codecs.push("opus");
+  else if (a === "vorbis") codecs.push("vorbis");
+  else if (a === "flac") codecs.push("flac");
+  return `${mime}; codecs="${codecs.join(",")}"`;
+}
 
 /**
- * Decide whether a file can be handed to a native `<video>` element as-is.
- * True only for MP4/H.264/AAC — the near-universal browser baseline. (ffprobe
- * reports MP4's container as "mov", so we accept that alias too.) When we have no
- * MediaInfo we optimistically default to direct play with a transcode fallback.
+ * Decide whether THIS device can play the file natively. Container must be
+ * browser-demuxable and audio web-decodable; then we ask the real `<video>`
+ * element (`canPlayType`) about the codecs — so a Mac that decodes HEVC direct-
+ * plays it while a device that can't gets transcoded. No MediaInfo → optimistic
+ * direct with the transcode fallback on error.
  */
 function canDirectPlay(info: MediaInfo | null | undefined): boolean {
   if (!info) return true;
   const container = info.container.toLowerCase();
-  const vcodec = info.video?.codec.toLowerCase() ?? "";
-  const acodec = info.audio?.codec.toLowerCase() ?? "";
-  return DIRECT_CONTAINERS.has(container) && DIRECT_VIDEO.has(vcodec) && DIRECT_AUDIO.has(acodec);
+  if (!NATIVE_CONTAINERS.has(container)) return false;
+  const acodec = (info.audio?.codec ?? "").toLowerCase();
+  if (acodec && !WEB_AUDIO.has(acodec)) return false;
+  if (typeof document === "undefined") {
+    // Server render — no element to probe; use the safe H.264/AAC baseline.
+    const vcodec = (info.video?.codec ?? "").toLowerCase();
+    return DIRECT_VIDEO.has(vcodec) && (!acodec || DIRECT_AUDIO.has(acodec));
+  }
+  const mime = directMime(info);
+  if (!mime) return false;
+  const support = document.createElement("video").canPlayType(mime);
+  return support === "probably" || support === "maybe";
 }
 
 /** A downloaded subtitle sidecar, as served by `GET /api/v1/subtitles`. */
@@ -695,6 +730,13 @@ export function VideoPlayerModal({
         !barVisible && "cursor-none"
       )}
       onMouseMove={showControls}
+      // The portal moves this to <body> in the DOM, but React still bubbles events
+      // to the component that rendered the player (e.g. the card you clicked Play
+      // on). Stop clicks here so a click inside the player — including the one that
+      // refocuses the window — never reaches that card and closes/navigates it.
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
     >
       {/* Keying by the selected fileId remounts the player when the version
           changes, which re-inits the source (and, via the shared hooks, saves the
@@ -871,39 +913,17 @@ export function VideoPlayerModal({
             </div>
           )}
 
-          {/* Direct / Transcode toggle */}
-          <div className="flex items-center overflow-hidden rounded-md border border-white/15">
-            <button
-              type="button"
-              onClick={() => {
-                setMode("direct");
-                showControls();
-              }}
-              className={cn(
-                "px-3 py-1.5 text-xs font-medium transition-colors",
-                mode === "direct"
-                  ? "bg-amber-500 text-zinc-950"
-                  : "text-zinc-200 hover:bg-white/10"
-              )}
+          {/* Playback mode is chosen automatically from the file + this device's
+              codec support (falling back to transcode if direct play errors), so
+              there's no manual toggle — just a read-only note while transcoding. */}
+          {mode === "transcode" && (
+            <span
+              className="rounded-md border border-white/15 px-2 py-1 text-xs font-medium text-zinc-300"
+              title="This file isn't natively playable on this device, so it's being transcoded on the fly."
             >
-              Direct
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMode("transcode");
-                showControls();
-              }}
-              className={cn(
-                "px-3 py-1.5 text-xs font-medium transition-colors",
-                mode === "transcode"
-                  ? "bg-amber-500 text-zinc-950"
-                  : "text-zinc-200 hover:bg-white/10"
-              )}
-            >
-              Transcode
-            </button>
-          </div>
+              Transcoding
+            </span>
+          )}
 
           {/* Current-quality chip — always shown when a quality is known. */}
           {qualityChip && (
