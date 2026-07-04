@@ -282,6 +282,12 @@ function exitFullscreen() {
  * most every ~15s during playback, once on `pause`, and once on unmount/close.
  * Every network call fails silently — playback never depends on it.
  */
+/**
+ * Minimum watched position before we record a resume point. A mis-click that
+ * opens a title for a couple of seconds shouldn't land in Continue Watching.
+ */
+const MIN_PROGRESS_SECONDS = 10;
+
 function useWatchProgress(
   videoRef: React.RefObject<HTMLVideoElement | null>,
   target: PlaybackTarget
@@ -298,7 +304,9 @@ function useWatchProgress(
     const save = () => {
       const cur = video.currentTime;
       const positionSeconds = Math.floor(cur);
-      if (!Number.isFinite(cur) || positionSeconds <= 0) return; // guard 0 / NaN
+      // Guard 0/NaN, and don't store a resume point until a bit has actually been
+      // watched — so briefly opening an episode never shows up in Continue Watching.
+      if (!Number.isFinite(cur) || positionSeconds < MIN_PROGRESS_SECONDS) return;
       const dur = video.duration;
       const durationSeconds = Math.floor(Number.isFinite(dur) && dur > 0 ? dur : 0);
       lastSave = Date.now();

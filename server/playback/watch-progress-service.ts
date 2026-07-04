@@ -2,11 +2,15 @@
  * Per-user playback progress: resume points, watched flags, and the
  * "continue watching" / "recently watched" feeds.
  */
-import { and, asc, desc, eq, gt, isNotNull } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, isNotNull } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { posterUrl, backdropUrl } from "@/server/metadata/tmdb";
 
 const WATCHED_PCT = 0.9;
+// A brand-new resume entry is only created once this much has been watched, so a
+// mis-click that opens a title for a couple of seconds doesn't pollute Continue
+// Watching. Updates to an existing entry are exempt (you've already started it).
+const MIN_RECORD_SECONDS = 10;
 
 export interface ProgressInput {
   movieId?: number | null;
@@ -86,6 +90,11 @@ export function upsertProgress(userId: number, input: ProgressInput): void {
       .run();
     return;
   }
+
+  // No prior entry: only create one once a little has actually been watched, so a
+  // brief mis-click never shows up as something to "continue". (`watched` can still
+  // be true here — a short title finished — in which case we always record it.)
+  if (input.positionSeconds < MIN_RECORD_SECONDS && !watched) return;
 
   db.insert(schema.watchProgress)
     .values({
@@ -297,7 +306,8 @@ export function continueWatching(userId: number, limit = 20): ContinueItem[] {
       and(
         eq(schema.watchProgress.userId, userId),
         eq(schema.watchProgress.watched, false),
-        gt(schema.watchProgress.positionSeconds, 0)
+        // Ignore barely-started titles (mis-clicks) — see MIN_RECORD_SECONDS.
+        gte(schema.watchProgress.positionSeconds, MIN_RECORD_SECONDS)
       )
     )
     .all();
@@ -314,6 +324,10 @@ export function continueWatching(userId: number, limit = 20): ContinueItem[] {
   const seenSeries = new Set<number>();
   for (const r of epRows) {
     if (seenSeries.has(r.series.id)) continue;
+    // A barely-opened, unwatched episode (mis-click) shouldn't become the series'
+    // resume point and hide the real next-up episode. Skip it and let an older,
+    // meaningful row for this series decide instead.
+    if (!r.prog.watched && r.prog.positionSeconds < MIN_RECORD_SECONDS) continue;
     seenSeries.add(r.series.id);
     const activityAt = r.prog.updatedAt.getTime();
     if (!r.prog.watched && r.prog.positionSeconds > 0) {
