@@ -65,6 +65,25 @@ End the current session and clear the cookie. No-op if no valid session is prese
     -H "Cookie: session=$MEDIABOX_SESSION"
   ```
 
+## `POST /api/v1/auth/kiosk`
+
+Kiosk/cast token exchange. A TV browser or a Fully Kiosk tablet opening a `/tv/<channel>?key=…` URL posts the shared kiosk token here; when it matches, a session is minted for the low-privilege `kiosk` user (a normal `user`-role account, created on first use) so the device can play channels/streams with no real login. Rotate the token via `POST /api/v1/kiosk` to revoke all issued links.
+
+- **Auth:** public
+- **Request body:**
+
+  | field | type | required | default | notes |
+  | --- | --- | --- | --- | --- |
+  | `key` | string | yes | — | min 1 char; the shared kiosk token (from `GET /api/v1/kiosk`) |
+
+- **Response:** `200` — `{ "ok": true }`, and sets the `session` httpOnly cookie (30-day expiry) for the kiosk user. Errors: `401` — `"Invalid or expired kiosk link"` (no token configured or mismatch); `400` — Zod validation.
+- **Example:**
+  ```bash
+  curl -sS -X POST "$MEDIABOX_URL/api/v1/auth/kiosk" \
+    -H 'content-type: application/json' \
+    -d '{ "key": "<kiosk-token>" }'
+  ```
+
 ## `GET /api/v1/auth/me`
 
 Return the signed-in user derived from the request (cookie or api key).

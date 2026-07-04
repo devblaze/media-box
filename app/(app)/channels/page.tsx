@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useApi } from "@/lib/api";
-import { type Channel, CHANNEL_LABEL } from "@/lib/channels";
-import { Skeleton } from "@/components/ui";
+import { apiFetch, useApi } from "@/lib/api";
+import { type Channel, CHANNEL_LABEL, CHANNELS } from "@/lib/channels";
+import { Button, Card, CardBody, CardHeader, CardTitle, Skeleton } from "@/components/ui";
 import type { ChannelProgram } from "@/server/channels/schedule";
 
 interface ChannelSummary {
@@ -11,6 +11,10 @@ interface ChannelSummary {
   serverNow: number;
   current: ChannelProgram | null;
   next: ChannelProgram | null;
+}
+
+interface Me {
+  role: "admin" | "user";
 }
 
 const CHANNEL_BLURB: Record<Channel, string> = {
@@ -29,6 +33,7 @@ export default function ChannelsPage() {
   const { data } = useApi<{ channels: ChannelSummary[] }>("/channels", {
     refreshInterval: 30_000,
   });
+  const { data: me } = useApi<Me>("/auth/me");
 
   return (
     <div>
@@ -97,6 +102,82 @@ export default function ChannelsPage() {
           })}
         </div>
       )}
+
+      {me?.role === "admin" && <CastLinksPanel />}
     </div>
+  );
+}
+
+/**
+ * Admin-only: the tokenized /tv URLs to open on a TV browser or a Fully Kiosk
+ * tablet. Each plays that channel full-screen with no login. Regenerating the
+ * token invalidates every previously shared link.
+ */
+function CastLinksPanel() {
+  const { data, mutate } = useApi<{ token: string }>("/kiosk");
+  const token = data?.token;
+
+  async function regenerate() {
+    await apiFetch("/kiosk", { method: "POST" }).catch(() => {});
+    void mutate();
+  }
+
+  function selectAll(e: React.FocusEvent<HTMLInputElement>) {
+    e.target.select();
+  }
+
+  return (
+    <Card className="mt-8">
+      <CardHeader className="flex items-center justify-between">
+        <CardTitle>Cast to a TV / kiosk</CardTitle>
+        {token && (
+          <Button size="sm" variant="ghost" onClick={regenerate}>
+            Regenerate links
+          </Button>
+        )}
+      </CardHeader>
+      <CardBody>
+        <p className="text-sm text-zinc-400">
+          Open one of these URLs on a smart-TV browser or a tablet in Fully Kiosk mode — it plays
+          that channel full-screen, no login. Anyone with a link can watch, so keep them private;
+          regenerate to revoke old links. For sound on autoplay, enable video/audio autoplay in the
+          kiosk browser.
+        </p>
+        {!token ? (
+          <Skeleton className="mt-4 h-10 w-full" />
+        ) : (
+          <div className="mt-4 space-y-3">
+            {CHANNELS.map((c) => {
+              const href = `/tv/${c}?key=${token}`;
+              return (
+                <div key={c} className="flex items-center gap-3">
+                  <span className="w-16 shrink-0 text-sm font-medium text-zinc-200">
+                    {CHANNEL_LABEL[c]}
+                  </span>
+                  <input
+                    readOnly
+                    value={href}
+                    onFocus={selectAll}
+                    className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 font-mono text-xs text-zinc-300"
+                  />
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:border-amber-500/60 hover:text-amber-300"
+                  >
+                    Open ↗
+                  </a>
+                </div>
+              );
+            })}
+            <p className="text-xs text-zinc-500">
+              Paths are relative to this server (e.g. prepend <code>http://your-box:7878</code> when
+              typing on another device). Click a field to select it.
+            </p>
+          </div>
+        )}
+      </CardBody>
+    </Card>
   );
 }

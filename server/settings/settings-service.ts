@@ -77,6 +77,15 @@ export function setSetting<K extends keyof AppSettings>(key: K, value: AppSettin
     .run();
 }
 
+/** The shared kiosk/cast token, generating + persisting one on first use. */
+export function getOrCreateKioskToken(): string {
+  const existing = getSettings().kioskToken;
+  if (existing) return existing;
+  const token = crypto.randomBytes(24).toString("hex");
+  setSetting("kioskToken", token);
+  return token;
+}
+
 export function updateSettings(patch: Partial<AppSettings>): AppSettings {
   const current = getSettings();
   const next = appSettingsSchema.parse({ ...current, ...patch });

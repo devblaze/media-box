@@ -2,8 +2,10 @@ import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE } from "@/server/auth/session-cookie";
 
 // Paths reachable without a session.
-const PUBLIC_API = ["/api/v1/health", "/api/v1/auth/login", "/api/v1/auth/setup"];
-const PUBLIC_PAGES = ["/login", "/setup"];
+const PUBLIC_API = ["/api/v1/health", "/api/v1/auth/login", "/api/v1/auth/setup", "/api/v1/auth/kiosk"];
+// /tv/* is the kiosk/cast surface: the page loads unauthenticated, then exchanges
+// its ?key= token for a session (which authorizes the channel/stream requests).
+const PUBLIC_PAGES = ["/login", "/setup", "/tv"];
 // Static assets served on the pre-auth login/setup screens (the decorative
 // browse showcase artwork under public/showcase/).
 const PUBLIC_ASSETS = ["/showcase/"];
@@ -17,11 +19,17 @@ export async function proxy(request: NextRequest) {
 
   const hasSession = Boolean(request.cookies.get(SESSION_COOKIE)?.value);
   const hasApiKey = Boolean(request.headers.get("x-api-key"));
+  // Cast/AirPlay/kiosk devices fetch media with a `?key=` token instead of a
+  // cookie. Let those media requests through here; the route validates the token
+  // value (the proxy runtime has no DB access to check it).
+  const hasCastKey =
+    request.nextUrl.searchParams.has("key") &&
+    (pathname.startsWith("/api/v1/stream") || pathname.startsWith("/api/v1/transcode"));
 
   if (pathname.startsWith("/api/")) {
     // Route handlers validate the session/api key themselves where it matters;
     // this gate just rejects anonymous API traffic outright.
-    if (!hasSession && !hasApiKey) {
+    if (!hasSession && !hasApiKey && !hasCastKey) {
       return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
     return NextResponse.next();

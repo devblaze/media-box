@@ -40,20 +40,39 @@ function programSubline(p: ChannelProgram): string {
  * deliberately reuses only the stream/transcode transport — no scrubbing, no
  * per-user watch-progress — because the schedule, not the viewer, drives playback.
  */
-export function ChannelPlayer({ kind }: { kind: Channel }) {
+export function ChannelPlayer({
+  kind,
+  kiosk = false,
+  basePath = "/channels",
+  accessKey = "",
+}: {
+  kind: Channel;
+  /** Kiosk/cast mode: chrome-free, no Back button, don't grab OS fullscreen. */
+  kiosk?: boolean;
+  /** Route prefix for the Back/switcher links ("/channels" in-app, "/tv" kiosk). */
+  basePath?: string;
+  /** Token carried on kiosk switcher links so a channel change stays authorized. */
+  accessKey?: string;
+}) {
   const [muted, setMuted] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<number | null>(null);
 
+  const channelHref = useCallback(
+    (c: Channel) => `${basePath}/${c}${accessKey ? `?key=${encodeURIComponent(accessKey)}` : ""}`,
+    [basePath, accessKey]
+  );
+
   // The overlay is `fixed inset-0 z-[60]` so it covers the app chrome (the header
   // is z-50) without a portal — no `document`/mount-guard needed.
 
-  // Auto-enter fullscreen on mount. Works when arriving via an in-app link (the
-  // click's user-activation carries through the client-side navigation); silently
-  // no-ops on a cold load where the browser withholds activation — the portal
-  // overlay still fills the viewport, so it stays immersive either way.
+  // Auto-enter fullscreen on mount (skipped in kiosk mode — the kiosk browser is
+  // already fullscreen). Works when arriving via an in-app link (the click's
+  // user-activation carries through client-side navigation); silently no-ops on a
+  // cold load, where the fixed overlay still fills the viewport regardless.
   useEffect(() => {
+    if (kiosk) return;
     const el = containerRef.current;
     const p = el?.requestFullscreen?.();
     if (p && typeof p.catch === "function") p.catch(() => {});
@@ -62,7 +81,7 @@ export function ChannelPlayer({ kind }: { kind: Channel }) {
         void document.exitFullscreen?.().catch(() => {});
       }
     };
-  }, []);
+  }, [kiosk]);
 
   // Fetch via SWR (like the rest of the app). Advancing = a revalidation: when
   // the current slot ends we `mutate()` to pull the next program. The video is
@@ -161,15 +180,17 @@ export function ChannelPlayer({ kind }: { kind: Channel }) {
           controlsVisible ? "opacity-100" : "pointer-events-none opacity-0"
         )}
       >
-        <Link
-          href="/channels"
-          aria-label="Back to channels"
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1.5 font-semibold text-white transition-colors hover:bg-white/10"
-        >
-          <svg viewBox="0 0 24 24" className="size-6" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M15 18l-6-6 6-6" />
-          </svg>
-        </Link>
+        {!kiosk && (
+          <Link
+            href={basePath}
+            aria-label="Back to channels"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1.5 font-semibold text-white transition-colors hover:bg-white/10"
+          >
+            <svg viewBox="0 0 24 24" className="size-6" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M15 18l-6-6 6-6" />
+            </svg>
+          </Link>
+        )}
         <span className="inline-flex items-center gap-2 text-base font-semibold text-white">
           <span className="inline-flex items-center gap-1.5 rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">
             <span className="size-1.5 rounded-full bg-white" />
@@ -181,7 +202,7 @@ export function ChannelPlayer({ kind }: { kind: Channel }) {
           {(Object.keys(CHANNEL_LABEL) as Channel[]).map((c) => (
             <Link
               key={c}
-              href={`/channels/${c}`}
+              href={channelHref(c)}
               className={cn(
                 "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
                 c === kind ? "bg-amber-500 text-zinc-950" : "text-zinc-200 hover:bg-white/10"

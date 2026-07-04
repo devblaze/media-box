@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Badge, Button, Callout, Spinner } from "@/components/ui";
+import { PlayOnTvButton } from "@/components/play-on-tv-button";
 import { cn } from "@/lib/cn";
 import {
   loadSubtitleStyle,
@@ -1089,6 +1090,9 @@ export function VideoPlayerModal({
               </div>
             )}
           </div>
+
+          {/* Play on TV — tokenized /tv/watch link for a smart-TV browser / kiosk. */}
+          <PlayOnTvButton type={current.type} id={current.id} />
 
           {/* Fullscreen toggle (opt-in; also bound to F) */}
           <Button

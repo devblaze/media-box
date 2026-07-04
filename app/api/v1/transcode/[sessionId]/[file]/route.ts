@@ -1,10 +1,14 @@
 import type { NextRequest } from "next/server";
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { getRequestUser } from "@/server/auth/auth-service";
 import { getSession, touch } from "@/server/transcode/session-manager";
+
+// Cast/AirPlay receivers are web apps fetching cross-origin with no cookie, so
+// media responses need permissive CORS.
+const CORS = { "Access-Control-Allow-Origin": "*" } as const;
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -59,13 +63,29 @@ export async function GET(request: NextRequest, ctx: Ctx): Promise<Response> {
     return new Response("Not Found", { status: 404 });
   }
 
-  const contentType = isPlaylist ? "application/vnd.apple.mpegurl" : "video/mp2t";
+  if (isPlaylist) {
+    // A cast device fetches the playlist with `?key=`; the segment URIs inside are
+    // relative and wouldn't carry it, so rewrite each to preserve the token.
+    let text = await readFile(abs, "utf8");
+    const key = request.nextUrl.searchParams.get("key");
+    if (key) {
+      text = text.replace(
+        /^(seg\d{5}\.ts)$/gm,
+        (seg) => `${seg}?key=${encodeURIComponent(key)}`
+      );
+    }
+    return new Response(text, {
+      status: 200,
+      headers: { "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-cache", ...CORS },
+    });
+  }
+
   return new Response(toWebStream(createReadStream(abs)), {
     status: 200,
     headers: {
-      "Content-Type": contentType,
-      // Playlist is a growing live document; segments are immutable once written.
-      "Cache-Control": isPlaylist ? "no-cache" : "public, max-age=31536000, immutable",
+      "Content-Type": "video/mp2t",
+      "Cache-Control": "public, max-age=31536000, immutable",
+      ...CORS,
     },
   });
 }

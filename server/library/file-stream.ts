@@ -69,6 +69,8 @@ export async function streamFile(
         "Content-Length": String(size),
         "Accept-Ranges": "bytes",
         "Content-Type": contentType,
+        // Permissive CORS so Cast/AirPlay receivers can direct-play the file.
+        "Access-Control-Allow-Origin": "*",
       },
     });
   }
@@ -114,6 +116,7 @@ export async function streamFile(
       "Accept-Ranges": "bytes",
       "Content-Length": String(chunkSize),
       "Content-Type": contentType,
+      "Access-Control-Allow-Origin": "*",
     },
   });
 }

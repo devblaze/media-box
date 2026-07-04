@@ -8,6 +8,8 @@ REST reference for the media-box endpoints that drive playback: direct file stre
 - **User** — any authenticated principal (`getRequestUser` presence); unauthenticated gets `401`.
 - **Any authenticated (proxy-enforced)** — the handler performs no in-code check; only the presence of a session cookie / API key (enforced by the proxy) is required.
 
+**Cast token.** The media routes (`/stream/*`, `/transcode/*`) also accept a `?key=<castToken>` query param — a low-privilege "cast" principal — so Chromecast/AirPlay/kiosk devices that hold no cookie can fetch streams. Read the token with `GET /api/v1/cast` (any user); rotate it with `POST /api/v1/kiosk` (admin). `/transcode/{sessionId}/index.m3u8` propagates the `?key=` onto its segment URLs, and the media responses carry `Access-Control-Allow-Origin: *` for cast receivers.
+
 An API-key principal has no library user identity, so per-user write endpoints (`PUT /watch-progress`, `POST /watch-progress/watched`) short-circuit to a no-op `200` for it.
 
 Standard JSON error envelope is `{ "error": "..." }` (Zod validation failures add `{ "error": "Validation failed", "issues": [...] }`). Status codes: `200` ok, `400` bad request, `401` unauthenticated, `403` forbidden, `404` not found, `409` writes-disabled conflict, `429` transcode cap reached, `503` ffmpeg missing, `500` server error.
@@ -389,4 +391,43 @@ The forward-looking lineup (current + upcoming, up to 40 programs) for the TV Gu
 - **Example:**
   ```bash
   curl -sS "$MEDIABOX_URL/api/v1/channels/series/guide" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
+---
+
+## `GET /api/v1/kiosk`
+
+The shared kiosk/cast token, minting one on first access. Embedded in the `/tv/<channel>?key=…` URLs shown on the Channels page so a TV or a Fully Kiosk tablet can play a channel with no login (it exchanges the token via `POST /api/v1/auth/kiosk`).
+
+- **Auth:** Admin.
+- **Response:** `200` — `{ "token": "<hex>" }`. Errors: `401`/`403`.
+- **Example:**
+  ```bash
+  curl -sS "$MEDIABOX_URL/api/v1/kiosk" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
+---
+
+## `POST /api/v1/kiosk`
+
+Rotate the kiosk token — invalidates every previously issued cast/kiosk link.
+
+- **Auth:** Admin.
+- **Response:** `200` — `{ "token": "<new hex>" }`. Errors: `401`/`403`.
+- **Example:**
+  ```bash
+  curl -sS -X POST "$MEDIABOX_URL/api/v1/kiosk" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
+---
+
+## `GET /api/v1/cast`
+
+The shared cast token, for building tokenized media URLs a cast device can fetch without a cookie (Chromecast/AirPlay `?key=`, and the `/tv/watch/<type>/<id>` "Play on TV" links). Any signed-in user may read it (it grants only user-level streaming); mints one on first use.
+
+- **Auth:** User (any authenticated).
+- **Response:** `200` — `{ "token": "<hex>" }`. Errors: `401`.
+- **Example:**
+  ```bash
+  curl -sS "$MEDIABOX_URL/api/v1/cast" -H "x-api-key: $MEDIABOX_API_KEY"
   ```
