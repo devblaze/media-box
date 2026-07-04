@@ -183,6 +183,13 @@ export const getTopRatedMovies = () =>
 
 export const getTopRatedTv = () => tmdb<TmdbSearchResult<TmdbTvSummary>>("/tv/top_rated");
 
+// "Because you watched X" — TMDB's own recommendations for a given title.
+export const getMovieRecommendations = (id: number) =>
+  tmdb<TmdbSearchResult<TmdbMovieSummary>>(`/movie/${id}/recommendations`);
+
+export const getTvRecommendations = (id: number) =>
+  tmdb<TmdbSearchResult<TmdbTvSummary>>(`/tv/${id}/recommendations`);
+
 // Anime = Japanese animation (genre 16). TMDB has no native "anime" endpoint,
 // so we discover Japanese-language Animation titles.
 export const discoverAnimeTv = (sort = "popularity.desc") =>

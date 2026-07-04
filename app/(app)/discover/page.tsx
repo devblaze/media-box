@@ -2,15 +2,17 @@
 
 import { useApi } from "@/lib/api";
 import { NetflixBrowse } from "@/components/netflix/netflix-browse";
+import { NetflixRow } from "@/components/netflix/netflix-row";
 import { ContinueRow } from "@/components/netflix/continue-row";
-// Type-only import: the service is a server module, erased from the client bundle.
+// Type-only imports: these are server modules, erased from the client bundle.
 import type { ContinueItem } from "@/server/playback/watch-progress-service";
+import type { RecommendationGroup } from "@/server/metadata/recommendations";
 
-/** Home browse: mixed trending hero over the core rows plus a Popular Anime row. */
+/** Home browse: trending hero over Continue Watching, "Because you watched…", and the core rows. */
 export default function DiscoverPage() {
-  // Fetch failures leave `data` undefined, so each ContinueRow simply renders nothing.
+  // Fetch failures leave the data undefined, so each row simply renders nothing.
   const { data: continueItems } = useApi<ContinueItem[]>("/watch-progress/continue");
-  const { data: recentItems } = useApi<ContinueItem[]>("/watch-progress/recent");
+  const { data: recommendations } = useApi<RecommendationGroup[]>("/discover/recommendations");
 
   return (
     <NetflixBrowse
@@ -18,7 +20,13 @@ export default function DiscoverPage() {
       leadingRows={
         <>
           <ContinueRow title="Continue Watching" items={continueItems} />
-          <ContinueRow title="Recently Watched" items={recentItems} />
+          {recommendations?.map((group) => (
+            <NetflixRow
+              key={`${group.basedOn.mediaType}-${group.basedOn.tmdbId}`}
+              title={`Because you watched ${group.basedOn.title}`}
+              items={group.items}
+            />
+          ))}
         </>
       }
       rows={[

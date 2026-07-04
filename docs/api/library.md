@@ -349,6 +349,18 @@ Browse/search titles from TMDB (and recently-added library items), annotated wit
   curl -sS "$MEDIABOX_URL/api/v1/discover?category=movies-trending" -H "x-api-key: $MEDIABOX_API_KEY"
   ```
 
+## `GET /api/v1/discover/recommendations`
+
+"Because you watched X" rows for the signed-in user: for each of their most recent watched titles, TMDB's recommendations for it (annotated with library availability). Powers the Discover page rows that adapt to viewing history.
+
+- **Auth:** any authenticated (returns `401 {error:"Not signed in"}` if not)
+- **Query params:** none.
+- **Response:** `200` — array of groups `{ basedOn: { tmdbId, mediaType, title }, items: DiscoverItem[] }`. Empty when there's no watch history yet. Errors: `401`; `500`.
+- **Example:**
+  ```bash
+  curl -sS "$MEDIABOX_URL/api/v1/discover/recommendations" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
 ## `GET /api/v1/discover/logo`
 
 Best title-logo artwork (transparent PNG) for a TMDB title, used by the hero billboard.
