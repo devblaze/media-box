@@ -143,12 +143,22 @@ async function scanMoviesByFile(db: Db, root: string): Promise<ScanResult> {
     movieById.set(m.id, { path: m.path });
     existingTmdb.add(m.tmdbId);
   }
+  // Also index registered files by basename+size so an already-imported file is
+  // skipped even when the movie's stored path doesn't line up byte-for-byte with
+  // where we walk it (migrated paths, Unraid /mnt/user vs cache/disk, symlinks) —
+  // which otherwise makes a just-imported title reappear as "needs review".
+  const existingSignatures = new Set<string>();
   for (const mf of db
-    .select({ movieId: schema.movieFiles.movieId, relativePath: schema.movieFiles.relativePath })
+    .select({
+      movieId: schema.movieFiles.movieId,
+      relativePath: schema.movieFiles.relativePath,
+      size: schema.movieFiles.size,
+    })
     .from(schema.movieFiles)
     .all()) {
     const m = movieById.get(mf.movieId);
     if (m) existingFilePaths.add(path.join(m.path, mf.relativePath));
+    existingSignatures.add(`${path.basename(mf.relativePath)}|${mf.size}`);
   }
 
   interface Agg {
@@ -160,7 +170,12 @@ async function scanMoviesByFile(db: Db, root: string): Promise<ScanResult> {
   const byKey = new Map<string, Agg>();
 
   for (const file of files) {
-    if (existingFilePaths.has(file.absPath)) continue;
+    if (
+      existingFilePaths.has(file.absPath) ||
+      existingSignatures.has(`${path.basename(file.absPath)}|${file.size}`)
+    ) {
+      continue;
+    }
 
     const fromFile = parseTitle(path.basename(file.absPath));
     let title = fromFile.title;
