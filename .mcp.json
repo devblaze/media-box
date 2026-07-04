@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "media-box": {
+      "command": "node",
+      "args": ["mcp/server.mjs"],
+      "env": {
+        "MEDIABOX_URL": "${MEDIABOX_URL:-http://localhost:3000}",
+        "MEDIABOX_API_KEY": "${MEDIABOX_API_KEY:-}"
+      }
+    }
+  }
+}

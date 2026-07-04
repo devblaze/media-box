@@ -49,3 +49,7 @@ next-env.d.ts
 
 # graphify analysis output
 /graphify-out/
+
+# MCP server (zero-dep; ignore deps if any are ever added, and local overrides)
+/mcp/node_modules/
+.mcp.local.json

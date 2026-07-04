@@ -1,0 +1,12 @@
+{
+  "name": "media-box-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Zero-dependency MCP server exposing the media-box REST API for remote control.",
+  "type": "module",
+  "bin": { "media-box-mcp": "server.mjs" },
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": { "node": ">=18" }
+}
