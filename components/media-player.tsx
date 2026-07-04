@@ -10,6 +10,10 @@ import {
   loadSubtitleStyle,
   subtitleTextStyle,
   type SubtitleStyle,
+  loadSubtitlePref,
+  saveSubtitlePref,
+  matchSubtitlePref,
+  type SubtitlePref,
 } from "@/lib/subtitle-style";
 import type { MediaInfo } from "@/server/library/media-info";
 
@@ -520,6 +524,14 @@ export function VideoPlayerModal({
   const [subCandidates, setSubCandidates] = useState<SubtitleCandidate[] | null>(null);
   const [subSearchError, setSubSearchError] = useState<string | null>(null);
   const [subDownloadingId, setSubDownloadingId] = useState<string | null>(null);
+  // Remembered subtitle choice (localStorage), auto-applied to each new title so
+  // you don't re-pick e.g. English on every episode. Loaded once, up front.
+  const subPrefRef = useRef<SubtitlePref | null>(null);
+  const subPrefReady = useRef(false);
+  if (!subPrefReady.current) {
+    subPrefReady.current = true;
+    subPrefRef.current = loadSubtitlePref();
+  }
   // The viewer's saved caption appearance, read once when the player opens.
   const [subtitleStyle] = useState<SubtitleStyle>(() => loadSubtitleStyle());
   // Subtitle sync offset in seconds (+ = later, − = earlier), nudged live with
@@ -558,9 +570,12 @@ export function VideoPlayerModal({
     void apiFetch<SubtitlesResponse>(`/subtitles?${key}=${current.id}`)
       .then((res) => {
         if (!active) return;
-        setTracks(res.tracks ?? []);
+        const t = res.tracks ?? [];
+        setTracks(t);
         setSubLanguages(res.languages ?? []);
         setCanSearchOnline(!!res.canSearchOnline);
+        // Re-apply the viewer's remembered subtitle choice on the new title.
+        setSelectedSub(matchSubtitlePref(t, subPrefRef.current));
       })
       .catch(() => {});
     return () => {
@@ -606,7 +621,13 @@ export function VideoPlayerModal({
         const idx = next.findIndex(
           (t) => t.kind !== "embedded" && t.language === candidate.language
         );
-        setSelectedSub(idx >= 0 ? idx : next.length > 0 ? 0 : -1);
+        const sel = idx >= 0 ? idx : next.length > 0 ? 0 : -1;
+        setSelectedSub(sel);
+        if (sel >= 0) {
+          const pref: SubtitlePref = { off: false, lang: next[sel].language, kind: next[sel].kind };
+          subPrefRef.current = pref;
+          saveSubtitlePref(pref);
+        }
         setSubCandidates(null);
         setCcOpen(false);
       } catch (e) {
@@ -616,6 +637,21 @@ export function VideoPlayerModal({
       }
     },
     [current.type, current.id]
+  );
+
+  // Select a subtitle track (index, −1 = off) and remember the choice so the next
+  // episode/title auto-applies it.
+  const chooseSubtitle = useCallback(
+    (index: number) => {
+      setSelectedSub(index);
+      const track = index >= 0 ? tracks[index] : undefined;
+      const pref: SubtitlePref = track
+        ? { off: false, lang: track.language, kind: track.kind }
+        : { off: true };
+      subPrefRef.current = pref;
+      saveSubtitlePref(pref);
+    },
+    [tracks]
   );
 
   // Fetch the available file versions for the current title. Silent on failure —
@@ -1099,7 +1135,7 @@ export function VideoPlayerModal({
                   label="Off"
                   active={selectedSub === -1}
                   onSelect={() => {
-                    setSelectedSub(-1);
+                    chooseSubtitle(-1);
                     setCcOpen(false);
                     showControls();
                   }}
@@ -1113,7 +1149,7 @@ export function VideoPlayerModal({
                     label={t.label}
                     active={selectedSub === i}
                     onSelect={() => {
-                      setSelectedSub(i);
+                      chooseSubtitle(i);
                       setCcOpen(false);
                       showControls();
                     }}
