@@ -138,7 +138,7 @@ export default function RequestsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="px-4 py-6 md:px-12">
       <h1 className="text-2xl font-semibold tracking-tight">My List</h1>
       <p className="mt-1 text-sm text-zinc-500">
         Search for something to add, and track what you&rsquo;ve requested.

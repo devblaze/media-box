@@ -60,8 +60,8 @@ export default function CalendarPage() {
   }, [data]);
 
   return (
-    <div className="px-4 py-6 md:px-8">
-      <h1 className="text-xl font-semibold">Calendar</h1>
+    <div className="px-4 py-6 md:px-12">
+      <h1 className="text-2xl font-semibold tracking-tight">Calendar</h1>
       <p className="mt-1 text-sm text-zinc-400">
         Upcoming episodes from the series and anime you&apos;re monitoring.
       </p>
