@@ -357,3 +357,101 @@ export function recentlyWatched(userId: number, limit = 20): ContinueItem[] {
 
   return items.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
 }
+
+// ---------- Series-level smart resume (for the detail-page Play button) ----------
+
+export interface SeriesResumeEp {
+  id: number;
+  seasonNumber: number;
+  episodeNumber: number;
+  title: string | null;
+}
+
+export interface SeriesResume {
+  hasStarted: boolean;
+  /** resume = continue; start = play the first (true first) available; start-from-available =
+   *  earliest aired episodes are missing so start from the first we have; unavailable = nothing to play. */
+  action: "resume" | "start" | "start-from-available" | "unavailable";
+  episode: SeriesResumeEp | null; // the episode Play should open
+  resumeSeconds: number; // >0 only when resuming mid-episode
+  firstAvailable: SeriesResumeEp | null;
+  /** Aired episodes with no file that come before firstAvailable (e.g. a missing S01E01). */
+  missingBefore: { seasonNumber: number; episodeNumber: number }[];
+}
+
+/**
+ * Decide what a series-level Play button should do for this user: continue where
+ * they left off, start from the first available episode, or — when the earliest
+ * aired episodes aren't downloaded — start from the first one we have while
+ * reporting the missing ones so the UI can offer to search + wait for them.
+ */
+export function seriesResume(userId: number, seriesId: number): SeriesResume {
+  const db = getDb();
+  const now = new Date();
+
+  const eps = db
+    .select({
+      id: schema.episodes.id,
+      seasonNumber: schema.episodes.seasonNumber,
+      episodeNumber: schema.episodes.episodeNumber,
+      title: schema.episodes.title,
+      episodeFileId: schema.episodes.episodeFileId,
+      airDateUtc: schema.episodes.airDateUtc,
+    })
+    .from(schema.episodes)
+    .where(and(eq(schema.episodes.seriesId, seriesId), gt(schema.episodes.seasonNumber, 0)))
+    .orderBy(asc(schema.episodes.seasonNumber), asc(schema.episodes.episodeNumber))
+    .all();
+
+  const firstAvailable = eps.find((e) => e.episodeFileId != null) ?? null;
+  const isBefore = (e: (typeof eps)[number]) =>
+    !firstAvailable ||
+    e.seasonNumber < firstAvailable.seasonNumber ||
+    (e.seasonNumber === firstAvailable.seasonNumber && e.episodeNumber < firstAvailable.episodeNumber);
+  const missingBefore = eps
+    .filter((e) => e.episodeFileId == null && e.airDateUtc != null && e.airDateUtc <= now && isBefore(e))
+    .map((e) => ({ seasonNumber: e.seasonNumber, episodeNumber: e.episodeNumber }));
+
+  const slim = (
+    e: { id: number; seasonNumber: number; episodeNumber: number; title: string | null } | null | undefined
+  ): SeriesResumeEp | null =>
+    e ? { id: e.id, seasonNumber: e.seasonNumber, episodeNumber: e.episodeNumber, title: e.title } : null;
+
+  const prog = db
+    .select({
+      episodeId: schema.watchProgress.episodeId,
+      positionSeconds: schema.watchProgress.positionSeconds,
+      watched: schema.watchProgress.watched,
+      updatedAt: schema.watchProgress.updatedAt,
+    })
+    .from(schema.watchProgress)
+    .innerJoin(schema.episodes, eq(schema.watchProgress.episodeId, schema.episodes.id))
+    .where(and(eq(schema.watchProgress.userId, userId), eq(schema.episodes.seriesId, seriesId)))
+    .all();
+  const hasStarted = prog.length > 0;
+
+  if (hasStarted) {
+    const latest = [...prog].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0];
+    const latestEp = eps.find((e) => e.id === latest.episodeId) ?? null;
+    if (latestEp?.episodeFileId != null && !latest.watched && latest.positionSeconds > 0) {
+      return { hasStarted, action: "resume", episode: slim(latestEp), resumeSeconds: latest.positionSeconds, firstAvailable: slim(firstAvailable), missingBefore };
+    }
+    const next = nextEpisode(userId, seriesId, latestEp?.seasonNumber ?? 0, latestEp?.episodeNumber ?? 0);
+    if (next) {
+      return { hasStarted, action: "resume", episode: slim(next), resumeSeconds: 0, firstAvailable: slim(firstAvailable), missingBefore };
+    }
+    return { hasStarted, action: firstAvailable ? "start" : "unavailable", episode: slim(firstAvailable), resumeSeconds: 0, firstAvailable: slim(firstAvailable), missingBefore };
+  }
+
+  if (!firstAvailable) {
+    return { hasStarted: false, action: "unavailable", episode: null, resumeSeconds: 0, firstAvailable: null, missingBefore };
+  }
+  return {
+    hasStarted: false,
+    action: missingBefore.length > 0 ? "start-from-available" : "start",
+    episode: slim(firstAvailable),
+    resumeSeconds: 0,
+    firstAvailable: slim(firstAvailable),
+    missingBefore,
+  };
+}

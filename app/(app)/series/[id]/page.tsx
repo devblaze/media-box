@@ -12,6 +12,7 @@ import type { MediaInfo } from "@/server/library/media-info";
 import {
   Badge,
   Button,
+  Callout,
   Card,
   CardBody,
   CardHeader,
@@ -46,6 +47,20 @@ function initials(name: string): string {
     .slice(0, 2)
     .map((p) => p[0]?.toUpperCase() ?? "")
     .join("");
+}
+
+/** Short episode code, e.g. `S02E05` (each part padded to 2). */
+function seCode(ep: { seasonNumber: number; episodeNumber: number }): string {
+  return `S${String(ep.seasonNumber).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}`;
+}
+
+/** Full episode label, e.g. `S02E05 · The One With The Title`. */
+function episodeLabel(ep: {
+  seasonNumber: number;
+  episodeNumber: number;
+  title?: string | null;
+}): string {
+  return `${seCode(ep)}${ep.title ? ` · ${ep.title}` : ""}`;
 }
 
 interface EpisodeFileLite {
@@ -85,6 +100,22 @@ interface Me {
   role: "admin" | "user";
 }
 
+interface ResumeEpisode {
+  id: number;
+  seasonNumber: number;
+  episodeNumber: number;
+  title: string | null;
+}
+
+interface ResumeInfo {
+  hasStarted: boolean;
+  action: "resume" | "start" | "start-from-available" | "unavailable";
+  episode: ResumeEpisode | null;
+  resumeSeconds: number;
+  firstAvailable: ResumeEpisode | null;
+  missingBefore: { seasonNumber: number; episodeNumber: number }[];
+}
+
 export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) {
   const { id } = use(params);
   const router = useRouter();
@@ -96,6 +127,8 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
   const { data: credits } = useApi<{ cast: CastMember[] }>(
     data?.tmdbId ? `/credits?type=series&tmdbId=${data.tmdbId}` : null
   );
+  // Per-user smart-resume state: which episode the series-level Play should open.
+  const { data: resume, mutate: mutateResume } = useApi<ResumeInfo>(`/series/${id}/resume`);
   const isAdmin = me?.role === "admin";
   const [progressMap, setProgressMap] = useState<Map<number, EpProgress>>(new Map());
   const [searchScope, setSearchScope] = useState<{ scope: SearchScope; label: string } | null>(null);
@@ -154,6 +187,12 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
   useEffect(() => {
     void loadProgress();
   }, [loadProgress]);
+
+  // Re-evaluate smart-resume whenever the set of downloaded episodes changes
+  // (e.g. a missing episode finishes downloading via useEvents-driven refresh).
+  useEffect(() => {
+    void mutateResume();
+  }, [fileEpisodeIds, mutateResume]);
 
   const allWatched =
     fileEpisodeIds.length > 0 && fileEpisodeIds.every((epId) => progressMap.get(epId)?.watched);
@@ -286,7 +325,45 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
     }
   }
 
+  function playEpisode(ep: ResumeEpisode) {
+    setPlaying({ episodeId: ep.id, label: `${data!.title} ${episodeLabel(ep)}` });
+  }
+
+  async function searchMissing() {
+    try {
+      await apiFetch("/command", {
+        method: "POST",
+        body: JSON.stringify({ name: "WantedSearch", payload: { seriesId: data!.id } }),
+      });
+      toast.success(
+        "Searching for the missing episodes — they'll appear here when downloaded."
+      );
+    } catch {
+      toast.error("Failed to start search for missing episodes");
+    }
+  }
+
   const poster = tmdbPoster(data.posterPath);
+
+  // Smart-resume derivations (null-narrowed so closures below type-check).
+  const resumeEp = resume?.episode ?? null;
+  const firstAvail = resume?.firstAvailable ?? null;
+  const missingBefore = resume?.missingBefore ?? [];
+  const missingRange =
+    missingBefore.length === 0
+      ? ""
+      : missingBefore.length === 1
+        ? seCode(missingBefore[0])
+        : `${seCode(missingBefore[0])}–${seCode(missingBefore[missingBefore.length - 1])}`;
+  const MISSING_PREVIEW = 6;
+  const missingSummary =
+    missingBefore
+      .slice(0, MISSING_PREVIEW)
+      .map(seCode)
+      .join(", ") +
+    (missingBefore.length > MISSING_PREVIEW
+      ? `, +${missingBefore.length - MISSING_PREVIEW} more`
+      : "");
 
   const visibleSeasons = data.seasons
     .filter((s) => s.seasonNumber > 0 || (episodesBySeason.get(0)?.length ?? 0) > 0)
@@ -315,6 +392,36 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
           </div>
           <p className="mt-3 max-w-3xl text-sm text-zinc-300">{data.overview}</p>
           <div className="mt-4 flex flex-wrap gap-2">
+            {resume && resume.action !== "unavailable" && (
+              <>
+                {resume.action === "resume" && resumeEp && (
+                  <>
+                    <Button variant="primary" size="sm" onClick={() => playEpisode(resumeEp)}>
+                      ▶ Continue {seCode(resumeEp)}
+                    </Button>
+                    {firstAvail && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => playEpisode(firstAvail)}
+                      >
+                        Start over
+                      </Button>
+                    )}
+                  </>
+                )}
+                {resume.action === "start" && resumeEp && (
+                  <Button variant="primary" size="sm" onClick={() => playEpisode(resumeEp)}>
+                    ▶ Play {seCode(resumeEp)}
+                  </Button>
+                )}
+                {resume.action === "start-from-available" && firstAvail && (
+                  <Button variant="primary" size="sm" onClick={() => playEpisode(firstAvail)}>
+                    ▶ Play {seCode(firstAvail)}
+                  </Button>
+                )}
+              </>
+            )}
             <Button variant="secondary" size="sm" onClick={toggleSeriesWatched}>
               {allWatched ? "Mark series unwatched" : "Mark series watched"}
             </Button>
@@ -360,6 +467,28 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
           </div>
         </div>
       </div>
+
+      {resume?.action === "start-from-available" && firstAvail && (
+        <Callout
+          tone="warning"
+          className="mt-4"
+          title={`The first ${missingBefore.length} episode${
+            missingBefore.length === 1 ? "" : "s"
+          } ${missingBefore.length === 1 ? "isn't" : "aren't"} downloaded yet${
+            missingRange ? ` (${missingRange})` : ""
+          }.`}
+        >
+          {missingSummary && <p className="text-zinc-400">Missing: {missingSummary}</p>}
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button variant="secondary" size="sm" onClick={searchMissing}>
+              Search for them
+            </Button>
+            <Button variant="primary" size="sm" onClick={() => playEpisode(firstAvail)}>
+              Play from {seCode(firstAvail)}
+            </Button>
+          </div>
+        </Callout>
+      )}
 
       <div className="mt-8 space-y-6">
         {visibleSeasons.length === 0 ? (
