@@ -33,9 +33,10 @@ function programSubline(p: ChannelProgram): string {
 }
 
 /**
- * Full-bleed "live TV" player for one channel. Fetches the current program and
- * its live seek offset, plays it, and auto-advances to the next program when the
- * slot ends (on the video's `ended` event, or a wall-clock backstop timer). It
+ * Immersive "live TV" player for one channel. Portals a full-viewport overlay
+ * (over the app chrome), auto-plays the current program, and tries to enter
+ * fullscreen on mount — no tune-in gate. It advances to the next program when the
+ * slot ends (the video's `ended` event, or a wall-clock backstop timer), and
  * deliberately reuses only the stream/transcode transport — no scrubbing, no
  * per-user watch-progress — because the schedule, not the viewer, drives playback.
  */
@@ -45,12 +46,32 @@ export function ChannelPlayer({ kind }: { kind: Channel }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<number | null>(null);
 
+  // The overlay is `fixed inset-0 z-[60]` so it covers the app chrome (the header
+  // is z-50) without a portal — no `document`/mount-guard needed.
+
+  // Auto-enter fullscreen on mount. Works when arriving via an in-app link (the
+  // click's user-activation carries through the client-side navigation); silently
+  // no-ops on a cold load where the browser withholds activation — the portal
+  // overlay still fills the viewport, so it stays immersive either way.
+  useEffect(() => {
+    const el = containerRef.current;
+    const p = el?.requestFullscreen?.();
+    if (p && typeof p.catch === "function") p.catch(() => {});
+    return () => {
+      if (typeof document !== "undefined" && document.fullscreenElement) {
+        void document.exitFullscreen?.().catch(() => {});
+      }
+    };
+  }, []);
+
   // Fetch via SWR (like the rest of the app). Advancing = a revalidation: when
   // the current slot ends we `mutate()` to pull the next program. The video is
   // keyed by programId, so an unchanged program keeps playing and a new one
   // remounts at its live offset.
   const { data, error, mutate } = useApi<ChannelNow>(`/channels/${kind}`);
   const advance = useCallback(() => void mutate(), [mutate]);
+  // Stable so it never restarts the video/transcode effects it feeds.
+  const handleMutedFallback = useCallback(() => setMuted(true), []);
 
   const current = data?.current ?? null;
 
@@ -97,7 +118,10 @@ export function ChannelPlayer({ kind }: { kind: Channel }) {
   return (
     <div
       ref={containerRef}
-      className={cn("relative flex h-full w-full items-center justify-center bg-black", !controlsVisible && "cursor-none")}
+      className={cn(
+        "fixed inset-0 z-[60] flex items-center justify-center bg-black",
+        !controlsVisible && "cursor-none"
+      )}
       onMouseMove={showControls}
     >
       {current ? (
@@ -107,6 +131,7 @@ export function ChannelPlayer({ kind }: { kind: Channel }) {
           offsetSeconds={current.offsetSeconds}
           muted={muted}
           onAdvance={advance}
+          onMutedFallback={handleMutedFallback}
         />
       ) : error ? (
         <div className="p-6">
@@ -242,11 +267,13 @@ function LiveVideo({
   offsetSeconds,
   muted,
   onAdvance,
+  onMutedFallback,
 }: {
   program: ChannelProgram;
   offsetSeconds: number;
   muted: boolean;
   onAdvance: () => void;
+  onMutedFallback: () => void;
 }) {
   const [mode, setMode] = useState<"direct" | "transcode">(() =>
     canDirectPlay(program.mediaInfo) ? "direct" : "transcode"
@@ -259,6 +286,7 @@ function LiveVideo({
       muted={muted}
       onEnded={onAdvance}
       onFallback={() => setMode("transcode")}
+      onMutedFallback={onMutedFallback}
     />
   ) : (
     <TranscodeLive
@@ -266,8 +294,21 @@ function LiveVideo({
       offsetSeconds={offsetSeconds}
       muted={muted}
       onEnded={onAdvance}
+      onMutedFallback={onMutedFallback}
     />
   );
+}
+
+/** Autoplay with sound; if the browser blocks it, mute and retry so it still plays. */
+function autoplay(v: HTMLVideoElement, onMutedFallback: () => void) {
+  const p = v.play?.();
+  if (p && typeof p.catch === "function") {
+    p.catch(() => {
+      v.muted = true;
+      onMutedFallback();
+      void v.play?.().catch(() => {});
+    });
+  }
 }
 
 function DirectLive({
@@ -276,12 +317,14 @@ function DirectLive({
   muted,
   onEnded,
   onFallback,
+  onMutedFallback,
 }: {
   target: { type: "movie" | "episode"; id: number };
   offsetSeconds: number;
   muted: boolean;
   onEnded: () => void;
   onFallback: () => void;
+  onMutedFallback: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const src = `/api/v1/stream/${target.type}/${target.id}`;
@@ -300,9 +343,9 @@ function DirectLive({
     };
     v.addEventListener("loadedmetadata", seek);
     if (v.readyState >= 1) seek();
-    void v.play?.().catch(() => {});
+    autoplay(v, onMutedFallback);
     return () => v.removeEventListener("loadedmetadata", seek);
-  }, [offsetSeconds]);
+  }, [offsetSeconds, onMutedFallback]);
 
   return (
     <video
@@ -323,11 +366,13 @@ function TranscodeLive({
   offsetSeconds,
   muted,
   onEnded,
+  onMutedFallback,
 }: {
   target: { type: "movie" | "episode"; id: number };
   offsetSeconds: number;
   muted: boolean;
   onEnded: () => void;
+  onMutedFallback: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [status, setStatus] = useState<"starting" | "playing" | "error">("starting");
@@ -367,11 +412,11 @@ function TranscodeLive({
           hls.loadSource(res.url);
           hls.attachMedia(video);
           setStatus("playing");
-          void video.play?.().catch(() => {});
+          autoplay(video, onMutedFallback);
         } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
           video.src = res.url;
           setStatus("playing");
-          void video.play?.().catch(() => {});
+          autoplay(video, onMutedFallback);
         } else {
           setStatus("error");
           setError("Your browser cannot play HLS streams.");
@@ -402,7 +447,7 @@ function TranscodeLive({
         );
       }
     };
-  }, [target.type, target.id, offsetSeconds]);
+  }, [target.type, target.id, offsetSeconds, onMutedFallback]);
 
   // A fatal transcode error auto-advances after a beat so the channel never stalls.
   useEffect(() => {

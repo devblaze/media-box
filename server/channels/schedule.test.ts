@@ -6,7 +6,6 @@ import fs from "node:fs";
 // Point the DB at a throwaway dir BEFORE any @/server/db import resolves getDb().
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "mediabox-channels-"));
 process.env.CONFIG_DIR = TMP;
-process.env.NODE_ENV = "test";
 
 let schema: typeof import("@/server/db").schema;
 let getDb: typeof import("@/server/db").getDb;

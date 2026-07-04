@@ -15,6 +15,7 @@ interface Me {
 
 const NAV = [
   { label: "Home", href: "/discover" },
+  { label: "Channels", href: "/channels" },
   { label: "Movies", href: "/discover/movies" },
   { label: "Series", href: "/discover/series" },
   { label: "Anime", href: "/discover/anime" },
