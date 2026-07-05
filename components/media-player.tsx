@@ -253,6 +253,17 @@ type SkipSegment = {
   label: string;
 };
 
+/** An audio track from `GET /api/v1/audio-tracks` (for multi-audio files). */
+type AudioTrack = {
+  index: number;
+  codec: string;
+  channels: number | null;
+  language: string | null;
+  title: string | null;
+  isDefault: boolean;
+  label: string;
+};
+
 /** Shape of `GET /api/v1/watch-progress` (or `null` when nothing is stored). */
 type WatchProgress = { positionSeconds: number; durationSeconds: number; watched: boolean };
 
@@ -578,6 +589,11 @@ export function VideoPlayerModal({
   const [playedSeconds, setPlayedSeconds] = useState(0);
   const seekNonce = useRef(0);
   const [seekReq, setSeekReq] = useState<{ t: number; n: number } | null>(null);
+  // Audio-track picker (multi-audio files). `selectedAudio` is the chosen 0:a:index,
+  // or null = the default track. Choosing one forces transcode (to remap audio).
+  const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
+  const [selectedAudio, setSelectedAudio] = useState<number | null>(null);
+  const [audioOpen, setAudioOpen] = useState(false);
   // The viewer's saved caption appearance, read once when the player opens.
   const [subtitleStyle] = useState<SubtitleStyle>(() => loadSubtitleStyle());
   // Subtitle sync offset in seconds (+ = later, − = earlier), nudged live with
@@ -599,7 +615,7 @@ export function VideoPlayerModal({
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  const barVisible = controlsVisible || ccOpen || qualityOpen;
+  const barVisible = controlsVisible || ccOpen || qualityOpen || audioOpen;
 
   // Opens windowed (full-page overlay, browser chrome still visible). Native
   // fullscreen is opt-in via the maximize button / `F` — no auto-request here.
@@ -771,6 +787,23 @@ export function VideoPlayerModal({
     void apiFetch<SkipSegment[]>(`/skip-segments?${key}=${current.id}`)
       .then((segs) => {
         if (active) setSkipSegments(Array.isArray(segs) ? segs : []);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [current.type, current.id]);
+
+  // Fetch audio tracks; the picker only appears when there's more than one (which
+  // is exactly when a wrong/silent default track causes "no sound").
+  useEffect(() => {
+    const key = current.type === "movie" ? "movieId" : "episodeId";
+    let active = true;
+    setAudioTracks([]);
+    setSelectedAudio(null);
+    void apiFetch<AudioTrack[]>(`/audio-tracks?${key}=${current.id}`)
+      .then((list) => {
+        if (active) setAudioTracks(Array.isArray(list) ? list : []);
       })
       .catch(() => {});
     return () => {
@@ -950,7 +983,7 @@ export function VideoPlayerModal({
         />
       ) : (
         <TranscodePlayer
-          key={`${current.type}-${current.id}-${selectedFileId ?? "default"}`}
+          key={`${current.type}-${current.id}-${selectedFileId ?? "default"}-a${selectedAudio ?? "def"}`}
           target={current}
           fileId={selectedFileId}
           tracks={tracks}
@@ -960,6 +993,7 @@ export function VideoPlayerModal({
           onTime={handleTime}
           onEnded={handleEnded}
           seekReq={seekReq}
+          audioTrack={selectedAudio}
         />
       )}
 
@@ -1230,6 +1264,66 @@ export function VideoPlayerModal({
             </div>
           )}
 
+          {/* Audio-track picker — only for multi-audio files (JP/EN dubs, commentary).
+              Choosing a track transcodes that specific stream, fixing "no sound"
+              when the default/first track is silent or the wrong one. */}
+          {audioTracks.length > 1 && (
+            <div className="relative">
+              <Button
+                variant={selectedAudio != null ? "primary" : "ghost"}
+                size="icon"
+                onClick={() => {
+                  setAudioOpen((o) => !o);
+                  setCcOpen(false);
+                  setQualityOpen(false);
+                  showControls();
+                }}
+                aria-label="Audio track"
+                aria-haspopup="menu"
+                aria-expanded={audioOpen}
+                title="Audio track"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  className="size-5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M11 5 6 9H2v6h4l5 4V5z" />
+                  <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+                  <path d="M19 5a9 9 0 0 1 0 14" />
+                </svg>
+              </Button>
+              {audioOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 bottom-full mb-2 max-h-64 min-w-52 overflow-auto rounded-md border border-white/10 bg-zinc-900/95 py-1 shadow-xl backdrop-blur"
+                >
+                  <p className="px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+                    Audio
+                  </p>
+                  {audioTracks.map((t) => (
+                    <SubtitleMenuItem
+                      key={t.index}
+                      label={t.isDefault ? `${t.label} · default` : t.label}
+                      active={selectedAudio === t.index || (selectedAudio == null && t.isDefault)}
+                      onSelect={() => {
+                        setSelectedAudio(t.index);
+                        setMode("transcode"); // remap audio → transcode required
+                        setAudioOpen(false);
+                        showControls();
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Subtitles (CC) — menu opens upward so it isn't clipped at the edge */}
           <div className="relative">
             <Button
@@ -1237,6 +1331,7 @@ export function VideoPlayerModal({
               size="icon"
               onClick={() => {
                 setCcOpen((o) => !o);
+                setAudioOpen(false);
                 setQualityOpen(false);
                 showControls();
               }}
@@ -1558,6 +1653,7 @@ function TranscodePlayer({
   onTime,
   onEnded,
   seekReq,
+  audioTrack,
 }: {
   target: PlaybackTarget;
   fileId: number | null;
@@ -1568,6 +1664,7 @@ function TranscodePlayer({
   onTime?: (currentTime: number, duration: number) => void;
   onEnded?: () => void;
   seekReq?: { t: number; n: number } | null;
+  audioTrack?: number | null;
 }) {
   const { type, id } = target;
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1588,7 +1685,12 @@ function TranscodePlayer({
       try {
         const res = await apiFetch<{ sessionId: string; url: string }>("/transcode", {
           method: "POST",
-          body: JSON.stringify({ type, id, ...(fileId != null ? { fileId } : {}) }),
+          body: JSON.stringify({
+            type,
+            id,
+            ...(fileId != null ? { fileId } : {}),
+            ...(audioTrack != null ? { audioTrack } : {}),
+          }),
         });
         sessionId = res.sessionId; // capture before any early return so cleanup can DELETE it
         if (cancelled) return;
@@ -1648,7 +1750,7 @@ function TranscodePlayer({
         );
       }
     };
-  }, [type, id, fileId]);
+  }, [type, id, fileId, audioTrack]);
 
   return (
     <>

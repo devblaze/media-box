@@ -18,6 +18,9 @@ const bodySchema = z.object({
   id: z.coerce.number().int().positive(),
   fileId: z.coerce.number().int().positive().optional(),
   startSec: z.coerce.number().min(0).optional(),
+  // 0-based audio-stream index to transcode (from /audio-tracks). Defaults to the
+  // first track when omitted.
+  audioTrack: z.coerce.number().int().min(0).optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -34,7 +37,10 @@ export async function POST(request: NextRequest) {
   if (!resolved) return notFound("Media not found");
 
   try {
-    const session = await startSession(resolved.absPath, { startSec: body.startSec });
+    const session = await startSession(resolved.absPath, {
+      startSec: body.startSec,
+      audioTrack: body.audioTrack,
+    });
     return ok({
       sessionId: session.id,
       url: `/api/v1/transcode/${session.id}/index.m3u8`,

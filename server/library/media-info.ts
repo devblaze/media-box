@@ -156,6 +156,49 @@ export async function probeChapters(absPath: string): Promise<MediaChapter[]> {
   }
 }
 
+/** One audio stream inside a media file, with its `0:a:index` position. */
+export interface AudioStream {
+  index: number;
+  codec: string;
+  channels: number | null;
+  language: string | null;
+  title: string | null;
+  isDefault: boolean;
+}
+
+interface FfprobeAudioStream {
+  codec_name?: string;
+  channels?: number;
+  disposition?: { default?: number };
+  tags?: { language?: string; title?: string };
+}
+
+/**
+ * List all audio streams in a file (via ffprobe), in `0:a:index` order — so the
+ * player can offer an audio-track picker and the transcoder can map a chosen one.
+ * Best-effort: `[]` when ffprobe is missing/fails or there are no audio streams.
+ */
+export async function probeAudioTracks(absPath: string): Promise<AudioStream[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      "ffprobe",
+      ["-v", "quiet", "-print_format", "json", "-show_streams", "-select_streams", "a", absPath],
+      { timeout: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BUFFER }
+    );
+    const data = JSON.parse(stdout) as { streams?: FfprobeAudioStream[] };
+    return (data.streams ?? []).map((s, index) => ({
+      index,
+      codec: s.codec_name ?? "unknown",
+      channels: toNumber(s.channels),
+      language: s.tags?.language ?? null,
+      title: s.tags?.title ?? null,
+      isDefault: s.disposition?.default === 1,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export async function probeMediaInfo(absPath: string): Promise<MediaInfo | null> {
   try {
     const { stdout } = await execFileAsync(

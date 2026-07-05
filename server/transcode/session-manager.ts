@@ -32,6 +32,8 @@ export interface Session {
 export interface StartOpts {
   /** Seek offset (seconds) applied as an input `-ss` before the file is opened. */
   startSec?: number;
+  /** 0-based audio-stream index to map (`0:a:index`). Defaults to the first track. */
+  audioTrack?: number;
 }
 
 /** Thrown when the configured concurrent-session cap is already reached. */
@@ -128,9 +130,11 @@ export function buildFfmpegArgs(
   dir: string,
   mode: HwAccel,
   vaapiDevice: string,
-  startSec?: number
+  startSec?: number,
+  audioTrack?: number
 ): string[] {
   const seek = startSec && startSec > 0 ? ["-ss", String(startSec)] : [];
+  const audioIndex = Number.isInteger(audioTrack) && audioTrack! >= 0 ? audioTrack! : 0;
   return [
     "-hide_banner",
     "-loglevel",
@@ -142,7 +146,7 @@ export function buildFfmpegArgs(
     "-map",
     "0:v:0",
     "-map",
-    "0:a:0?",
+    `0:a:${audioIndex}?`,
     ...videoArgs(mode),
     "-c:a",
     "aac",
@@ -336,7 +340,8 @@ export async function startSession(absPath: string, opts: StartOpts = {}): Promi
       dir,
       settings.transcodeHwAccel,
       settings.transcodeVaapiDevice,
-      opts.startSec
+      opts.startSec,
+      opts.audioTrack
     );
 
     const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });

@@ -90,6 +90,7 @@ Start an on-the-fly HLS transcode session (used when a file can't be direct-play
   - `id` — positive integer, coerced from string (required).
   - `fileId` — positive integer, optional (specific source file).
   - `startSec` — number ≥ 0, optional (seek offset to begin transcoding at).
+  - `audioTrack` — integer ≥ 0, optional. 0-based audio-stream index to map (`0:a:index`, from `/audio-tracks`); defaults to the first track. Used to fix multi-audio files whose default track is silent/wrong.
 - **Response:** `200` — `{ "sessionId": "…", "url": "/api/v1/transcode/{sessionId}/index.m3u8" }`. Errors: `400` `Invalid request body` (bad/failed Zod parse), `404` `Media not found`, `429` `{ error }` when the concurrent-session cap is reached, `503` `{ error: "ffmpeg not available" }`, `500`.
 - **Example:**
   ```bash
@@ -138,6 +139,20 @@ Skippable intro/recap segments for a movie/episode, derived from the file's chap
 - **Example:**
   ```bash
   curl -sS "$MEDIABOX_URL/api/v1/skip-segments?episodeId=42" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
+---
+
+## `GET /api/v1/audio-tracks`
+
+Audio tracks in a movie/episode file (via ffprobe), so the player can offer an audio-track picker. Fixes "no sound" on multi-audio files (anime JP/EN dubs, commentary tracks) whose default/first track is silent or the wrong one — the chosen track's `index` is passed to `POST /transcode` as `audioTrack`.
+
+- **Auth:** Any authenticated (`getRequestUser`); `401` `{ error: "Not signed in" }` otherwise.
+- **Query params:** `movieId` **or** `episodeId` (one required).
+- **Response:** `200` — array of `{ index, codec, channels, language, title, isDefault, label }` in `0:a:index` order. Empty when the file has 0/1 audio track or ffprobe is unavailable. Errors: `400` (neither id), `500`.
+- **Example:**
+  ```bash
+  curl -sS "$MEDIABOX_URL/api/v1/audio-tracks?episodeId=42" -H "x-api-key: $MEDIABOX_API_KEY"
   ```
 
 ---
