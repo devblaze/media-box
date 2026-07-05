@@ -123,6 +123,39 @@ function mapOutput(absPath: string, data: FfprobeOutput): MediaInfo {
  * returns `null`. It NEVER throws, so callers (e.g. the importer) can treat the
  * result as best-effort enrichment.
  */
+/** A chapter marker inside a media file (from ffprobe `-show_chapters`). */
+export interface MediaChapter {
+  startSeconds: number;
+  endSeconds: number;
+  title: string | null;
+}
+
+/**
+ * Read chapter markers from a media file. Best-effort like {@link probeMediaInfo}:
+ * returns `[]` when ffprobe is missing, times out, or the file has no chapters.
+ */
+export async function probeChapters(absPath: string): Promise<MediaChapter[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      "ffprobe",
+      ["-v", "quiet", "-print_format", "json", "-show_chapters", absPath],
+      { timeout: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BUFFER }
+    );
+    const data = JSON.parse(stdout) as {
+      chapters?: { start_time?: string; end_time?: string; tags?: { title?: string } }[];
+    };
+    return (data.chapters ?? [])
+      .map((c) => ({
+        startSeconds: Math.max(0, Math.floor(toNumber(c.start_time) ?? 0)),
+        endSeconds: Math.max(0, Math.floor(toNumber(c.end_time) ?? 0)),
+        title: c.tags?.title ?? null,
+      }))
+      .filter((c) => c.endSeconds > c.startSeconds);
+  } catch {
+    return [];
+  }
+}
+
 export async function probeMediaInfo(absPath: string): Promise<MediaInfo | null> {
   try {
     const { stdout } = await execFileAsync(

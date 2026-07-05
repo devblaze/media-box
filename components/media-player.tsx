@@ -197,6 +197,29 @@ function canDirectPlay(info: MediaInfo | null | undefined): boolean {
   return support === "probably" || support === "maybe";
 }
 
+// Persisted "always transcode" escape hatch. Direct play can be silent when a
+// file's audio codec (e.g. AC3/DTS) isn't decodable by this browser — which isn't
+// an <video> error, so it can't auto-recover. Forcing transcode re-encodes audio
+// to stereo AAC (universally playable). Remembered per-browser for the device.
+const FORCE_TRANSCODE_KEY = "mediabox.forceTranscode";
+function loadForceTranscode(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(FORCE_TRANSCODE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function saveForceTranscode(on: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (on) window.localStorage.setItem(FORCE_TRANSCODE_KEY, "1");
+    else window.localStorage.removeItem(FORCE_TRANSCODE_KEY);
+  } catch {
+    /* storage disabled — non-fatal, the choice just isn't remembered */
+  }
+}
+
 /** A subtitle track (downloaded sidecar or embedded stream) from `GET /api/v1/subtitles`. */
 type SubtitleTrack = {
   id: string;
@@ -220,6 +243,14 @@ type SubtitleCandidate = {
   language: string;
   release: string;
   hearingImpaired: boolean;
+};
+
+/** A skippable intro/recap stretch from `GET /api/v1/skip-segments`. */
+type SkipSegment = {
+  type: "intro" | "recap";
+  startSeconds: number;
+  endSeconds: number;
+  label: string;
 };
 
 /** Shape of `GET /api/v1/watch-progress` (or `null` when nothing is stored). */
@@ -496,8 +527,9 @@ export function VideoPlayerModal({
   mediaInfo?: MediaInfo | null;
   onClose: () => void;
 }) {
+  const [forceTranscode, setForceTranscode] = useState(loadForceTranscode);
   const [mode, setMode] = useState<"direct" | "transcode">(() =>
-    canDirectPlay(mediaInfo) ? "direct" : "transcode"
+    loadForceTranscode() || !canDirectPlay(mediaInfo) ? "transcode" : "direct"
   );
 
   // The title actually playing. Starts as the opened `target` but, for episodes,
@@ -540,6 +572,12 @@ export function VideoPlayerModal({
     subPrefReady.current = true;
     subPrefRef.current = loadSubtitlePref();
   }
+  // Skip Intro / Skip Recap segments (from chapter markers), the current play
+  // position (whole seconds), and a seek request the overlay sends to the video.
+  const [skipSegments, setSkipSegments] = useState<SkipSegment[]>([]);
+  const [playedSeconds, setPlayedSeconds] = useState(0);
+  const seekNonce = useRef(0);
+  const [seekReq, setSeekReq] = useState<{ t: number; n: number } | null>(null);
   // The viewer's saved caption appearance, read once when the player opens.
   const [subtitleStyle] = useState<SubtitleStyle>(() => loadSubtitleStyle());
   // Subtitle sync offset in seconds (+ = later, − = earlier), nudged live with
@@ -711,7 +749,7 @@ export function VideoPlayerModal({
   const goTo = useCallback((n: Neighbor) => {
     setCurrent({ type: "episode", id: n.id });
     setCurrentTitle(neighborLabel(n));
-    setMode("direct");
+    setMode(loadForceTranscode() ? "transcode" : "direct");
     setSelectedFileId(null);
     setVersions([]);
     setSelectedSub(-1);
@@ -723,11 +761,30 @@ export function VideoPlayerModal({
     setCountdown(UP_NEXT_COUNTDOWN);
   }, []);
 
-  // Video progress reported up from the active child player. When we're within the
-  // last stretch of an episode that has a next neighbour (and the viewer hasn't
-  // dismissed it), reveal the auto-advance "Up next" card.
+  // Fetch skip-intro / skip-recap segments (from chapter markers) for the title.
+  useEffect(() => {
+    const key = current.type === "movie" ? "movieId" : "episodeId";
+    let active = true;
+    setSkipSegments([]);
+    setPlayedSeconds(0);
+    setSeekReq(null); // don't let a pending skip carry into the next title
+    void apiFetch<SkipSegment[]>(`/skip-segments?${key}=${current.id}`)
+      .then((segs) => {
+        if (active) setSkipSegments(Array.isArray(segs) ? segs : []);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [current.type, current.id]);
+
+  // Video progress reported up from the active child player: track the position (for
+  // the skip button) and, in the last stretch of an episode that has a next
+  // neighbour (unless dismissed), reveal the auto-advance "Up next" card.
   const handleTime = useCallback(
     (currentTime: number, duration: number) => {
+      const sec = Math.floor(currentTime);
+      setPlayedSeconds((prev) => (prev === sec ? prev : sec));
       if (current.type !== "episode" || !neighbors.next || upNextCancelled) return;
       if (duration > 0 && currentTime >= duration - UP_NEXT_LEAD_SECONDS) {
         setUpNextVisible(true);
@@ -735,6 +792,11 @@ export function VideoPlayerModal({
     },
     [current.type, neighbors.next, upNextCancelled]
   );
+
+  // The segment the viewer is currently inside (if any) → drives the skip button.
+  const activeSkip =
+    skipSegments.find((s) => playedSeconds >= s.startSeconds && playedSeconds < s.endSeconds) ??
+    null;
 
   // The video finished. If a next episode exists and auto-advance wasn't cancelled,
   // jump straight to it; otherwise leave the default end-of-video behaviour.
@@ -884,6 +946,7 @@ export function VideoPlayerModal({
           onFallback={() => setMode("transcode")}
           onTime={handleTime}
           onEnded={handleEnded}
+          seekReq={seekReq}
         />
       ) : (
         <TranscodePlayer
@@ -896,6 +959,7 @@ export function VideoPlayerModal({
           subtitleOffset={subtitleOffset}
           onTime={handleTime}
           onEnded={handleEnded}
+          seekReq={seekReq}
         />
       )}
 
@@ -906,6 +970,35 @@ export function VideoPlayerModal({
             Subtitle delay {formatOffset(subtitleOffset)}
           </div>
         </div>
+      )}
+
+      {/* Skip Intro / Skip Recap — visible while inside a chapter-derived segment,
+          even when the controls have auto-hidden. Seeks to the segment's end. */}
+      {activeSkip && (
+        <button
+          type="button"
+          onClick={() => {
+            seekNonce.current += 1;
+            setSeekReq({ t: activeSkip.endSeconds, n: seekNonce.current });
+            showControls();
+          }}
+          className="pointer-events-auto absolute right-4 bottom-28 z-20 flex items-center gap-2 rounded-md border border-white/20 bg-black/70 px-4 py-2 text-sm font-semibold text-white shadow-lg backdrop-blur transition-colors hover:bg-black/90"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            className="size-4"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M5 4l10 8-10 8V4z" />
+            <path d="M19 5v14" />
+          </svg>
+          {activeSkip.label}
+        </button>
       )}
 
       {/* Auto-advance "Up next" card — bottom-right, above the control cluster.
@@ -1044,17 +1137,36 @@ export function VideoPlayerModal({
             </div>
           )}
 
-          {/* Playback mode is chosen automatically from the file + this device's
-              codec support (falling back to transcode if direct play errors), so
-              there's no manual toggle — just a read-only note while transcoding. */}
-          {mode === "transcode" && (
-            <span
-              className="rounded-md border border-white/15 px-2 py-1 text-xs font-medium text-zinc-300"
-              title="This file isn't natively playable on this device, so it's being transcoded on the fly."
-            >
-              Transcoding
-            </span>
-          )}
+          {/* Playback mode is chosen automatically, but the chip is a toggle: force
+              transcode to fix a file that plays with no audio (undecodable codec on
+              this device) — transcoding re-encodes to stereo AAC. Remembered per
+              browser and re-applied on the next episode. */}
+          <button
+            type="button"
+            onClick={() => {
+              const next = !forceTranscode;
+              setForceTranscode(next);
+              saveForceTranscode(next);
+              setMode(next || !canDirectPlay(mediaInfo) ? "transcode" : "direct");
+              showControls();
+            }}
+            aria-pressed={forceTranscode}
+            title={
+              forceTranscode
+                ? "Transcoding is forced (fixes no-audio / incompatible files). Tap to go back to automatic."
+                : mode === "transcode"
+                  ? "This file is transcoded automatically for this device. Tap to always transcode."
+                  : "Playing directly. No sound or won't play? Tap to transcode — re-encodes audio to compatible stereo AAC."
+            }
+            className={cn(
+              "rounded-md border px-2 py-1 text-xs font-medium transition-colors",
+              forceTranscode
+                ? "border-amber-500/60 bg-amber-500/15 text-amber-300"
+                : "border-white/15 text-zinc-300 hover:bg-white/10"
+            )}
+          >
+            {mode === "transcode" ? "Transcoding" : "Direct"}
+          </button>
 
           {/* Current-quality chip — always shown when a quality is known. */}
           {qualityChip && (
@@ -1344,6 +1456,22 @@ function SubtitleMenuItem({
   );
 }
 
+/** Apply a one-shot seek request (e.g. from the Skip Intro button) to the video. */
+function useSeekRequest(
+  videoRef: React.RefObject<HTMLVideoElement | null>,
+  seekReq: { t: number; n: number } | null | undefined
+) {
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !seekReq) return;
+    try {
+      video.currentTime = seekReq.t;
+    } catch {
+      /* not seekable yet — ignore */
+    }
+  }, [videoRef, seekReq]);
+}
+
 /** Native direct play with a "Try transcoding" fallback on <video> error. */
 function DirectPlayer({
   target,
@@ -1355,6 +1483,7 @@ function DirectPlayer({
   onFallback,
   onTime,
   onEnded,
+  seekReq,
 }: {
   target: PlaybackTarget;
   fileId: number | null;
@@ -1365,6 +1494,7 @@ function DirectPlayer({
   onFallback: () => void;
   onTime?: (currentTime: number, duration: number) => void;
   onEnded?: () => void;
+  seekReq?: { t: number; n: number } | null;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const subtitleSinkRef = useRef<HTMLDivElement>(null);
@@ -1372,6 +1502,7 @@ function DirectPlayer({
 
   useWatchProgress(videoRef, target);
   useStyledSubtitles(videoRef, tracks, selectedSub, subtitleOffset, subtitleSinkRef);
+  useSeekRequest(videoRef, seekReq);
 
   // A specific version streams from `?file=<id>`; the primary/default omits it.
   const src = `/api/v1/stream/${target.type}/${target.id}${fileId != null ? `?file=${fileId}` : ""}`;
@@ -1426,6 +1557,7 @@ function TranscodePlayer({
   subtitleOffset,
   onTime,
   onEnded,
+  seekReq,
 }: {
   target: PlaybackTarget;
   fileId: number | null;
@@ -1435,6 +1567,7 @@ function TranscodePlayer({
   subtitleOffset: number;
   onTime?: (currentTime: number, duration: number) => void;
   onEnded?: () => void;
+  seekReq?: { t: number; n: number } | null;
 }) {
   const { type, id } = target;
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1444,6 +1577,7 @@ function TranscodePlayer({
 
   useWatchProgress(videoRef, target);
   useStyledSubtitles(videoRef, tracks, selectedSub, subtitleOffset, subtitleSinkRef);
+  useSeekRequest(videoRef, seekReq);
 
   useEffect(() => {
     let cancelled = false;

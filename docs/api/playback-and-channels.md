@@ -128,6 +128,20 @@ Serve the HLS playlist or a media segment for an active transcode session. Consu
 
 ---
 
+## `GET /api/v1/skip-segments`
+
+Skippable intro/recap segments for a movie/episode, derived from the file's chapter markers (via ffprobe), so the player can show "Skip Intro" / "Skip Recap" buttons. Reliable only when the file names its chapters; empty otherwise.
+
+- **Auth:** Any authenticated (`getRequestUser`); `401` `{ error: "Not signed in" }` otherwise.
+- **Query params:** `movieId` **or** `episodeId` (one required).
+- **Response:** `200` — array of `{ type: "intro" | "recap", startSeconds, endSeconds, label }`. Empty when the file has no named chapters or ffprobe is unavailable. Errors: `400` (neither id), `500`.
+- **Example:**
+  ```bash
+  curl -sS "$MEDIABOX_URL/api/v1/skip-segments?episodeId=42" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
+---
+
 ## `GET /api/v1/subtitles`
 
 List subtitle tracks available for a movie/episode (for the player's caption menu): downloaded sidecars **and** text-based streams embedded in the video file itself. First syncs any subtitle files sitting on disk.
