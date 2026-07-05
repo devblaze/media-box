@@ -17,6 +17,10 @@ export interface MediaVersion {
   label: string;
   size: number;
   isPrimary: boolean;
+  /** Probed total runtime (seconds), null if unknown. The player uses this as the
+   *  authoritative duration, since a live transcode's `<video>.duration` only
+   *  reflects what's been encoded so far. */
+  durationSec: number | null;
 }
 
 function resTag(height: number | null | undefined, fallback: number): string {
@@ -42,6 +46,7 @@ function toVersion(
     label: def.name && def.name !== "Unknown" ? `${tag} · ${def.name}` : tag,
     size: f.size,
     isPrimary,
+    durationSec: mi?.durationSec ?? null,
     rank: mi?.video?.height ?? def.resolution ?? 0,
   };
 }

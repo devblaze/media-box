@@ -279,6 +279,7 @@ type MediaVersion = {
   label: string;
   size: number;
   isPrimary: boolean;
+  durationSec: number | null;
 };
 
 /**
@@ -811,19 +812,32 @@ export function VideoPlayerModal({
     };
   }, [current.type, current.id]);
 
+  // Authoritative runtime: a live transcode's <video>.duration only reflects what's
+  // been encoded so far (a few seconds early on), so end-detection must use the
+  // probed duration from /versions (or the mediaInfo prop) instead — otherwise the
+  // "Up next" card fires almost immediately and skips to the next episode.
+  const realDurationSec =
+    (versions.find((v) => v.fileId === selectedFileId)?.durationSec ??
+      versions.find((v) => v.isPrimary)?.durationSec ??
+      versions[0]?.durationSec ??
+      mediaInfo?.durationSec) ||
+    0;
+
   // Video progress reported up from the active child player: track the position (for
   // the skip button) and, in the last stretch of an episode that has a next
   // neighbour (unless dismissed), reveal the auto-advance "Up next" card.
   const handleTime = useCallback(
-    (currentTime: number, duration: number) => {
+    (currentTime: number) => {
       const sec = Math.floor(currentTime);
       setPlayedSeconds((prev) => (prev === sec ? prev : sec));
       if (current.type !== "episode" || !neighbors.next || upNextCancelled) return;
-      if (duration > 0 && currentTime >= duration - UP_NEXT_LEAD_SECONDS) {
+      // Only using the PROBED duration — never the live transcode's <video>.duration
+      // (which starts tiny) — so this can't fire early. If unknown, don't auto-advance.
+      if (realDurationSec > 0 && currentTime >= realDurationSec - UP_NEXT_LEAD_SECONDS) {
         setUpNextVisible(true);
       }
     },
-    [current.type, neighbors.next, upNextCancelled]
+    [current.type, neighbors.next, upNextCancelled, realDurationSec]
   );
 
   // The segment the viewer is currently inside (if any) → drives the skip button.
@@ -832,12 +846,15 @@ export function VideoPlayerModal({
     null;
 
   // The video finished. If a next episode exists and auto-advance wasn't cancelled,
-  // jump straight to it; otherwise leave the default end-of-video behaviour.
+  // jump straight to it; otherwise leave the default end-of-video behaviour. Ignore
+  // a premature 'ended' from a live transcode stalling at its encoded edge (position
+  // nowhere near the real runtime) so it doesn't skip mid-episode.
   const handleEnded = useCallback(() => {
+    if (realDurationSec > 0 && playedSeconds < realDurationSec - 15) return;
     if (current.type === "episode" && neighbors.next && !upNextCancelled) {
       goTo(neighbors.next);
     }
-  }, [current.type, neighbors.next, upNextCancelled, goTo]);
+  }, [current.type, neighbors.next, upNextCancelled, goTo, realDurationSec, playedSeconds]);
 
   // While the "Up next" card is showing, tick a once-per-second wall-clock
   // countdown (it enters at UP_NEXT_COUNTDOWN — the state default, reset on every
@@ -1702,14 +1719,37 @@ function TranscodePlayer({
         if (cancelled) return;
 
         if (Hls.isSupported()) {
-          hls = new Hls({ enableWorker: true });
-          hls.on(Hls.Events.ERROR, (_evt, data) => {
-            if (data.fatal && !cancelled) {
-              setStatus("error");
-              setError(
-                "The transcode stream failed. The file may be unsupported or ffmpeg errored."
-              );
+          hls = new Hls({
+            enableWorker: true,
+            // Buffer the transcode generously when segments are available, so a
+            // slow encoder that briefly falls behind doesn't starve playback.
+            maxBufferLength: 60,
+            maxMaxBufferLength: 600,
+            maxBufferSize: 200 * 1000 * 1000,
+            backBufferLength: 90,
+          });
+          // Count CONSECUTIVE fatal errors (reset on any successful fragment): a
+          // fatal error mid-transcode is usually just reaching the encoder's edge
+          // (segment not written yet), so recover a few times before giving up.
+          let consecutiveFatal = 0;
+          const activeHls = hls;
+          activeHls.on(Hls.Events.FRAG_BUFFERED, () => {
+            consecutiveFatal = 0;
+          });
+          activeHls.on(Hls.Events.ERROR, (_evt, data) => {
+            if (!data.fatal || cancelled) return;
+            if (consecutiveFatal < 6) {
+              consecutiveFatal += 1;
+              if (data.type === Hls.ErrorTypes.NETWORK_ERROR) activeHls.startLoad();
+              else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) activeHls.recoverMediaError();
+              else {
+                setStatus("error");
+                setError("The transcode stream failed. The file may be unsupported.");
+              }
+              return;
             }
+            setStatus("error");
+            setError("The transcode stream failed. The file may be unsupported or ffmpeg errored.");
           });
           hls.loadSource(res.url);
           hls.attachMedia(video);

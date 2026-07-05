@@ -286,7 +286,7 @@ Available quality versions (files) for a movie or episode — powers the player'
   | `type` | `movie` \| `episode` | yes | Else `400`. |
   | `id` | int > 0 | yes | Movie or episode id; else `400`. |
 
-- **Response:** `200` — `{ "versions": [...] }`. Errors: `400` on bad `type`/`id`; `500`.
+- **Response:** `200` — `{ "versions": [{ fileId, resolution, label, size, isPrimary, durationSec }] }` (movies may have several; episodes one). `durationSec` is the probed runtime (null if unknown) — the player uses it as the authoritative duration since a live transcode's `<video>.duration` only reflects what's been encoded so far. Errors: `400` on bad `type`/`id`; `500`.
 - **Example:**
   ```bash
   curl -sS "$MEDIABOX_URL/api/v1/versions?type=movie&id=42" -H "x-api-key: $MEDIABOX_API_KEY"
