@@ -35,6 +35,8 @@ const SETTINGS_NAV = [
   { label: "Indexers", href: "/settings/indexers" },
   { label: "Download Clients", href: "/settings/download-clients" },
   { label: "Migrate", href: "/settings/migrate" },
+  { label: "Users", href: "/settings/users" },
+  { label: "Roles", href: "/settings/roles" },
   { label: "General", href: "/settings/general" },
   { label: "Tasks", href: "/system/tasks" },
 ] as const;

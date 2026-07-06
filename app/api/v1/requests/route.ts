@@ -8,6 +8,7 @@ import { approveRequest } from "@/server/requests/request-service";
 import { getSettings } from "@/server/settings/settings-service";
 import { recordLog } from "@/server/logging/logger";
 import { emitEvent } from "@/server/events/bus";
+import { hasPermission } from "@/server/auth/guards";
 import { type RequestStage, stageFromDownload } from "@/server/requests/request-stage";
 import { ok, serverError } from "@/lib/http";
 
@@ -39,8 +40,11 @@ export async function GET(request: NextRequest) {
       .innerJoin(schema.users, eq(schema.requests.userId, schema.users.id))
       .orderBy(desc(schema.requests.createdAt))
       .all();
-    // regular users only see their own requests
-    const visible = user.role === "admin" ? rows : rows.filter((r) => r.userId === user.id);
+    // Approvers (admins, or a role granting requests.approve) see everyone's
+    // requests; regular users see only their own.
+    const visible = hasPermission(user, "requests.approve")
+      ? rows
+      : rows.filter((r) => r.userId === user.id);
 
     // For APPROVED requests, refine the stage from the download that fulfils them.
     // Look up the newest download per fulfilled movie/series in one query; the

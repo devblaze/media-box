@@ -10,6 +10,7 @@ import { SubtitleSearchDrawer } from "@/components/subtitle-search";
 import { MediaInfoBadges, VideoPlayerModal } from "@/components/media-player";
 import { useQueue, DownloadStageBadge } from "@/components/download-stage";
 import { seriesQueueItems, episodeQueueItem } from "@/lib/download-status";
+import { principalHasPermission } from "@/lib/permissions";
 import type { MediaInfo } from "@/server/library/media-info";
 import {
   Badge,
@@ -100,6 +101,7 @@ interface Me {
   id: number;
   username: string;
   role: "admin" | "user";
+  permissions?: string[];
 }
 
 interface ResumeEpisode {
@@ -132,6 +134,8 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
   // Per-user smart-resume state: which episode the series-level Play should open.
   const { data: resume, mutate: mutateResume } = useApi<ResumeInfo>(`/series/${id}/resume`);
   const isAdmin = me?.role === "admin";
+  // Interactive search & grab is delegatable via releases.search (admins have it).
+  const canSearch = principalHasPermission(me, "releases.search");
   const [progressMap, setProgressMap] = useState<Map<number, EpProgress>>(new Map());
   const [searchScope, setSearchScope] = useState<{ scope: SearchScope; label: string } | null>(null);
   const [subtitleSearch, setSubtitleSearch] = useState<{ episodeId: number; label: string } | null>(
@@ -534,7 +538,7 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
                     <Badge tone="neutral">
                       {withFile}/{eps.length} episodes
                     </Badge>
-                    {isAdmin && (
+                    {canSearch && (
                       <Button
                         variant="secondary"
                         size="sm"
@@ -636,7 +640,7 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
                                   Play
                                 </Button>
                               )}
-                              {isAdmin && (
+                              {canSearch && (
                                 <Button
                                   variant="secondary"
                                   size="sm"

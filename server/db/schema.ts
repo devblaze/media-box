@@ -457,6 +457,24 @@ export const commands = sqliteTable(
 
 // ---------- Users & requests ----------
 
+/**
+ * Admin-defined roles that grant granular capabilities to non-admin users.
+ * `permissions` is a JSON array of permission keys (see `lib/permissions.ts`).
+ * The built-in super-admin (`users.role === "admin"`) bypasses all permission
+ * checks and is independent of this table — roles only ever *add* capability to
+ * ordinary users.
+ */
+export const roles = sqliteTable(
+  "roles",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    name: text("name").notNull(),
+    permissions: text("permissions", { mode: "json" }).$type<string[]>().notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [uniqueIndex("roles_name_unique").on(t.name)]
+);
+
 export const users = sqliteTable(
   "users",
   {
@@ -464,6 +482,9 @@ export const users = sqliteTable(
     username: text("username").notNull(),
     passwordHash: text("password_hash").notNull(),
     role: text("role", { enum: ["admin", "user"] }).notNull().default("user"),
+    // Optional custom role granting extra permissions to a non-admin user. Null =
+    // a plain user with no special capabilities. Ignored for admins (super-admin).
+    roleId: integer("role_id").references(() => roles.id, { onDelete: "set null" }),
     // Personal Pushover user key for request-available notifications (null = off).
     pushoverUserKey: text("pushover_user_key"),
     // Last authenticated activity (throttled heartbeat), drives online/offline in

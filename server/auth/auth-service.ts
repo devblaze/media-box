@@ -3,6 +3,7 @@ import { eq, gt, and } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { getSettings } from "@/server/settings/settings-service";
 import { SESSION_COOKIE } from "@/server/auth/session-cookie";
+import { PERMISSION_KEYS, sanitizePermissions, type PermissionKey } from "@/lib/permissions";
 
 const SESSION_TTL_MS = 30 * 24 * 3600_000; // 30 days
 export { SESSION_COOKIE };
@@ -24,7 +25,12 @@ export function userCount(): number {
   return getDb().select({ id: schema.users.id }).from(schema.users).all().length;
 }
 
-export function createUser(username: string, password: string, role: "admin" | "user") {
+export function createUser(
+  username: string,
+  password: string,
+  role: "admin" | "user",
+  roleId: number | null = null
+) {
   const db = getDb();
   return db
     .insert(schema.users)
@@ -32,6 +38,8 @@ export function createUser(username: string, password: string, role: "admin" | "
       username: username.trim().toLowerCase(),
       passwordHash: hashPassword(password),
       role,
+      // A custom role only applies to non-admin users (admins are super-admin).
+      roleId: role === "admin" ? null : roleId,
       createdAt: new Date(),
     })
     .returning({ id: schema.users.id, username: schema.users.username, role: schema.users.role })
@@ -84,6 +92,35 @@ export interface SessionUser {
   id: number;
   username: string;
   role: "admin" | "user";
+  /** The assigned custom role's id, or null (admins/plain users have none). */
+  roleId: number | null;
+  /** The assigned custom role's name, for display (null when none). */
+  roleName: string | null;
+  /** Resolved capability keys. Admins implicitly hold every permission. */
+  permissions: PermissionKey[];
+}
+
+/**
+ * Resolve the capabilities for a user. Admins are super-admin (all permissions);
+ * a non-admin with a custom role gets that role's (sanitised) permission set; a
+ * plain user gets none.
+ */
+function resolvePermissions(
+  role: "admin" | "user",
+  roleId: number | null
+): { roleName: string | null; permissions: PermissionKey[] } {
+  if (role === "admin") return { roleName: null, permissions: [...PERMISSION_KEYS] };
+  if (roleId == null) return { roleName: null, permissions: [] };
+  const roleRow = getDb()
+    .select({ name: schema.roles.name, permissions: schema.roles.permissions })
+    .from(schema.roles)
+    .where(eq(schema.roles.id, roleId))
+    .get();
+  if (!roleRow) return { roleName: null, permissions: [] };
+  return {
+    roleName: roleRow.name,
+    permissions: sanitizePermissions(roleRow.permissions ?? []),
+  };
 }
 
 /** Don't rewrite lastSeenAt more than once per minute per user (keeps write load trivial). */
@@ -97,6 +134,7 @@ export function getSessionUser(token: string | undefined | null): SessionUser | 
       id: schema.users.id,
       username: schema.users.username,
       role: schema.users.role,
+      roleId: schema.users.roleId,
       lastSeenAt: schema.users.lastSeenAt,
     })
     .from(schema.sessions)
@@ -115,7 +153,8 @@ export function getSessionUser(token: string | undefined | null): SessionUser | 
       .run();
   }
 
-  return { id: row.id, username: row.username, role: row.role };
+  const { roleName, permissions } = resolvePermissions(row.role, row.roleId);
+  return { id: row.id, username: row.username, role: row.role, roleId: row.roleId, roleName, permissions };
 }
 
 /**
@@ -130,12 +169,21 @@ export function getRequestUser(request: Request): SessionUser | null {
 
   const apiKey = request.headers.get("x-api-key");
   if (apiKey && apiKey === settings.apiKey) {
-    return { id: 0, username: "api", role: "admin" };
+    // The API key is treated as admin → super-admin (all permissions).
+    return {
+      id: 0,
+      username: "api",
+      role: "admin",
+      roleId: null,
+      roleName: null,
+      permissions: [...PERMISSION_KEYS],
+    };
   }
 
   const castKey = new URL(request.url).searchParams.get("key");
   if (castKey && settings.kioskToken && castKey === settings.kioskToken) {
-    return { id: 0, username: "cast", role: "user" };
+    // Low-privilege cast/kiosk principal: no elevated capabilities.
+    return { id: 0, username: "cast", role: "user", roleId: null, roleName: null, permissions: [] };
   }
 
   const cookie = request.headers.get("cookie") ?? "";

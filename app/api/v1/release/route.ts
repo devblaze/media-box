@@ -3,6 +3,7 @@ import { z } from "zod";
 import { searchReleases } from "@/server/indexers/release-search";
 import { episodeTarget, movieTarget, seasonTarget } from "@/server/indexers/search-targets";
 import { grab } from "@/server/download/download-service";
+import { requirePermission } from "@/server/auth/guards";
 import { badRequest, ok, serverError } from "@/lib/http";
 
 function targetFromParams(params: URLSearchParams, interactive: boolean) {
@@ -17,6 +18,8 @@ function targetFromParams(params: URLSearchParams, interactive: boolean) {
 }
 
 export async function GET(request: NextRequest) {
+  const denied = requirePermission(request, "releases.search");
+  if (denied) return denied;
   try {
     const target = targetFromParams(request.nextUrl.searchParams, true);
     if (!target) return badRequest("Provide ?episodeId=, ?movieId=, or ?seriesId=&season=");
@@ -38,6 +41,8 @@ const grabSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
+  const denied = requirePermission(request, "releases.search");
+  if (denied) return denied;
   try {
     const body = grabSchema.parse(await request.json());
     const params = new URLSearchParams();
