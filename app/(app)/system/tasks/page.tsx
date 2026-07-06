@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ApiError, apiFetch, useApi } from "@/lib/api";
 import { useEvents } from "@/lib/use-events";
 import { cn } from "@/lib/cn";
+import { taskDescription } from "@/lib/task-descriptions";
 import type { CommandRow, ScheduledTask } from "@/lib/types";
 import {
   Badge,
@@ -77,6 +78,24 @@ const WEEKDAYS_LONG = [
 ];
 // Present Mon…Sun in the editor (Sun still maps to value 0 to match the backend).
 const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
+
+/**
+ * A task/command name with a hover tooltip explaining what it does. When a
+ * description exists the name gets a subtle dotted underline + help cursor so
+ * it's discoverable; unknown names render as plain text.
+ */
+function TaskName({ name }: { name: string }) {
+  const desc = taskDescription(name);
+  if (!desc) return <>{name}</>;
+  return (
+    <span
+      title={desc}
+      className="cursor-help underline decoration-dotted decoration-zinc-600 underline-offset-4"
+    >
+      {name}
+    </span>
+  );
+}
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
@@ -181,7 +200,9 @@ export default function TasksPage() {
             <TBody>
               {tasks.map((t) => (
                 <TR key={t.id}>
-                  <TD>{t.name}</TD>
+                  <TD>
+                    <TaskName name={t.name} />
+                  </TD>
                   <TD>
                     <div className="flex items-center gap-2">
                       <span
@@ -268,7 +289,9 @@ export default function TasksPage() {
               <TBody>
                 {commands.map((c) => (
                   <TR key={c.id}>
-                    <TD>{c.name}</TD>
+                    <TD>
+                      <TaskName name={c.name} />
+                    </TD>
                     <TD className="text-xs text-zinc-500">{c.trigger}</TD>
                     <TD className="text-xs text-zinc-400">
                       {new Date(c.queuedAt).toLocaleTimeString()}
