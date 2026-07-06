@@ -6,11 +6,33 @@ import { qbittorrentSettingsSchema, torboxSettingsSchema } from "@/server/downlo
 import { ok, serverError } from "@/lib/http";
 import { requireAdmin } from "@/server/auth/guards";
 
+/** Placeholder shown to the client in place of a stored secret. */
+export const REDACTED = "••••••••";
+/** Secret setting keys that are redacted on read and merged back on write/test. */
+const SECRET_KEYS = ["password", "apiKey"] as const;
+
 function redact(row: { type: string; settings: unknown }) {
   const settings = { ...(row.settings as Record<string, unknown>) };
-  if ("password" in settings && settings.password) settings.password = "••••••••";
-  if ("apiKey" in settings && settings.apiKey) settings.apiKey = "••••••••";
+  for (const key of SECRET_KEYS) {
+    if (key in settings && settings[key]) settings[key] = REDACTED;
+  }
   return { ...row, settings };
+}
+
+/**
+ * Restore stored secrets for any field that arrived as the redaction placeholder,
+ * so editing a client (or testing edited settings) without re-typing a secret
+ * keeps the real value instead of persisting/sending "••••••••".
+ */
+export function mergeSecrets(
+  stored: Record<string, unknown>,
+  incoming: Record<string, unknown>
+): Record<string, unknown> {
+  const merged = { ...incoming };
+  for (const key of SECRET_KEYS) {
+    if (merged[key] === REDACTED) merged[key] = stored[key];
+  }
+  return merged;
 }
 
 export async function GET(request: NextRequest) {

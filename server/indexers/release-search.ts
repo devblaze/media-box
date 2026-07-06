@@ -65,8 +65,16 @@ export async function searchReleases(target: SearchTarget): Promise<DecoratedRel
       };
       if (target.seasonNumber !== undefined) query.season = target.seasonNumber;
       if (target.episodeNumbers?.length === 1) query.ep = target.episodeNumbers[0];
-      const items = await search(indexer.url, indexer.apiKey, query);
-      return { indexer, items };
+      try {
+        const items = await search(indexer.url, indexer.apiKey, query);
+        return { indexer, items };
+      } catch (err) {
+        // Tag the failure with the indexer name — allSettled otherwise only
+        // surfaces the bare error, so the log can't say which indexer to fix
+        // (e.g. a Torznab "201: Indexer is not configured" from one provider).
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`"${indexer.name}" — ${msg}`);
+      }
     })
   );
 
