@@ -253,7 +253,16 @@ hands it to the download service.
 List requests, newest first. Admins see all; other users see only their own.
 
 - **Auth:** user (signed in; `401` otherwise)
-- **Response:** `200` — array of `{ id, mediaType, tmdbId, title, year, posterPath, seasons, status, declineReason, createdAt, userId, username, movieId, seriesId }`.
+- **Response:** `200` — array of `{ id, mediaType, tmdbId, title, year, posterPath, seasons, status, stage, stageDetail, declineReason, createdAt, userId, username, movieId, seriesId }`.
+  - `status` is the stored request state: `"pending" | "approved" | "declined" | "available"`.
+  - `stage` refines `status` for the status badge by folding in the live state of
+    the download fulfilling the request:
+    `"pending" | "searching" | "queued" | "downloading" | "importing" | "available" | "failed" | "declined"`.
+    An approved request with no grabbed release yet reports `"searching"` (the
+    wanted-search job keeps retrying), one with an active download reports its
+    download phase, and a failed/warning download reports `"failed"`.
+  - `stageDetail` (string | null) is extra badge-tooltip context — the decline
+    reason for `declined`, or the download's status message for `failed`.
 
 ## `POST /api/v1/requests`
 

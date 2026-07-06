@@ -11,7 +11,9 @@ interface AppEvent {
 // Maps event types to the SWR keys they invalidate.
 const INVALIDATIONS: Record<string, string[]> = {
   "command.updated": ["/command", "/system/tasks"],
-  "queue.updated": ["/queue"],
+  // /requests too: the requests list derives its status badge (searching →
+  // downloading → importing → failed) from the live download state.
+  "queue.updated": ["/queue", "/requests"],
   "series.updated": ["/series"],
   "movie.updated": ["/movies"],
   "history.added": ["/history"],

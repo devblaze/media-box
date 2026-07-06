@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ComponentProps } from "react";
 import Link from "next/link";
 import { apiFetch, useApi } from "@/lib/api";
 import { useEvents } from "@/lib/use-events";
@@ -15,6 +15,21 @@ import {
 } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
+/**
+ * Refined lifecycle stage shown as the status badge — the server folds the live
+ * download state into the stored `status` for approved requests. See the
+ * `GET /requests` route for the derivation.
+ */
+type RequestStage =
+  | "pending"
+  | "searching"
+  | "queued"
+  | "downloading"
+  | "importing"
+  | "available"
+  | "failed"
+  | "declined";
+
 interface RequestRow {
   id: number;
   mediaType: "series" | "movie";
@@ -23,6 +38,10 @@ interface RequestRow {
   year: number | null;
   posterPath: string | null;
   status: "pending" | "approved" | "declined" | "available";
+  /** Display stage refining `status` with live download progress. */
+  stage: RequestStage;
+  /** Extra context for the badge tooltip (decline reason / download error). */
+  stageDetail: string | null;
   declineReason: string | null;
   createdAt: number | string;
   userId: number;
@@ -48,11 +67,19 @@ function mediaTypeOf(kind: Kind): "movie" | "series" {
   return kind === "movie" ? "movie" : "series";
 }
 
-const STATUS_TONE: Record<RequestRow["status"], "accent" | "info" | "success" | "danger"> = {
-  pending: "accent",
-  approved: "info",
-  available: "success",
-  declined: "danger",
+/** Badge label + colour for each refined request stage. */
+const STAGE_META: Record<
+  RequestStage,
+  { label: string; tone: ComponentProps<typeof Badge>["tone"] }
+> = {
+  pending: { label: "Pending", tone: "accent" },
+  searching: { label: "Searching", tone: "info" },
+  queued: { label: "Queued", tone: "info" },
+  downloading: { label: "Downloading", tone: "info" },
+  importing: { label: "Importing", tone: "info" },
+  available: { label: "Available", tone: "success" },
+  failed: { label: "Failed", tone: "danger" },
+  declined: { label: "Declined", tone: "danger" },
 };
 
 function toMillis(value: number | string): number {
@@ -339,13 +366,18 @@ export default function RequestsPage() {
                     </div>
                   </div>
 
-                  <Badge
-                    tone={STATUS_TONE[r.status]}
-                    className="shrink-0 capitalize"
-                    title={r.declineReason ?? undefined}
-                  >
-                    {r.status}
-                  </Badge>
+                  {(() => {
+                    const meta = STAGE_META[r.stage] ?? STAGE_META.pending;
+                    return (
+                      <Badge
+                        tone={meta.tone}
+                        className="shrink-0"
+                        title={r.stageDetail ?? undefined}
+                      >
+                        {meta.label}
+                      </Badge>
+                    );
+                  })()}
 
                   <div className="flex shrink-0 items-center gap-2">
                     {isAdmin && r.status === "pending" && (
