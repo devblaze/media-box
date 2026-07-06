@@ -19,6 +19,12 @@ export const PERMISSIONS = [
     description:
       "Manually search indexers and grab or override a release when the automatic search misses.",
   },
+  {
+    key: "files.approve",
+    label: "Approve file changes",
+    description:
+      "Approve or decline held file moves/renames/deletes when file operations are in Ask mode.",
+  },
 ] as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[number]["key"];

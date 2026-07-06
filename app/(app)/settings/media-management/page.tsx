@@ -19,7 +19,6 @@ import {
   Select,
   Skeleton,
   Spinner,
-  Switch,
   TBody,
   TD,
   TR,
@@ -152,44 +151,70 @@ export default function MediaManagementPage() {
   );
 }
 
+type FileOpsMode = "allow" | "ask" | "off";
+
+const FILE_OPS_META: Record<
+  FileOpsMode,
+  { label: string; tone: "success" | "warning" | "danger"; help: string }
+> = {
+  allow: {
+    label: "Allow",
+    tone: "success",
+    help: "media-box may move, rename, and delete files: imports and organizing run normally, and deleting a title can remove its files from disk.",
+  },
+  ask: {
+    label: "Ask",
+    tone: "warning",
+    help: "File changes are held for approval. Imports, organizing, and with-files deletes wait as pending changes until an admin — or a user with the “Approve file changes” permission — approves them on the File Changes page.",
+  },
+  off: {
+    label: "Read-only",
+    tone: "danger",
+    help: "Read-only mode. media-box never moves, renames, or deletes files. Imports and organizing are paused (downloads keep running and import automatically once you switch back to Allow), and deleting a title only removes it from the library — never from disk.",
+  },
+};
+
 /**
- * Master read-only switch. When OFF, media-box never moves, renames, or deletes
- * files anywhere — imports/organizing pause and delete-from-disk is refused —
- * enforced server-side by the media-guard. Turning it OFF asks for confirmation;
- * turning it back ON resumes automation.
+ * Master file-operations control (3-state): Allow performs moves/renames/deletes
+ * freely, Ask holds every file change for approval on the File Changes page, and
+ * Read-only refuses them entirely — all enforced server-side by the media-guard.
+ * Switching to Read-only asks for confirmation.
  */
 function FileOperationsSection() {
-  const { data, mutate } = useApi<{ fileOperationsEnabled: boolean }>("/settings");
+  const { data, mutate } = useApi<{ fileOperationsMode: FileOpsMode }>("/settings");
   const [saving, setSaving] = useState(false);
   const toast = useToast();
   const confirm = useConfirm();
 
-  const enabled = data?.fileOperationsEnabled ?? true;
+  const mode = data?.fileOperationsMode ?? "allow";
 
-  async function toggle(next: boolean) {
-    if (!next) {
+  async function change(next: FileOpsMode) {
+    if (next === mode) return;
+    if (next === "off") {
       const confirmed = await confirm({
-        title: "Turn on read-only mode?",
+        title: "Switch to read-only mode?",
         message:
-          "media-box will stop moving, renaming, and deleting files. Imports and organizing pause — downloads keep running and import automatically once you turn this back on — and deleting a movie or series will only remove it from the library, never from disk.",
-        confirmLabel: "Turn on read-only",
+          "media-box will stop moving, renaming, and deleting files. Imports and organizing pause — downloads keep running and import automatically once you switch back — and deleting a movie or series will only remove it from the library, never from disk.",
+        confirmLabel: "Switch to read-only",
         danger: true,
       });
       if (!confirmed) return;
     }
     setSaving(true);
-    // Optimistic: reflect the flip immediately, roll back on failure.
-    void mutate((s) => (s ? { ...s, fileOperationsEnabled: next } : s), false);
+    // Optimistic: reflect the change immediately, roll back on failure.
+    void mutate((s) => (s ? { ...s, fileOperationsMode: next } : s), false);
     try {
       await apiFetch("/settings", {
         method: "PUT",
-        body: JSON.stringify({ fileOperationsEnabled: next }),
+        body: JSON.stringify({ fileOperationsMode: next }),
       });
       await mutate();
       toast.success(
-        next
-          ? "File operations enabled — imports, moves, and deletes are active."
-          : "Read-only mode on — media files will not be moved, renamed, or deleted."
+        next === "allow"
+          ? "File operations set to Allow — imports, moves, and deletes are active."
+          : next === "ask"
+            ? "File operations set to Ask — changes wait for approval on the File Changes page."
+            : "Read-only mode on — media files will not be moved, renamed, or deleted."
       );
     } catch (err) {
       await mutate();
@@ -204,21 +229,22 @@ function FileOperationsSection() {
       <CardBody className="flex flex-wrap items-center justify-between gap-4">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="font-medium text-zinc-100">Allow file operations</span>
-            <Badge tone={enabled ? "success" : "danger"}>{enabled ? "On" : "Read-only"}</Badge>
+            <span className="font-medium text-zinc-100">File operations</span>
+            <Badge tone={FILE_OPS_META[mode].tone}>{FILE_OPS_META[mode].label}</Badge>
           </div>
-          <p className="mt-1 max-w-xl text-sm text-zinc-400">
-            {enabled
-              ? "media-box may move, rename, and delete files: imports and organizing run normally, and deleting a title can remove its files from disk."
-              : "Read-only mode. media-box will never move, rename, or delete files. Imports and organizing are paused (downloads keep running and import automatically once you re-enable this), and deleting a title only removes it from the library — never from disk."}
-          </p>
+          <p className="mt-1 max-w-xl text-sm text-zinc-400">{FILE_OPS_META[mode].help}</p>
         </div>
-        <Switch
-          checked={enabled}
-          onChange={toggle}
+        <Select
+          aria-label="File operations mode"
+          value={mode}
+          onChange={(e) => change(e.target.value as FileOpsMode)}
           disabled={!data || saving}
-          aria-label="Allow file operations"
-        />
+          className="w-full shrink-0 sm:w-44"
+        >
+          <option value="allow">Allow</option>
+          <option value="ask">Ask (approve changes)</option>
+          <option value="off">Read-only</option>
+        </Select>
       </CardBody>
     </Card>
   );

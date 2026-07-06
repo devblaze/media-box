@@ -18,9 +18,18 @@ export const appSettingsSchema = z.object({
   animePath: z.string().default(""),
   // How imports place files into the library.
   importMode: z.enum(["auto", "hardlink", "copy", "move"]).default("auto"),
-  // Master read-only switch. When false, media-box never moves, renames, or deletes
-  // files: imports/organizing are refused, replaced-file and library deletes are
-  // refused, and downloads simply wait to be imported until it's turned back on.
+  // File-operations mode (3-state master switch for touching media files):
+  //   allow — moves/renames/deletes happen freely (the original "on" behaviour).
+  //   ask   — file changes are HELD as pending approvals; an admin or a user with
+  //           the files.approve permission approves/declines them, and the change
+  //           executes on approval.
+  //   off   — media-box never moves, renames, or deletes files (the original
+  //           read-only mode; endpoints that touch files return 409).
+  fileOperationsMode: z.enum(["allow", "ask", "off"]).default("allow"),
+  // Legacy boolean master switch, kept in sync with `fileOperationsMode`
+  // (`mode !== "off"`). Retained for back-compat: older databases only stored this,
+  // and the outer `.transform` below derives the mode from it when the mode key is
+  // absent. Reads always reflect `mode !== "off"`.
   fileOperationsEnabled: z.coerce.boolean().default(true),
   // HLS transcoding pipeline.
   transcodeHwAccel: z.enum(["none", "vaapi", "qsv", "nvenc"]).default("none"),
@@ -55,6 +64,15 @@ export const appSettingsSchema = z.object({
   radarrApiKey: z.string().default(""),
   bazarrUrl: z.string().default(""),
   bazarrApiKey: z.string().default(""),
+}).transform((s) => {
+  // Reconcile the 3-state `fileOperationsMode` with the legacy boolean:
+  //   - A legacy database has `fileOperationsEnabled=false` with no `fileOperationsMode`
+  //     key, so the field default leaves mode="allow" alongside enabled=false — an
+  //     impossible pairing that can only mean the mode was absent. Derive "off".
+  //   - Otherwise trust the stored mode, and always mirror the boolean off it.
+  let mode = s.fileOperationsMode;
+  if (mode === "allow" && s.fileOperationsEnabled === false) mode = "off";
+  return { ...s, fileOperationsMode: mode, fileOperationsEnabled: mode !== "off" };
 });
 
 export type AppSettings = z.infer<typeof appSettingsSchema>;
@@ -89,10 +107,22 @@ export function getOrCreateKioskToken(): string {
 }
 
 export function updateSettings(patch: Partial<AppSettings>): AppSettings {
+  const p: Partial<AppSettings> = { ...patch };
+  // Legacy clients still send the boolean; translate it into the 3-state mode so
+  // the two never diverge on disk.
+  if (p.fileOperationsEnabled !== undefined && p.fileOperationsMode === undefined) {
+    p.fileOperationsMode = p.fileOperationsEnabled ? "allow" : "off";
+  }
   const current = getSettings();
-  const next = appSettingsSchema.parse({ ...current, ...patch });
-  for (const [key, value] of Object.entries(patch)) {
+  const next = appSettingsSchema.parse({ ...current, ...p });
+  for (const [key, value] of Object.entries(p)) {
     setSetting(key as keyof AppSettings, value as never);
+  }
+  // The mode and the legacy boolean are mirrors — persist both whenever either
+  // changed so a later read stays consistent regardless of which was written.
+  if ("fileOperationsMode" in p || "fileOperationsEnabled" in p) {
+    setSetting("fileOperationsMode", next.fileOperationsMode);
+    setSetting("fileOperationsEnabled", next.fileOperationsEnabled);
   }
   return next;
 }

@@ -34,14 +34,16 @@ export async function POST(request: NextRequest) {
 
   const results: Array<{
     sourcePath: string;
-    status: "organized" | "failed" | "skipped";
+    status: "organized" | "failed" | "skipped" | "held";
     detail?: string | null;
     destPath?: string;
     error?: string;
+    id?: number;
   }> = [];
   let organized = 0;
   let failed = 0;
   let skipped = 0;
+  let held = 0;
 
   for (const it of input.items) {
     try {
@@ -51,6 +53,12 @@ export async function POST(request: NextRequest) {
         seasonNumber: it.seasonNumber,
         episodeNumbers: it.episodeNumbers,
       });
+      // Ask mode: each organize is held for approval instead of performed now.
+      if (r.status === "held") {
+        held++;
+        results.push({ sourcePath: it.sourcePath, status: "held", id: r.id });
+        continue;
+      }
       organized++;
       results.push({ sourcePath: it.sourcePath, status: "organized", detail: r.detail, destPath: r.destPath });
     } catch (err) {
@@ -66,5 +74,5 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  return ok({ organized, failed, skipped, results });
+  return ok({ organized, failed, skipped, held, results });
 }

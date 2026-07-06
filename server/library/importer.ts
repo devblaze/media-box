@@ -7,7 +7,8 @@ import { isUpgrade, type ProfileLike } from "@/server/parser/scoring";
 import type { QualityModel } from "@/server/parser/quality";
 import { renderEpisodeFilename, renderMovieFilename, renderSeasonFolder } from "./naming";
 import { applyOwnership, freeSpace, mkdirp, placeFile, removeMedia, type ImportMode } from "./filesystem";
-import { fileOperationsEnabled } from "./media-guard";
+import { fileOperationsEnabled, fileOperationsMode } from "./media-guard";
+import { recordPendingFileChange } from "./file-change-service";
 import { probeMediaInfo } from "./media-info";
 import { VIDEO_EXTENSIONS } from "./disk-scanner";
 import { emitEvent } from "@/server/events/bus";
@@ -370,7 +371,10 @@ async function cleanupCompletedDownload(download: DownloadRow): Promise<void> {
   }
 }
 
-export async function importDownload(downloadId: number): Promise<string> {
+export async function importDownload(
+  downloadId: number,
+  opts: { bypassHold?: boolean } = {}
+): Promise<string> {
   const db = getDb();
   const download = db
     .select()
@@ -393,6 +397,26 @@ export async function importDownload(downloadId: number): Promise<string> {
       .run();
     emitEvent({ type: "queue.updated" });
     return `file operations disabled — deferred import of '${download.title}'`;
+  }
+
+  // Ask mode: hold the import for an approver instead of importing now. Park the
+  // download in `importPending` (with an explanatory message) so QueueMonitor's
+  // "already importing" guard stops it from re-enqueuing another import, and
+  // record a pending file change the approver acts on. `bypassHold` is set when
+  // the approval re-runs this to actually import.
+  if (!opts.bypassHold && fileOperationsMode() === "ask") {
+    recordPendingFileChange("import", `Import “${download.title}”`, download.outputPath, {
+      downloadId,
+    });
+    db.update(schema.downloads)
+      .set({
+        status: "importPending",
+        statusMessage: "Waiting for approval — file operations are in Ask mode.",
+      })
+      .where(eq(schema.downloads.id, downloadId))
+      .run();
+    emitEvent({ type: "queue.updated" });
+    return `held import of '${download.title}' for approval`;
   }
 
   db.update(schema.downloads)

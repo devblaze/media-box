@@ -23,6 +23,7 @@ const patchSchema = z.object({
   seriesPath: z.string().optional(),
   animePath: z.string().optional(),
   importMode: z.enum(["auto", "hardlink", "copy", "move"]).optional(),
+  fileOperationsMode: z.enum(["allow", "ask", "off"]).optional(),
   fileOperationsEnabled: z.coerce.boolean().optional(),
   transcodeHwAccel: z.enum(["none", "vaapi", "qsv", "nvenc"]).optional(),
   transcodeVaapiDevice: z.string().optional(),

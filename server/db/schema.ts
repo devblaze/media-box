@@ -535,6 +535,43 @@ export const requests = sqliteTable(
   ]
 );
 
+/**
+ * Pending file changes held for approval when `fileOperationsMode` is "ask".
+ * Each row captures a deferred file operation (an import, an organize, or a
+ * with-files delete): `payload` holds everything needed to re-run it on approval,
+ * `title`/`detail` are the human label shown to the approver. Mirrors the
+ * `requests` approval workflow (see server/library/file-change-service.ts).
+ */
+export const fileChanges = sqliteTable(
+  "file_changes",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    kind: text("kind", {
+      enum: ["import", "organize", "deleteMovie", "deleteSeries", "deleteVersion"],
+    }).notNull(),
+    status: text("status", {
+      enum: ["pending", "approved", "declined", "applied", "failed"],
+    })
+      .notNull()
+      .default("pending"),
+    // Human-readable label + optional secondary line (e.g. target path / summary).
+    title: text("title").notNull(),
+    detail: text("detail"),
+    // Everything needed to execute the operation later (JSON), e.g. { downloadId }.
+    payload: text("payload", { mode: "json" }).notNull(),
+    requestedByUserId: integer("requested_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    decidedByUserId: integer("decided_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    decidedAt: integer("decided_at", { mode: "timestamp" }),
+    error: text("error"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [index("file_changes_status_idx").on(t.status)]
+);
+
 // ---------- Playback: per-user watch progress ----------
 
 export const watchProgress = sqliteTable(

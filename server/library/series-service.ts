@@ -7,6 +7,7 @@ import { mapSeries } from "@/server/metadata/tmdb-map";
 import { renderSeriesFolder } from "./naming";
 import { removeMedia } from "./filesystem";
 import { assertFileOperationsEnabled } from "./media-guard";
+import { holdOrRun } from "./file-change-service";
 import { emitEvent } from "@/server/events/bus";
 
 export interface AddSeriesInput {
@@ -200,15 +201,37 @@ export async function refreshSeries(seriesId: number) {
   emitEvent({ type: "series.updated", seriesId });
 }
 
-export async function deleteSeries(seriesId: number, deleteFiles: boolean) {
+export async function deleteSeries(
+  seriesId: number,
+  deleteFiles: boolean,
+  opts: { bypassHold?: boolean } = {}
+): Promise<void | { held: true; id: number }> {
   const db = getDb();
   const row = db.select().from(schema.series).where(eq(schema.series.id, seriesId)).get();
   if (!row) return;
-  // Refuse before touching the DB so read-only mode leaves DB and disk consistent.
-  if (deleteFiles) assertFileOperationsEnabled();
-  db.delete(schema.series).where(eq(schema.series.id, seriesId)).run();
-  if (deleteFiles) {
-    await removeMedia(row.path, { recursive: true });
+
+  const run = async () => {
+    // Refuse before touching the DB so read-only mode leaves DB and disk consistent.
+    if (deleteFiles) assertFileOperationsEnabled();
+    db.delete(schema.series).where(eq(schema.series.id, seriesId)).run();
+    if (deleteFiles) {
+      await removeMedia(row.path, { recursive: true });
+    }
+    emitEvent({ type: "series.updated", seriesId });
+  };
+
+  // Only a with-files delete is a file operation worth holding; a library-only
+  // delete (deleteFiles=false) never touches disk, so it always runs.
+  if (!deleteFiles || opts.bypassHold) {
+    await run();
+    return;
   }
-  emitEvent({ type: "series.updated", seriesId });
+  const outcome = await holdOrRun(
+    "deleteSeries",
+    `Delete “${row.title}” and its files`,
+    row.path,
+    { seriesId, deleteFiles: true },
+    run
+  );
+  if (outcome.held) return { held: true, id: outcome.id };
 }

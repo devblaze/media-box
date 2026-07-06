@@ -7,6 +7,8 @@ export type AppEvent =
   | { type: "movie.updated"; movieId: number }
   | { type: "history.added" }
   | { type: "request.updated"; requestId: number }
+  | { type: "fileChange.pending" }
+  | { type: "fileChange.updated" }
   | { type: "health.changed" };
 
 const BUS_KEY = Symbol.for("mediabox.bus");
