@@ -34,7 +34,10 @@ export function DownloadStageBadge({
 }) {
   const pct = downloadProgress(item);
   const label = DOWNLOAD_STATUS_LABEL[item.status] ?? item.status;
-  const showPct = item.status === "downloading" && item.size != null && item.size > 0;
+  // Only show a percentage once we actually know how much is left — otherwise a
+  // just-grabbed item (sizeLeft not yet reported) would flash "Downloading 100%".
+  const showPct =
+    item.status === "downloading" && item.size != null && item.size > 0 && item.sizeLeft != null;
   return (
     <Badge
       tone={downloadStatusTone(item.status)}
