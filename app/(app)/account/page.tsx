@@ -21,6 +21,7 @@ import {
   Field,
   Input,
   Select,
+  Switch,
   useToast,
 } from "@/components/ui";
 
@@ -29,6 +30,8 @@ interface Account {
   role: "admin" | "user";
   pushoverUserKey: string;
   pushoverConfigured: boolean;
+  shareStreamingActivity: boolean;
+  seenStreamingHighlight: boolean;
 }
 
 export default function AccountPage() {
@@ -45,6 +48,10 @@ export default function AccountPage() {
   // Pushover
   const [pushoverUserKey, setPushoverUserKey] = useState("");
   const [savingKey, setSavingKey] = useState(false);
+
+  // Share streaming activity (watch-together)
+  const [savingShare, setSavingShare] = useState(false);
+  const shareOn = data?.shareStreamingActivity ?? false;
 
   // Subtitle appearance — stored in the browser and applied by the video player.
   const [subStyle, setSubStyle] = useState<SubtitleStyle>(DEFAULT_SUBTITLE_STYLE);
@@ -103,6 +110,22 @@ export default function AccountPage() {
       toast.error(err instanceof Error ? err.message : "Failed to save");
     } finally {
       setSavingKey(false);
+    }
+  }
+
+  async function toggleShare(next: boolean) {
+    setSavingShare(true);
+    try {
+      await apiFetch("/account", {
+        method: "PUT",
+        body: JSON.stringify({ shareStreamingActivity: next }),
+      });
+      await mutate();
+      toast.success(next ? "Sharing your streaming activity" : "Sharing turned off");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setSavingShare(false);
     }
   }
 
@@ -190,6 +213,26 @@ export default function AccountPage() {
             <Button onClick={savePushover} loading={savingKey} disabled={savingKey || !data}>
               {savingKey ? "Saving…" : "Save"}
             </Button>
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Share streaming activity</CardTitle>
+          </CardHeader>
+          <CardBody className="space-y-4" data-tour="share-activity">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <p className="max-w-md text-sm text-zinc-400">
+                Let other users see what you are watching and join to watch together in sync.
+                When they join, your play, pause, seek and episode changes are mirrored to them.
+              </p>
+              <Switch
+                checked={shareOn}
+                onChange={toggleShare}
+                disabled={!data || savingShare}
+                aria-label="Share streaming activity"
+              />
+            </div>
           </CardBody>
         </Card>
 

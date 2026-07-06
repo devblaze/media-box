@@ -29,6 +29,9 @@ export interface NowStreaming extends MediaView {
   positionSeconds: number;
   durationSeconds: number;
   updatedAt: number;
+  /** The playing title's ids — one is set per `kind`; lets a joiner open the player. */
+  movieId: number | null;
+  episodeId: number | null;
 }
 
 export interface LastWatched extends MediaView {
@@ -57,6 +60,8 @@ type ProgressJoin = {
   positionSeconds: number;
   durationSeconds: number;
   watched: boolean;
+  movieId: number | null;
+  episodeId: number | null;
   movieTitle: string | null;
   moviePoster: string | null;
   movieYear: number | null;
@@ -128,6 +133,8 @@ export function listUsersWithActivity(now = Date.now()): UserActivity[] {
       positionSeconds: schema.watchProgress.positionSeconds,
       durationSeconds: schema.watchProgress.durationSeconds,
       watched: schema.watchProgress.watched,
+      movieId: schema.watchProgress.movieId,
+      episodeId: schema.watchProgress.episodeId,
       movieTitle: schema.movies.title,
       moviePoster: schema.movies.posterPath,
       movieYear: schema.movies.year,
@@ -162,6 +169,8 @@ export function listUsersWithActivity(now = Date.now()): UserActivity[] {
             durationSeconds: latest.durationSeconds,
             progressPct: pct(latest.positionSeconds, latest.durationSeconds),
             updatedAt,
+            movieId: latest.movieId,
+            episodeId: latest.episodeId,
           }
         : null;
 
@@ -204,4 +213,33 @@ export function getActiveStreams(now = Date.now()): ActiveStream[] {
     .filter((u): u is UserActivity & { nowStreaming: NowStreaming } => u.nowStreaming != null)
     .map((u) => ({ userId: u.id, username: u.username, stream: u.nowStreaming }))
     .sort((a, b) => b.stream.updatedAt - a.stream.updatedAt);
+}
+
+/**
+ * Active streams whose user has opted into "Share streaming activity" — the
+ * watch-together joinable hosts. Filters {@link getActiveStreams} by the users
+ * table's `shareStreamingActivity` flag.
+ */
+export function getShareableStreams(now = Date.now()): ActiveStream[] {
+  const streams = getActiveStreams(now);
+  if (streams.length === 0) return [];
+  const sharers = new Set(
+    getDb()
+      .select({ id: schema.users.id })
+      .from(schema.users)
+      .where(eq(schema.users.shareStreamingActivity, true))
+      .all()
+      .map((r) => r.id)
+  );
+  return streams.filter((s) => sharers.has(s.userId));
+}
+
+/** True when `userId` currently has "Share streaming activity" turned on. */
+export function userSharesActivity(userId: number): boolean {
+  const row = getDb()
+    .select({ share: schema.users.shareStreamingActivity })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .get();
+  return !!row?.share;
 }

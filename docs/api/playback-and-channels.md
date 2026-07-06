@@ -37,15 +37,98 @@ Who is streaming right now — powers the admin dashboard "Now streaming" card. 
         "progressPct": 42,
         "positionSeconds": 3120,
         "durationSeconds": 8880,
-        "updatedAt": 1751630400000
+        "updatedAt": 1751630400000,
+        "movieId": 12,
+        "episodeId": null
       }
     }
   ]
   ```
-  Errors: `401`, `403`, `500`.
+  `movieId`/`episodeId` (exactly one set, per `kind`) identify the playing title — used by watch-together to open the same title for a joiner. Errors: `401`, `403`, `500`.
 - **Example:**
   ```bash
   curl -sS "$MEDIABOX_URL/api/v1/streams" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
+---
+
+## Watch together (shared streaming activity)
+
+When a user turns on **Share streaming activity** (`PUT /account { shareStreamingActivity: true }`), other users can **join** and watch the same title in sync. The host's play / pause / seek / episode-change are mirrored to joiners over the targeted SSE stream (`GET /system/events`); the host is notified when someone joins or leaves. Session membership is in-memory (a restart clears it — joiners simply re-join). All four routes are gated by a signed-in session (the requesting user is resolved with `getRequestUser`; an unauthenticated request is rejected).
+
+### `GET /api/v1/watch-together/hosts`
+
+Users streaming right now with **Share streaming activity** on — the joinable hosts for the "Watch together" panel. Excludes the requesting user.
+
+- **Auth:** session (any signed-in user).
+- **Response:** `200` — array of joinable hosts:
+  ```json
+  [
+    {
+      "userId": 3,
+      "username": "alice",
+      "title": "Inception",
+      "subtitle": "2010",
+      "poster": "https://…",
+      "kind": "movie",
+      "target": { "type": "movie", "id": 12 }
+    }
+  ]
+  ```
+  An unauthenticated request gets `200 []`. Errors: `500`.
+- **Example:**
+  ```bash
+  curl -sS "$MEDIABOX_URL/api/v1/watch-together/hosts" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
+### `POST /api/v1/watch-together/join`
+
+Join a host's stream. The host must have sharing on **and** be streaming right now; the joiner is registered, the host is toasted (`watch.peerJoined`), and the host's current title is returned so the caller can open the player in sync.
+
+- **Auth:** session (any signed-in user).
+- **Request body:**
+
+  | field | type | required | notes |
+  | --- | --- | --- | --- |
+  | `hostUserId` | number | yes | the host to join (positive int); must not be yourself |
+
+- **Response:** `200` — `{ "hostUserId": number, "hostUsername": string, "target": { "type": "movie" \| "episode", "id": number }, "title": string, "positionSeconds": number }`. Errors: `400` — `"Not signed in"`, `"You can't join your own stream"`, `"That user isn't sharing a stream right now"`, `"The host's stream can't be joined"`, or Zod validation; `500`.
+- **Example:**
+  ```bash
+  curl -sS -X POST "$MEDIABOX_URL/api/v1/watch-together/join" \
+    -H "Cookie: session=$MEDIABOX_SESSION" -H 'content-type: application/json' \
+    -d '{ "hostUserId": 3 }'
+  ```
+
+### `POST /api/v1/watch-together/leave`
+
+Stop watching along with a host. Deregisters the joiner and, if they were following someone, toasts that host (`watch.peerLeft`). No body.
+
+- **Auth:** session (any signed-in user).
+- **Response:** `200` — `{ "left": true }`. Errors: `400` — `"Not signed in"`; `500`.
+- **Example:**
+  ```bash
+  curl -sS -X POST "$MEDIABOX_URL/api/v1/watch-together/leave" \
+    -H "Cookie: session=$MEDIABOX_SESSION"
+  ```
+
+### `POST /api/v1/watch-together/sync`
+
+The host broadcasts a transport command to each of their current joiners (fanned out as targeted `watch.sync` events). No-ops when nobody has joined.
+
+- **Auth:** session (the host).
+- **Request body:**
+
+  | field | type | required | notes |
+  | --- | --- | --- | --- |
+  | `command` | object | yes | `{ kind: "play" \| "pause" \| "seek" \| "title", positionSeconds?: number, target?: { type: "movie" \| "episode", id: number } }` |
+
+- **Response:** `200` — `{ "delivered": number }` (how many joiners received it). Errors: `400` — `"Not signed in"` or Zod validation; `500`.
+- **Example:**
+  ```bash
+  curl -sS -X POST "$MEDIABOX_URL/api/v1/watch-together/sync" \
+    -H "Cookie: session=$MEDIABOX_SESSION" -H 'content-type: application/json' \
+    -d '{ "command": { "kind": "seek", "positionSeconds": 640 } }'
   ```
 
 ---

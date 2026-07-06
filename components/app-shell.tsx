@@ -7,6 +7,7 @@ import { AdminPanel } from "@/components/admin-panel";
 import { NetflixHeader } from "@/components/netflix/netflix-header";
 import { SearchProvider } from "@/components/netflix/search-context";
 import { BackgroundTaskNotifier } from "@/components/background-task-notifier";
+import { WatchTogetherNotifier } from "@/components/watch-together-notifier";
 
 interface Me {
   id: number;
@@ -36,6 +37,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   // Cross-page notifier for admins (e.g. background "Import all" completion).
   const notifier = me.role === "admin" ? <BackgroundTaskNotifier /> : null;
+  // Watch-together listener for every user: host toasts + the one-time
+  // "share activity" onboarding highlight.
+  const watchNotifier = <WatchTogetherNotifier />;
 
   // A movie/series *detail* page (has an id segment) — these are management
   // surfaces for admins (monitoring, refresh/rescan/remove, per-episode search).
@@ -52,6 +56,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return (
       <>
         {notifier}
+        {watchNotifier}
         <AdminPanel>{children}</AdminPanel>
       </>
     );
@@ -61,6 +66,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <SearchProvider>
       {notifier}
+      {watchNotifier}
       <NetflixHeader />
       <main
         className={cn(
