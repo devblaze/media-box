@@ -10,6 +10,7 @@ import { SubtitleSearchDrawer } from "@/components/subtitle-search";
 import { MediaInfoBadges, VideoPlayerModal } from "@/components/media-player";
 import { useQueue, DownloadStageBadge } from "@/components/download-stage";
 import { movieQueueItem } from "@/lib/download-status";
+import { principalHasPermission } from "@/lib/permissions";
 import type { MediaInfo } from "@/server/library/media-info";
 import {
   Badge,
@@ -86,6 +87,7 @@ interface Me {
   id: number;
   username: string;
   role: "admin" | "user";
+  permissions?: string[];
 }
 
 interface MediaVersion {
@@ -116,6 +118,9 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
     `/versions?type=movie&id=${id}`
   );
   const isAdmin = me?.role === "admin";
+  // Interactive search & grab is delegatable via the releases.search permission
+  // (admins always have it).
+  const canSearch = principalHasPermission(me, "releases.search");
   const [searching, setSearching] = useState(false);
   const [subtitleSearch, setSubtitleSearch] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -278,6 +283,11 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
             <Button variant="secondary" size="sm" onClick={toggleWatched}>
               {progress?.watched ? "Mark unwatched" : "Mark watched"}
             </Button>
+            {canSearch && (
+              <Button variant="secondary" size="sm" onClick={() => setSearching(true)}>
+                Interactive search
+              </Button>
+            )}
             {isAdmin && (
               <>
                 <Button
@@ -286,9 +296,6 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
                   onClick={toggleMonitored}
                 >
                   {data.monitored ? "Monitored" : "Unmonitored"}
-                </Button>
-                <Button variant="secondary" size="sm" onClick={() => setSearching(true)}>
-                  Interactive search
                 </Button>
                 <Button variant="secondary" size="sm" onClick={refresh}>
                   Refresh metadata

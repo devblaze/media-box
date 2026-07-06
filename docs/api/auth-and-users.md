@@ -89,7 +89,7 @@ Kiosk/cast token exchange. A TV browser or a Fully Kiosk tablet opening a `/tv/<
 Return the signed-in user derived from the request (cookie or api key).
 
 - **Auth:** user
-- **Response:** `200` — `{ "id": number, "username": string, "role": "admin" | "user" }` (api-key requests report `{ "id": 0, "username": "api", "role": "admin" }`). Errors: `401` — `"Not signed in"`.
+- **Response:** `200` — `{ "id": number, "username": string, "role": "admin" | "user", "roleId": number | null, "roleName": string | null, "permissions": string[] }` (api-key requests report `{ "id": 0, "username": "api", "role": "admin", "permissions": [<all>] }`). `roleId`/`roleName` are the assigned custom role (null for admins/unassigned users); `permissions` is the resolved capability list — admins hold every permission, a non-admin holds whatever their role grants. Errors: `401` — `"Not signed in"`.
 - **Example:**
   ```bash
   curl -sS -X GET "$MEDIABOX_URL/api/v1/auth/me" \
@@ -171,7 +171,7 @@ Update the signed-in user's own account settings (currently just the Pushover us
 List all users with their live activity (online/offline, now-streaming, last-watched, request counts), admins first then alphabetical.
 
 - **Auth:** admin
-- **Response:** `200` — an array of user-activity objects, each: `{ "id": number, "username": string, "role": "admin" | "user", "createdAt": number (ms epoch), "lastSeenAt": number | null, "online": boolean, "requestCount": number, "nowStreaming": null | { kind: "movie" | "episode", title, subtitle, poster, progressPct, positionSeconds, durationSeconds, updatedAt }, "lastWatched": null | { kind, title, subtitle, poster, watched: boolean, updatedAt } }`. Errors: `401` — `"Authentication required"`; `403` — `"Admin access required"`.
+- **Response:** `200` — an array of user-activity objects, each: `{ "id": number, "username": string, "role": "admin" | "user", "roleId": number | null, "roleName": string | null, "createdAt": number (ms epoch), "lastSeenAt": number | null, "online": boolean, "requestCount": number, "nowStreaming": null | { kind: "movie" | "episode", title, subtitle, poster, progressPct, positionSeconds, durationSeconds, updatedAt }, "lastWatched": null | { kind, title, subtitle, poster, watched: boolean, updatedAt } }`. `roleId`/`roleName` are the assigned custom role (see `/roles`). Errors: `401` — `"Authentication required"`; `403` — `"Admin access required"`.
 - **Example:**
   ```bash
   curl -sS -X GET "$MEDIABOX_URL/api/v1/users" \
@@ -190,13 +190,35 @@ Create a new user (admin action).
   | `username` | string | yes | — | 2–50 chars; stored trimmed + lowercased |
   | `password` | string | yes | — | 8–200 chars |
   | `role` | `"admin"` \| `"user"` | no | `"user"` | account role |
+  | `roleId` | number \| null | no | null | custom role to assign (see `/roles`); ignored/cleared for admins |
 
-- **Response:** `201` — the created user `{ "id": number, "username": string, "role": "admin" | "user" }`. Errors: `401` — `"Authentication required"`; `403` — `"Admin access required"`; `400` — Zod validation.
+- **Response:** `201` — the created user `{ "id": number, "username": string, "role": "admin" | "user" }`. Errors: `401` — `"Authentication required"`; `403` — `"Admin access required"`; `400` — Zod validation or `"Unknown role"`.
 - **Example:**
   ```bash
   curl -sS -X POST "$MEDIABOX_URL/api/v1/users" \
     -H "x-api-key: $MEDIABOX_API_KEY" -H 'content-type: application/json' \
     -d '{ "username": "alice", "password": "alice-password", "role": "user" }'
+  ```
+
+## `PUT /api/v1/users/[id]`
+
+Update a user's account role and/or assigned custom role (admin action).
+
+- **Auth:** admin
+- **Path params:** `id` (number) — the user id to update
+- **Request body:**
+
+  | field | type | required | default | notes |
+  | --- | --- | --- | --- | --- |
+  | `role` | `"admin"` \| `"user"` | no | unchanged | account role |
+  | `roleId` | number \| null | no | unchanged | custom role to assign (null clears it); forced to null when the resulting role is `admin` |
+
+- **Response:** `200` — `{ "updated": true }`. Errors: `401`/`403`; `404` — `"User not found"`; `400` — `"Invalid id"`, `"Unknown role"`, or `"You can't remove your own admin access"`.
+- **Example:**
+  ```bash
+  curl -sS -X PUT "$MEDIABOX_URL/api/v1/users/42" \
+    -H "x-api-key: $MEDIABOX_API_KEY" -H 'content-type: application/json' \
+    -d '{ "roleId": 3 }'
   ```
 
 ## `DELETE /api/v1/users/[id]`
@@ -211,6 +233,38 @@ Delete a user by id. An admin cannot delete their own account.
   curl -sS -X DELETE "$MEDIABOX_URL/api/v1/users/42" \
     -H "x-api-key: $MEDIABOX_API_KEY"
   ```
+
+## Roles & permissions
+
+Custom, admin-defined roles grant granular capabilities to non-admin users. The
+built-in `admin` role is super-admin (holds every permission, bypasses all
+checks) and is independent of these. Permission keys in v1: `requests.approve`
+(approve/decline any request), `releases.search` (interactive search + grab /
+override). Assign a role to a user via `POST`/`PUT /api/v1/users/[id]`.
+
+### `GET /api/v1/roles`
+
+- **Auth:** admin
+- **Response:** `200` — array of `{ "id": number, "name": string, "permissions": string[], "userCount": number, "createdAt": number }`.
+
+### `POST /api/v1/roles`
+
+- **Auth:** admin
+- **Request body:** `{ "name": string (1–60), "permissions": string[] }` — unknown permission keys are dropped.
+- **Response:** `201` — the created role. Errors: `409` — `"A role with that name already exists"`; `400` — Zod validation.
+
+### `PUT /api/v1/roles/[id]`
+
+- **Auth:** admin
+- **Request body:** `{ "name"?: string, "permissions"?: string[] }` (either or both).
+- **Response:** `200` — `{ "updated": true }`. Errors: `404` — `"Role not found"`; `409` — duplicate name; `400` — `"Invalid id"`.
+
+### `DELETE /api/v1/roles/[id]`
+
+Delete a role, first clearing it from any users that hold it.
+
+- **Auth:** admin
+- **Response:** `200` — `{ "deleted": true }`. Errors: `404` — `"Role not found"`; `400` — `"Invalid id"`.
 
 ## `GET /api/v1/kiosk`
 

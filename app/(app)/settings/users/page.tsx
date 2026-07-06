@@ -46,12 +46,19 @@ interface UserActivity {
   id: number;
   username: string;
   role: "admin" | "user";
+  roleId: number | null;
+  roleName: string | null;
   createdAt: number;
   lastSeenAt: number | null;
   online: boolean;
   requestCount: number;
   nowStreaming: NowStreaming | null;
   lastWatched: LastWatched | null;
+}
+
+interface Role {
+  id: number;
+  name: string;
 }
 
 function OnlineDot({ online }: { online: boolean }) {
@@ -94,13 +101,24 @@ function StreamingCell({ s }: { s: NowStreaming }) {
 export default function UsersPage() {
   // Poll so online/offline and "now streaming" stay fresh without a manual refresh.
   const { data: users, mutate } = useApi<UserActivity[]>("/users", { refreshInterval: 10_000 });
+  const { data: roles } = useApi<Role[]>("/roles");
   const toast = useToast();
   const confirm = useConfirm();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<"admin" | "user">("user");
+  const [newRoleId, setNewRoleId] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
   useEvents();
+
+  async function assignRole(userId: number, roleId: number | null) {
+    try {
+      await apiFetch(`/users/${userId}`, { method: "PUT", body: JSON.stringify({ roleId }) });
+      await mutate();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to update role");
+    }
+  }
 
   async function addUser() {
     if (!username.trim() || password.length < 8) {
@@ -111,11 +129,17 @@ export default function UsersPage() {
     try {
       await apiFetch("/users", {
         method: "POST",
-        body: JSON.stringify({ username, password, role }),
+        body: JSON.stringify({
+          username,
+          password,
+          role,
+          roleId: role === "user" ? newRoleId : null,
+        }),
       });
       setUsername("");
       setPassword("");
       setRole("user");
+      setNewRoleId(null);
       await mutate();
       toast.success("User added");
     } catch (err) {
@@ -172,7 +196,7 @@ export default function UsersPage() {
             <THead>
               <TR>
                 <TH>User</TH>
-                <TH className="w-28">Role</TH>
+                <TH className="w-40">Role</TH>
                 <TH className="w-64">Now streaming</TH>
                 <TH className="w-56">Last watched</TH>
                 <TH className="w-20 text-center">Requests</TH>
@@ -196,6 +220,23 @@ export default function UsersPage() {
                   </TD>
                   <TD>
                     <Badge tone={u.role === "admin" ? "accent" : "neutral"}>{u.role}</Badge>
+                    {u.role !== "admin" && (roles?.length ?? 0) > 0 && (
+                      <Select
+                        aria-label={`Role for ${u.username}`}
+                        className="mt-1 text-xs"
+                        value={u.roleId ?? ""}
+                        onChange={(e) =>
+                          assignRole(u.id, e.target.value ? Number(e.target.value) : null)
+                        }
+                      >
+                        <option value="">No role</option>
+                        {roles?.map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.name}
+                          </option>
+                        ))}
+                      </Select>
+                    )}
                   </TD>
                   <TD>
                     {u.nowStreaming ? (
@@ -253,7 +294,7 @@ export default function UsersPage() {
           <p className="mb-4 text-sm text-zinc-400">
             Regular users browse the library and request movies/series; admins manage everything.
           </p>
-          <div className="grid items-end gap-3 sm:grid-cols-[1fr_1fr_130px_auto]">
+          <div className="grid items-end gap-3 sm:grid-cols-[1fr_1fr_130px_150px_auto]">
             <Field label="Username" htmlFor="new-username">
               <Input
                 id="new-username"
@@ -279,6 +320,22 @@ export default function UsersPage() {
               >
                 <option value="user">User</option>
                 <option value="admin">Admin</option>
+              </Select>
+            </Field>
+            <Field label="Permissions" htmlFor="new-role-id">
+              <Select
+                id="new-role-id"
+                value={newRoleId ?? ""}
+                disabled={role === "admin"}
+                onChange={(e) => setNewRoleId(e.target.value ? Number(e.target.value) : null)}
+                title={role === "admin" ? "Admins already have every permission" : undefined}
+              >
+                <option value="">No role</option>
+                {roles?.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                  </option>
+                ))}
               </Select>
             </Field>
             <Button onClick={addUser} loading={adding} disabled={adding}>

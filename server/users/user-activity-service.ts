@@ -40,6 +40,9 @@ export interface UserActivity {
   id: number;
   username: string;
   role: "admin" | "user";
+  /** Assigned custom role id + name (null for admins / unassigned users). */
+  roleId: number | null;
+  roleName: string | null;
   createdAt: number;
   lastSeenAt: number | null;
   online: boolean;
@@ -98,10 +101,13 @@ export function listUsersWithActivity(now = Date.now()): UserActivity[] {
       id: schema.users.id,
       username: schema.users.username,
       role: schema.users.role,
+      roleId: schema.users.roleId,
+      roleName: schema.roles.name,
       createdAt: schema.users.createdAt,
       lastSeenAt: schema.users.lastSeenAt,
     })
     .from(schema.users)
+    .leftJoin(schema.roles, eq(schema.roles.id, schema.users.roleId))
     .all();
 
   // requests-per-user
@@ -169,6 +175,8 @@ export function listUsersWithActivity(now = Date.now()): UserActivity[] {
       id: u.id,
       username: u.username,
       role: u.role,
+      roleId: u.roleId,
+      roleName: u.roleName ?? null,
       createdAt: u.createdAt.getTime(),
       lastSeenAt: seenMs,
       online,

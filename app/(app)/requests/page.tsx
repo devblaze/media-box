@@ -5,6 +5,7 @@ import Link from "next/link";
 import { apiFetch, useApi } from "@/lib/api";
 import { useEvents } from "@/lib/use-events";
 import { tmdbPoster, timeAgo, type LookupResult } from "@/lib/types";
+import { principalHasPermission } from "@/lib/permissions";
 import {
   Badge,
   Button,
@@ -52,6 +53,7 @@ interface Me {
   id: number;
   username: string;
   role: "admin" | "user";
+  permissions?: string[];
 }
 
 type Kind = "movie" | "series" | "anime";
@@ -96,7 +98,9 @@ export default function RequestsPage() {
   const toast = useToast();
   useEvents();
 
-  const isAdmin = me?.role === "admin";
+  // Approvers (admins or a role granting requests.approve) see everyone's
+  // requests and can approve/decline them.
+  const canApprove = principalHasPermission(me, "requests.approve");
   const mediaType = mediaTypeOf(kind);
 
   async function search() {
@@ -301,7 +305,7 @@ export default function RequestsPage() {
 
       {/* ── Requests list ──────────────────────────────────────── */}
       <section className="mt-10">
-        <h2 className="text-lg font-semibold">{isAdmin ? "All requests" : "My requests"}</h2>
+        <h2 className="text-lg font-semibold">{canApprove ? "All requests" : "My requests"}</h2>
 
         {!requests ? (
           <div className="mt-3 space-y-2">
@@ -330,7 +334,7 @@ export default function RequestsPage() {
             {requests.map((r) => {
               const poster = tmdbPoster(r.posterPath) ?? r.posterPath;
               const canCancel =
-                r.status === "pending" && !isAdmin && (me == null || r.userId === me.id);
+                r.status === "pending" && !canApprove && (me == null || r.userId === me.id);
               return (
                 <li
                   key={r.id}
@@ -357,7 +361,7 @@ export default function RequestsPage() {
                       <span className="capitalize">{r.mediaType}</span>
                       <span aria-hidden>·</span>
                       <span>{timeAgo(toMillis(r.createdAt))}</span>
-                      {isAdmin && (
+                      {canApprove && (
                         <>
                           <span aria-hidden>·</span>
                           <span className="text-zinc-400">{r.username}</span>
@@ -380,7 +384,7 @@ export default function RequestsPage() {
                   })()}
 
                   <div className="flex shrink-0 items-center gap-2">
-                    {isAdmin && r.status === "pending" && (
+                    {canApprove && r.status === "pending" && (
                       <>
                         <Button size="sm" onClick={() => decide(r.id, "approve")}>
                           Approve

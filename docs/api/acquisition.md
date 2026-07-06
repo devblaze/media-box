@@ -222,7 +222,7 @@ download client.
 Interactive release search. Provide exactly one target via query params; results
 are searched live across enabled interactive-search indexers (not cached).
 
-- **Auth:** any
+- **Auth:** permission `releases.search` (admins always; or a role granting it). `401`/`403` otherwise.
 - **Query params:** one of `episodeId`, `movieId`, or `seriesId` **plus** `season`.
 - **Response:** `200` — array of decorated releases, each `{ guid, indexerId, indexerName, title, size, seeders, leechers, downloadUrl, magnetUrl, infoHash, publishDate, parsed, accepted, rejections, score }`, sorted accepted-first then by score then indexer priority. `400` if no valid target is given.
 
@@ -232,7 +232,7 @@ Grab a specific release. The server re-runs the interactive search for the given
 target and matches the chosen release by `guid` (results are not cached), then
 hands it to the download service.
 
-- **Auth:** any
+- **Auth:** permission `releases.search` (admins always; or a role granting it). `401`/`403` otherwise.
 - **Request body:**
 
   | field | type | required | default | notes |
@@ -250,7 +250,8 @@ hands it to the download service.
 
 ## `GET /api/v1/requests`
 
-List requests, newest first. Admins see all; other users see only their own.
+List requests, newest first. Approvers (admins, or a role granting
+`requests.approve`) see all; other users see only their own.
 
 - **Auth:** user (signed in; `401` otherwise)
 - **Response:** `200` — array of `{ id, mediaType, tmdbId, title, year, posterPath, seasons, status, stage, stageDetail, declineReason, createdAt, userId, username, movieId, seriesId }`.
@@ -286,10 +287,10 @@ approval fails it is left `pending`.
 
 ## `PUT /api/v1/requests/[id]`
 
-Approve or decline a request (admin decision). Approving adds the media to the
-library and kicks off a search.
+Approve or decline a request. Approving adds the media to the library and kicks
+off a search.
 
-- **Auth:** admin
+- **Auth:** permission `requests.approve` (admins always; or a role granting it). `401`/`403` otherwise.
 - **Path params:** `id` — request id.
 - **Request body:**
 

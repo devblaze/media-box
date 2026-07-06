@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, schema } from "@/server/db";
 import { getRequestUser } from "@/server/auth/auth-service";
-import { requireAdminUser } from "@/server/auth/guards";
+import { requirePermissionUser } from "@/server/auth/guards";
 import { approveRequest } from "@/server/requests/request-service";
 import { emitEvent } from "@/server/events/bus";
 import { badRequest, notFound, ok, serverError } from "@/lib/http";
@@ -16,7 +16,7 @@ const decisionSchema = z.object({
 
 export async function PUT(request: NextRequest, ctx: RouteContext<"/api/v1/requests/[id]">) {
   try {
-    const user = requireAdminUser(request);
+    const user = requirePermissionUser(request, "requests.approve");
     if (user instanceof NextResponse) return user;
     const { id } = await ctx.params;
     const requestId = Number(id);
