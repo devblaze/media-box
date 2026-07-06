@@ -8,6 +8,20 @@ import { Callout, Spinner } from "@/components/ui";
 import { type Channel, CHANNEL_LABEL } from "@/lib/channels";
 import type { ChannelNow, ChannelProgram } from "@/server/channels/schedule";
 import type { MediaInfo } from "@/server/library/media-info";
+import {
+  SubtitleTracks,
+  SubtitleOverlay,
+  useStyledSubtitles,
+  type SubtitleTrack,
+} from "@/components/subtitle-overlay";
+import {
+  loadSubtitleStyle,
+  loadSubtitlePref,
+  saveSubtitlePref,
+  matchSubtitlePref,
+  type SubtitleStyle,
+  type SubtitlePref,
+} from "@/lib/subtitle-style";
 
 // hls.js is loaded dynamically (client-only, code-split) exactly as media-player does.
 type HlsInstance = InstanceType<(typeof import("hls.js"))["default"]>;
@@ -59,6 +73,20 @@ export function ChannelPlayer({
   const containerRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<number | null>(null);
 
+  // Per-viewer subtitles for the current program. Fetched from /subtitles and the
+  // choice is remembered via the shared preference, so each user's subs stick as
+  // the channel rolls from program to program.
+  const [subTracks, setSubTracks] = useState<SubtitleTrack[]>([]);
+  const [selectedSub, setSelectedSub] = useState(-1);
+  const [ccOpen, setCcOpen] = useState(false);
+  const [subtitleStyle] = useState<SubtitleStyle>(() => loadSubtitleStyle());
+  const subPrefRef = useRef<SubtitlePref | null>(null);
+  const subPrefReady = useRef(false);
+  if (!subPrefReady.current) {
+    subPrefReady.current = true;
+    subPrefRef.current = loadSubtitlePref();
+  }
+
   const channelHref = useCallback(
     (c: Channel) => `${basePath}/${c}${accessKey ? `?key=${encodeURIComponent(accessKey)}` : ""}`,
     [basePath, accessKey]
@@ -93,6 +121,52 @@ export function ChannelPlayer({
   const handleMutedFallback = useCallback(() => setMuted(true), []);
 
   const current = data?.current ?? null;
+  const progType = current?.target.type ?? null;
+  const progId = current?.target.id ?? null;
+
+  // Load the current program's subtitle tracks and auto-apply the viewer's saved
+  // preference. Refetches whenever the program (target) changes.
+  useEffect(() => {
+    if (progType == null || progId == null) {
+      setSubTracks([]);
+      setSelectedSub(-1);
+      return;
+    }
+    const key = progType === "movie" ? "movieId" : "episodeId";
+    let active = true;
+    setSelectedSub(-1);
+    setCcOpen(false);
+    void apiFetch<{ tracks: SubtitleTrack[] }>(`/subtitles?${key}=${progId}`)
+      .then((res) => {
+        if (!active) return;
+        const t = res.tracks ?? [];
+        setSubTracks(t);
+        setSelectedSub(matchSubtitlePref(t, subPrefRef.current));
+      })
+      .catch(() => {
+        if (active) {
+          setSubTracks([]);
+          setSelectedSub(-1);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [progType, progId]);
+
+  // Pick a subtitle track (−1 = off) and remember it for the next program.
+  const chooseSubtitle = useCallback(
+    (index: number) => {
+      setSelectedSub(index);
+      const track = index >= 0 ? subTracks[index] : undefined;
+      const pref: SubtitlePref = track
+        ? { off: false, lang: track.language, kind: track.kind }
+        : { off: true };
+      subPrefRef.current = pref;
+      saveSubtitlePref(pref);
+    },
+    [subTracks]
+  );
 
   // Backstop: advance when the current slot is scheduled to end, even if the
   // video's `ended` never fires (e.g. the file outran its scheduled duration).
@@ -149,6 +223,9 @@ export function ChannelPlayer({
           program={current}
           offsetSeconds={current.offsetSeconds}
           muted={muted}
+          tracks={subTracks}
+          selectedSub={selectedSub}
+          subtitleStyle={subtitleStyle}
           onAdvance={advance}
           onMutedFallback={handleMutedFallback}
         />
@@ -238,6 +315,64 @@ export function ChannelPlayer({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {subTracks.length > 0 && (
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  setCcOpen((o) => !o);
+                  showControls();
+                }}
+                aria-label="Subtitles"
+                aria-haspopup="menu"
+                aria-expanded={ccOpen}
+                className={cn(
+                  "rounded-md px-2.5 py-2 transition-colors hover:bg-white/10",
+                  selectedSub >= 0 ? "text-amber-400" : "text-zinc-200"
+                )}
+              >
+                <span className="text-xs font-bold tracking-tight">CC</span>
+              </button>
+              {ccOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 bottom-full mb-2 max-h-64 min-w-44 overflow-auto rounded-md border border-white/10 bg-zinc-900/95 py-1 shadow-xl backdrop-blur"
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      chooseSubtitle(-1);
+                      setCcOpen(false);
+                      showControls();
+                    }}
+                    className={cn(
+                      "block w-full px-3 py-1.5 text-left text-sm transition-colors hover:bg-white/10",
+                      selectedSub === -1 ? "text-amber-400" : "text-zinc-200"
+                    )}
+                  >
+                    Off
+                  </button>
+                  {subTracks.map((t, i) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => {
+                        chooseSubtitle(i);
+                        setCcOpen(false);
+                        showControls();
+                      }}
+                      className={cn(
+                        "block w-full truncate px-3 py-1.5 text-left text-sm transition-colors hover:bg-white/10",
+                        selectedSub === i ? "text-amber-400" : "text-zinc-200"
+                      )}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -287,12 +422,18 @@ function LiveVideo({
   program,
   offsetSeconds,
   muted,
+  tracks,
+  selectedSub,
+  subtitleStyle,
   onAdvance,
   onMutedFallback,
 }: {
   program: ChannelProgram;
   offsetSeconds: number;
   muted: boolean;
+  tracks: SubtitleTrack[];
+  selectedSub: number;
+  subtitleStyle: SubtitleStyle;
   onAdvance: () => void;
   onMutedFallback: () => void;
 }) {
@@ -305,6 +446,9 @@ function LiveVideo({
       target={program.target}
       offsetSeconds={offsetSeconds}
       muted={muted}
+      tracks={tracks}
+      selectedSub={selectedSub}
+      subtitleStyle={subtitleStyle}
       onEnded={onAdvance}
       onFallback={() => setMode("transcode")}
       onMutedFallback={onMutedFallback}
@@ -314,6 +458,9 @@ function LiveVideo({
       target={program.target}
       offsetSeconds={offsetSeconds}
       muted={muted}
+      tracks={tracks}
+      selectedSub={selectedSub}
+      subtitleStyle={subtitleStyle}
       onEnded={onAdvance}
       onMutedFallback={onMutedFallback}
     />
@@ -336,6 +483,9 @@ function DirectLive({
   target,
   offsetSeconds,
   muted,
+  tracks,
+  selectedSub,
+  subtitleStyle,
   onEnded,
   onFallback,
   onMutedFallback,
@@ -343,12 +493,17 @@ function DirectLive({
   target: { type: "movie" | "episode"; id: number };
   offsetSeconds: number;
   muted: boolean;
+  tracks: SubtitleTrack[];
+  selectedSub: number;
+  subtitleStyle: SubtitleStyle;
   onEnded: () => void;
   onFallback: () => void;
   onMutedFallback: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const subtitleSinkRef = useRef<HTMLDivElement>(null);
   const src = `/api/v1/stream/${target.type}/${target.id}`;
+  useStyledSubtitles(videoRef, tracks, selectedSub, 0, subtitleSinkRef);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -369,16 +524,22 @@ function DirectLive({
   }, [offsetSeconds, onMutedFallback]);
 
   return (
-    <video
-      ref={videoRef}
-      autoPlay
-      playsInline
-      muted={muted}
-      className="h-full w-full bg-black object-contain"
-      src={src}
-      onEnded={onEnded}
-      onError={onFallback}
-    />
+    <>
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted={muted}
+        className="h-full w-full bg-black object-contain"
+        src={src}
+        onEnded={onEnded}
+        onError={onFallback}
+      >
+        <SubtitleTracks tracks={tracks} />
+      </video>
+      <SubtitleOverlay sinkRef={subtitleSinkRef} style={subtitleStyle} />
+    </>
   );
 }
 
@@ -386,18 +547,26 @@ function TranscodeLive({
   target,
   offsetSeconds,
   muted,
+  tracks,
+  selectedSub,
+  subtitleStyle,
   onEnded,
   onMutedFallback,
 }: {
   target: { type: "movie" | "episode"; id: number };
   offsetSeconds: number;
   muted: boolean;
+  tracks: SubtitleTrack[];
+  selectedSub: number;
+  subtitleStyle: SubtitleStyle;
   onEnded: () => void;
   onMutedFallback: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const subtitleSinkRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<"starting" | "playing" | "error">("starting");
   const [error, setError] = useState<string | null>(null);
+  useStyledSubtitles(videoRef, tracks, selectedSub, 0, subtitleSinkRef);
 
   useEffect(() => {
     let cancelled = false;
@@ -479,6 +648,7 @@ function TranscodeLive({
 
   return (
     <>
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video
         ref={videoRef}
         autoPlay
@@ -486,7 +656,10 @@ function TranscodeLive({
         muted={muted}
         className="h-full w-full bg-black object-contain"
         onEnded={onEnded}
-      />
+      >
+        <SubtitleTracks tracks={tracks} />
+      </video>
+      <SubtitleOverlay sinkRef={subtitleSinkRef} style={subtitleStyle} />
       {status === "starting" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/70 text-sm text-zinc-300">
           <Spinner className="size-6" />
