@@ -22,15 +22,19 @@ export async function PUT(request: NextRequest, ctx: RouteContext<"/api/v1/reque
     const requestId = Number(id);
     const { action, reason } = decisionSchema.parse(await request.json());
 
+    // A decision only applies to a pending request. Validating up front (rather
+    // than letting approveRequest throw) means a double-click / stale action
+    // returns a clean 404/400 instead of a 500.
+    const db = getDb();
+    const row = db.select().from(schema.requests).where(eq(schema.requests.id, requestId)).get();
+    if (!row) return notFound("Request not found");
+    if (row.status !== "pending") return badRequest("Request is not pending");
+
     if (action === "approve") {
       await approveRequest(requestId, user.id);
       return ok({ status: "approved" });
     }
 
-    const db = getDb();
-    const row = db.select().from(schema.requests).where(eq(schema.requests.id, requestId)).get();
-    if (!row) return notFound("Request not found");
-    if (row.status !== "pending") return badRequest("Request is not pending");
     db.update(schema.requests)
       .set({
         status: "declined",

@@ -414,8 +414,8 @@
     {
       "method": "GET",
       "path": "/api/v1/queue",
-      "auth": "session",
-      "summary": ""
+      "auth": "user",
+      "summary": "Any signed-in user may read the queue (movie/series pages show per-title"
     },
     {
       "method": "DELETE",
@@ -475,13 +475,13 @@
       "method": "DELETE",
       "path": "/api/v1/requests/{id}",
       "auth": "session",
-      "summary": ""
+      "summary": "A decision only applies to a pending request. Validating up front (rather"
     },
     {
       "method": "PUT",
       "path": "/api/v1/requests/{id}",
       "auth": "session",
-      "summary": ""
+      "summary": "A decision only applies to a pending request. Validating up front (rather"
     },
     {
       "method": "GET",

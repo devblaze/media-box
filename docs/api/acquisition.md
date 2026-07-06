@@ -194,7 +194,7 @@ Active download queue: rows whose status is one of `queued`, `downloading`,
 `remoteCompleted`, `fetching`, `importPending`, `importing`, `warning`,
 `failed`, newest first.
 
-- **Auth:** any
+- **Auth:** user (any signed-in user; `401` otherwise) — movie/series pages read it for per-title download badges.
 - **Response:** `200` — array of `{ id, title, status, statusMessage, mediaType, seriesId, movieId, episodeIds, size, sizeLeft, quality, grabbedAt, clientName, clientType }`. `episodeIds` (number[] | null) lets the UI correlate a queue row to specific episodes for per-episode download indicators.
 
 ## `POST /api/v1/queue/[id]`

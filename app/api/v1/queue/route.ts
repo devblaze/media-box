@@ -1,8 +1,14 @@
+import type { NextRequest } from "next/server";
 import { desc, eq, inArray } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
+import { requireUser } from "@/server/auth/guards";
 import { ok, serverError } from "@/lib/http";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  // Any signed-in user may read the queue (movie/series pages show per-title
+  // download badges from it); this just blocks unauthenticated callers.
+  const denied = requireUser(request);
+  if (denied) return denied;
   try {
     const db = getDb();
     const rows = db
