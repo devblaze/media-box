@@ -1,10 +1,16 @@
 import { onEvent } from "@/server/events/bus";
+import { getRequestUser } from "@/server/auth/auth-service";
 
 export const dynamic = "force-dynamic";
 
 // Server-Sent Events stream; the UI invalidates SWR caches on receipt.
 export async function GET(request: Request) {
   const encoder = new TextEncoder();
+
+  // Resolve the connection's user so targeted events (watch-together) can be
+  // filtered to only their own connections. Untargeted events still fan out to
+  // everyone. An unauthenticated connection sees only untargeted events.
+  const user = getRequestUser(request);
 
   const stream = new ReadableStream({
     start(controller) {
@@ -17,6 +23,9 @@ export async function GET(request: Request) {
       };
       send(`retry: 5000\n\n`);
       const unsubscribe = onEvent((event) => {
+        // Targeted events (they carry a `targetUserId`) are delivered only to
+        // that user's connections; everything else broadcasts unchanged.
+        if ("targetUserId" in event && event.targetUserId !== user?.id) return;
         send(`data: ${JSON.stringify(event)}\n\n`);
       });
       const keepAlive = setInterval(() => send(`: keep-alive\n\n`), 25_000);

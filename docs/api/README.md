@@ -56,7 +56,7 @@ curl -sS "$MEDIABOX_URL/api/v1/movies" -H "x-api-key: $MEDIABOX_API_KEY"
 | Library | [library.md](./library.md) | movies, series, episodes, wanted, root folders, naming, lookup, discover, calendar |
 | Acquisition | [acquisition.md](./acquisition.md) | indexers, download clients, queue, releases, requests, history, background commands |
 | System & Settings | [system-and-settings.md](./system-and-settings.md) | settings, quality profiles/definitions, system status & tasks, logs, versions, health, fs, library-import, organizer, migrate |
-| Playback & Channels | [playback-and-channels.md](./playback-and-channels.md) | streams, transcode, subtitles, watch progress, live-TV channels |
+| Playback & Channels | [playback-and-channels.md](./playback-and-channels.md) | streams, transcode, subtitles, watch progress, watch-together, live-TV channels |
 
 **Machine-readable index:** [`catalog.json`](./catalog.json) — every `{ method, path,
 auth, summary }`, auto-generated from the route files. The MCP server serves it via

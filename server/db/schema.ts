@@ -487,6 +487,16 @@ export const users = sqliteTable(
     roleId: integer("role_id").references(() => roles.id, { onDelete: "set null" }),
     // Personal Pushover user key for request-available notifications (null = off).
     pushoverUserKey: text("pushover_user_key"),
+    // "Share streaming activity" — when on, other users can join and watch the same
+    // title in sync (watch-together). Opt-in, off by default.
+    shareStreamingActivity: integer("share_streaming_activity", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    // Whether this user has seen the one-time highlight introducing the "Share
+    // streaming activity" setting. Shown once on next login, then set true forever.
+    seenStreamingHighlight: integer("seen_streaming_highlight", { mode: "boolean" })
+      .notNull()
+      .default(false),
     // Last authenticated activity (throttled heartbeat), drives online/offline in
     // the admin Users panel. Null until the user makes their first request post-migration.
     lastSeenAt: integer("last_seen_at", { mode: "timestamp" }),

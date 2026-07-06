@@ -20,6 +20,8 @@ export async function GET(request: NextRequest) {
         username: schema.users.username,
         role: schema.users.role,
         pushoverUserKey: schema.users.pushoverUserKey,
+        shareStreamingActivity: schema.users.shareStreamingActivity,
+        seenStreamingHighlight: schema.users.seenStreamingHighlight,
       })
       .from(schema.users)
       .where(eq(schema.users.id, user.id))
@@ -31,18 +33,32 @@ export async function GET(request: NextRequest) {
   }
 }
 
-const putSchema = z.object({ pushoverUserKey: z.string().max(64).optional() });
+const putSchema = z.object({
+  pushoverUserKey: z.string().max(64).optional(),
+  shareStreamingActivity: z.boolean().optional(),
+  seenStreamingHighlight: z.boolean().optional(),
+});
 
 export async function PUT(request: NextRequest) {
   const user = getRequestUser(request);
   if (!user || !user.id) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
   try {
     const body = putSchema.parse(await request.json());
-    getDb()
-      .update(schema.users)
-      .set({ pushoverUserKey: (body.pushoverUserKey ?? "").trim() || null })
-      .where(eq(schema.users.id, user.id))
-      .run();
+    // Only touch the fields the caller sent — the account page saves each card
+    // (Pushover key, share toggle, the one-time highlight dismissal) on its own.
+    const set: Partial<typeof schema.users.$inferInsert> = {};
+    if (body.pushoverUserKey !== undefined) {
+      set.pushoverUserKey = body.pushoverUserKey.trim() || null;
+    }
+    if (body.shareStreamingActivity !== undefined) {
+      set.shareStreamingActivity = body.shareStreamingActivity;
+    }
+    if (body.seenStreamingHighlight !== undefined) {
+      set.seenStreamingHighlight = body.seenStreamingHighlight;
+    }
+    if (Object.keys(set).length > 0) {
+      getDb().update(schema.users).set(set).where(eq(schema.users.id, user.id)).run();
+    }
     return ok({ saved: true });
   } catch (err) {
     return serverError(err);

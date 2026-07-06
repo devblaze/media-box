@@ -89,7 +89,7 @@ Kiosk/cast token exchange. A TV browser or a Fully Kiosk tablet opening a `/tv/<
 Return the signed-in user derived from the request (cookie or api key).
 
 - **Auth:** user
-- **Response:** `200` — `{ "id": number, "username": string, "role": "admin" | "user", "roleId": number | null, "roleName": string | null, "permissions": string[] }` (api-key requests report `{ "id": 0, "username": "api", "role": "admin", "permissions": [<all>] }`). `roleId`/`roleName` are the assigned custom role (null for admins/unassigned users); `permissions` is the resolved capability list — admins hold every permission, a non-admin holds whatever their role grants. Errors: `401` — `"Not signed in"`.
+- **Response:** `200` — `{ "id": number, "username": string, "role": "admin" | "user", "roleId": number | null, "roleName": string | null, "permissions": string[], "shareStreamingActivity": boolean, "seenStreamingHighlight": boolean }` (api-key requests report `{ "id": 0, "username": "api", "role": "admin", "permissions": [<all>] }`). `roleId`/`roleName` are the assigned custom role (null for admins/unassigned users); `permissions` is the resolved capability list — admins hold every permission, a non-admin holds whatever their role grants. `shareStreamingActivity` (watch-together opt-in) and `seenStreamingHighlight` (whether the one-time onboarding highlight has been shown) drive the watch-together UI app-wide. Errors: `401` — `"Not signed in"`.
 - **Example:**
   ```bash
   curl -sS -X GET "$MEDIABOX_URL/api/v1/auth/me" \
@@ -140,7 +140,7 @@ Public kiosk/cast token exchange: a TV/tablet posts the shared kiosk token and r
 The signed-in user's own account settings.
 
 - **Auth:** user
-- **Response:** `200` — `{ "username": string, "role": "admin" | "user", "pushoverUserKey": string | null, "pushoverConfigured": boolean }` (`pushoverConfigured` reflects whether the admin has set the Pushover app token in settings). Errors: `401` — `"Not signed in"`.
+- **Response:** `200` — `{ "username": string, "role": "admin" | "user", "pushoverUserKey": string | null, "pushoverConfigured": boolean, "shareStreamingActivity": boolean, "seenStreamingHighlight": boolean }` (`pushoverConfigured` reflects whether the admin has set the Pushover app token in settings; `shareStreamingActivity` is the watch-together opt-in; `seenStreamingHighlight` tracks the one-time onboarding highlight). Errors: `401` — `"Not signed in"`.
 - **Example:**
   ```bash
   curl -sS -X GET "$MEDIABOX_URL/api/v1/account" \
@@ -149,7 +149,7 @@ The signed-in user's own account settings.
 
 ## `PUT /api/v1/account`
 
-Update the signed-in user's own account settings (currently just the Pushover user key).
+Update the signed-in user's own account settings. Only the fields present in the body are written (the account page saves each card independently).
 
 - **Auth:** user
 - **Request body:**
@@ -157,6 +157,8 @@ Update the signed-in user's own account settings (currently just the Pushover us
   | field | type | required | default | notes |
   | --- | --- | --- | --- | --- |
   | `pushoverUserKey` | string | no | — | max 64 chars; trimmed, and an empty string clears it to `null` |
+  | `shareStreamingActivity` | boolean | no | — | watch-together opt-in: when `true`, other users can join and sync-watch with you |
+  | `seenStreamingHighlight` | boolean | no | — | set `true` to dismiss the one-time "share activity" onboarding highlight |
 
 - **Response:** `200` — `{ "saved": true }`. Errors: `401` — `"Not signed in"`; `400` — Zod validation.
 - **Example:**

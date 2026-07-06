@@ -2,10 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { apiFetch, ApiError } from "@/lib/api";
+import { apiFetch, useApi, ApiError } from "@/lib/api";
+import { useEvents } from "@/lib/use-events";
 import { Badge, Button, Callout, Spinner } from "@/components/ui";
 import { PlayOnTvButton } from "@/components/play-on-tv-button";
 import { cn } from "@/lib/cn";
+// Type-only: the runtime lives in a server module (node:events); erased at build.
+import type { WatchCommand } from "@/server/events/bus";
 import {
   loadSubtitleStyle,
   type SubtitleStyle,
@@ -119,6 +122,16 @@ export function MediaInfoBadges({
 }
 
 export type PlaybackTarget = { type: "movie" | "episode"; id: number };
+
+/**
+ * Watch-together wiring for a player instance.
+ *   host   → mirror this player's play/pause/seek/episode-change OUT to joiners.
+ *   joiner → apply incoming sync commands (and skip saving own watch-progress).
+ * `startPositionSeconds` (joiner) is the host's position at join time.
+ */
+export type WatchSync =
+  | { role: "host"; hostUserId?: number }
+  | { role: "joiner"; hostUserId?: number; startPositionSeconds?: number };
 
 /** Two-digit zero-padded number, e.g. 3 → "03". */
 function pad2(n: number): string {
@@ -329,11 +342,12 @@ const MIN_PROGRESS_SECONDS = 10;
 
 function useWatchProgress(
   videoRef: React.RefObject<HTMLVideoElement | null>,
-  target: PlaybackTarget
+  target: PlaybackTarget,
+  disabled = false
 ) {
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || disabled) return;
 
     const key = target.type === "movie" ? "movieId" : "episodeId";
     let disposed = false;
@@ -391,7 +405,7 @@ function useWatchProgress(
       video.removeEventListener("pause", save);
       save(); // final flush on unmount / mode switch / close
     };
-  }, [videoRef, target.type, target.id]);
+  }, [videoRef, target.type, target.id, disabled]);
 }
 
 /** Seconds to jump on the ← / → arrow keys. */
@@ -430,11 +444,13 @@ export function VideoPlayerModal({
   title,
   mediaInfo,
   onClose,
+  sync,
 }: {
   target: PlaybackTarget;
   title: React.ReactNode;
   mediaInfo?: MediaInfo | null;
   onClose: () => void;
+  sync?: WatchSync;
 }) {
   const [forceTranscode, setForceTranscode] = useState(loadForceTranscode);
   const [mode, setMode] = useState<"direct" | "transcode">(() =>
@@ -463,8 +479,12 @@ export function VideoPlayerModal({
   // The live <video>, registered up from whichever child player is mounted, so
   // the keyboard shortcuts (seek / volume / mute) can drive it directly.
   const videoElRef = useRef<HTMLVideoElement | null>(null);
+  // Mirror the live element into state too, so the watch-together host effect can
+  // (re)attach transport listeners whenever the child player remounts.
+  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
   const registerVideo = useCallback((el: HTMLVideoElement | null) => {
     videoElRef.current = el;
+    setVideoEl(el);
   }, []);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -680,6 +700,138 @@ export function VideoPlayerModal({
     setUpNextCancelled(false);
     setCountdown(UP_NEXT_COUNTDOWN);
   }, []);
+
+  // ---- watch-together sync ----
+
+  // Whether this player mirrors OUT (host) or IN (joiner). A joiner is explicit
+  // (opened by the "Join" UI). Host mode is on when explicitly requested OR the
+  // signed-in user shares their streaming activity — the /sync endpoint simply
+  // no-ops server-side when nobody has joined, so this is cheap and automatic.
+  const { data: me } = useApi<{ shareStreamingActivity?: boolean }>("/auth/me");
+  const isJoiner = sync?.role === "joiner";
+  const hostActive = !isJoiner && (sync?.role === "host" || !!me?.shareStreamingActivity);
+
+  // HOST: mirror this player's transport (play / pause / seek) out to joiners.
+  // Attaches to the live <video>, re-attaching when the child player remounts
+  // (episode / quality change). Seeks are throttled so scrubbing doesn't flood.
+  useEffect(() => {
+    if (!hostActive || !videoEl) return;
+    const postCommand = (command: WatchCommand) => {
+      void apiFetch("/watch-together/sync", {
+        method: "POST",
+        body: JSON.stringify({ command }),
+      }).catch(() => {});
+    };
+    let lastSeekSent = 0;
+    const onPlay = () => postCommand({ kind: "play", positionSeconds: videoEl.currentTime });
+    const onPause = () => postCommand({ kind: "pause", positionSeconds: videoEl.currentTime });
+    const onSeeked = () => {
+      const now = Date.now();
+      if (now - lastSeekSent < 400) return; // throttle rapid scrub events
+      lastSeekSent = now;
+      postCommand({ kind: "seek", positionSeconds: videoEl.currentTime });
+    };
+    videoEl.addEventListener("play", onPlay);
+    videoEl.addEventListener("pause", onPause);
+    videoEl.addEventListener("seeked", onSeeked);
+    return () => {
+      videoEl.removeEventListener("play", onPlay);
+      videoEl.removeEventListener("pause", onPause);
+      videoEl.removeEventListener("seeked", onSeeked);
+    };
+  }, [hostActive, videoEl]);
+
+  // HOST: when the playing title changes (episode navigation / auto-advance), tell
+  // joiners to follow. Skip the first run — that's the title the joiner already has.
+  const firstTitleSync = useRef(true);
+  useEffect(() => {
+    if (!hostActive) return;
+    if (firstTitleSync.current) {
+      firstTitleSync.current = false;
+      return;
+    }
+    void apiFetch("/watch-together/sync", {
+      method: "POST",
+      body: JSON.stringify({ command: { kind: "title", target: current, positionSeconds: 0 } }),
+    }).catch(() => {});
+  }, [current, hostActive]);
+
+  // JOINER: apply a command received from the host. play/pause/seek drive the live
+  // <video>; a title command re-points `current` (resetting per-title state like
+  // goTo). Only joiners attach the incoming subscription, and joiners never attach
+  // the host's transport listeners — so applying a remote command can't re-emit.
+  const applyRemote = useCallback((command: WatchCommand) => {
+    const v = videoElRef.current;
+    const correct = (t: number | undefined) => {
+      if (t == null) return;
+      seekNonce.current += 1;
+      setSeekReq({ t, n: seekNonce.current });
+    };
+    switch (command.kind) {
+      case "play":
+        if (
+          v &&
+          command.positionSeconds != null &&
+          Math.abs(v.currentTime - command.positionSeconds) > 2.5
+        ) {
+          correct(command.positionSeconds);
+        }
+        void v?.play?.().catch(() => {});
+        break;
+      case "pause":
+        if (
+          v &&
+          command.positionSeconds != null &&
+          Math.abs(v.currentTime - command.positionSeconds) > 2.5
+        ) {
+          correct(command.positionSeconds);
+        }
+        v?.pause();
+        break;
+      case "seek":
+        correct(command.positionSeconds);
+        break;
+      case "title":
+        if (command.target) {
+          setCurrent(command.target);
+          setCurrentTitle("Watching together");
+          setMode(loadForceTranscode() ? "transcode" : "direct");
+          setSelectedFileId(null);
+          setVersions([]);
+          setSelectedSub(-1);
+          setSubtitleOffset(0);
+          setTracks([]);
+          setNeighbors({ prev: null, next: null });
+          setUpNextVisible(false);
+          setUpNextCancelled(false);
+          setCountdown(UP_NEXT_COUNTDOWN);
+        }
+        break;
+    }
+  }, []);
+
+  // JOINER: subscribe to targeted `watch.sync` events. Always mounted (stable hook
+  // order); the callback no-ops unless this player is a joiner.
+  const onWatchEvent = useCallback(
+    (e: { type: string; [key: string]: unknown }) => {
+      if (isJoiner && e.type === "watch.sync" && e.command) {
+        applyRemote(e.command as WatchCommand);
+      }
+    },
+    [isJoiner, applyRemote]
+  );
+  useEvents(onWatchEvent);
+
+  // JOINER: seek to the host's position at join time (best-effort, once).
+  const joinerSeeded = useRef(false);
+  useEffect(() => {
+    if (joinerSeeded.current || sync?.role !== "joiner") return;
+    const start = sync.startPositionSeconds;
+    if (start == null || start <= 0) return;
+    joinerSeeded.current = true;
+    seekNonce.current += 1;
+    setSeekReq({ t: start, n: seekNonce.current });
+  }, [sync]);
 
   // Fetch skip-intro / skip-recap segments (from chapter markers) for the title.
   useEffect(() => {
@@ -975,6 +1127,7 @@ export function VideoPlayerModal({
           onEnded={handleEnded}
           seekReq={seekReq}
           onVideoEl={registerVideo}
+          disableProgress={isJoiner}
         />
       ) : (
         <TranscodePlayer
@@ -990,6 +1143,7 @@ export function VideoPlayerModal({
           seekReq={seekReq}
           audioTrack={selectedAudio}
           onVideoEl={registerVideo}
+          disableProgress={isJoiner}
         />
       )}
 
@@ -1590,6 +1744,7 @@ function DirectPlayer({
   onEnded,
   seekReq,
   onVideoEl,
+  disableProgress,
 }: {
   target: PlaybackTarget;
   fileId: number | null;
@@ -1602,12 +1757,13 @@ function DirectPlayer({
   onEnded?: () => void;
   seekReq?: { t: number; n: number } | null;
   onVideoEl?: (el: HTMLVideoElement | null) => void;
+  disableProgress?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const subtitleSinkRef = useRef<HTMLDivElement>(null);
   const [errored, setErrored] = useState(false);
 
-  useWatchProgress(videoRef, target);
+  useWatchProgress(videoRef, target, disableProgress);
   useStyledSubtitles(videoRef, tracks, selectedSub, subtitleOffset, subtitleSinkRef);
   useSeekRequest(videoRef, seekReq);
   useRegisterVideo(videoRef, onVideoEl);
@@ -1668,6 +1824,7 @@ function TranscodePlayer({
   seekReq,
   audioTrack,
   onVideoEl,
+  disableProgress,
 }: {
   target: PlaybackTarget;
   fileId: number | null;
@@ -1680,6 +1837,7 @@ function TranscodePlayer({
   seekReq?: { t: number; n: number } | null;
   audioTrack?: number | null;
   onVideoEl?: (el: HTMLVideoElement | null) => void;
+  disableProgress?: boolean;
 }) {
   const { type, id } = target;
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1687,7 +1845,7 @@ function TranscodePlayer({
   const [status, setStatus] = useState<"starting" | "playing" | "error">("starting");
   const [error, setError] = useState<string | null>(null);
 
-  useWatchProgress(videoRef, target);
+  useWatchProgress(videoRef, target, disableProgress);
   useStyledSubtitles(videoRef, tracks, selectedSub, subtitleOffset, subtitleSinkRef);
   useSeekRequest(videoRef, seekReq);
   useRegisterVideo(videoRef, onVideoEl);

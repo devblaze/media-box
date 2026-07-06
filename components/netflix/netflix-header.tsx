@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/cn";
 import { useApi } from "@/lib/api";
+import { WatchTogetherButton } from "@/components/watch-together";
 import { useOptionalSearch } from "./search-context";
 
 interface Me {
@@ -208,6 +209,8 @@ export function NetflixHeader() {
               />
             </div>
           )}
+
+          <WatchTogetherButton />
 
           {me?.role === "admin" && (
             <Link
