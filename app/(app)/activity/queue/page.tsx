@@ -52,7 +52,7 @@ export default function QueuePage() {
   }
 
   return (
-    <div>
+    <div className="px-4 py-6 md:px-12">
       <h1 className="text-xl font-semibold">Queue</h1>
       {!data ? (
         <div className="mt-4 space-y-2">

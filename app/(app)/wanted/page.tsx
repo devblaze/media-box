@@ -57,7 +57,7 @@ export default function WantedPage() {
   }
 
   return (
-    <div className="max-w-4xl">
+    <div className="max-w-4xl px-4 py-6 md:px-12">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Wanted</h1>
         <Button size="sm" onClick={searchAll} loading={searching}>

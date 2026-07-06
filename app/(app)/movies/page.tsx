@@ -11,7 +11,7 @@ export default function MoviesPage() {
   useEvents();
 
   return (
-    <div>
+    <div className="px-4 py-6 md:px-12">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Movies</h1>
         <Link href="/add">

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/cn";
+import { APP_VERSION } from "@/lib/version";
 
 /** Management nav for the admin panel. Order mirrors the settings/system routes. */
 const NAV = [
@@ -155,6 +156,9 @@ export function AdminPanel({ children }: { children: React.ReactNode }) {
             >
               Sign out
             </button>
+            <div className="px-3 pt-2 text-xs text-zinc-600" title="App version">
+              media-box v{APP_VERSION}
+            </div>
           </div>
         </aside>
       </div>
