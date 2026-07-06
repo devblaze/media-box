@@ -133,31 +133,31 @@
       "method": "GET",
       "path": "/api/v1/downloadclients",
       "auth": "admin",
-      "summary": ""
+      "summary": "Placeholder shown to the client in place of a stored secret."
     },
     {
       "method": "POST",
       "path": "/api/v1/downloadclients",
       "auth": "admin",
-      "summary": ""
+      "summary": "Placeholder shown to the client in place of a stored secret."
     },
     {
       "method": "DELETE",
       "path": "/api/v1/downloadclients/{id}",
       "auth": "admin",
-      "summary": "Secret fields arriving as the redaction placeholder keep their stored value."
+      "summary": ""
     },
     {
       "method": "PUT",
       "path": "/api/v1/downloadclients/{id}",
       "auth": "admin",
-      "summary": "Secret fields arriving as the redaction placeholder keep their stored value."
+      "summary": ""
     },
     {
       "method": "POST",
       "path": "/api/v1/downloadclients/test",
       "auth": "admin",
-      "summary": ""
+      "summary": "`{ id }` with no settings → test a saved client using its stored secrets."
     },
     {
       "method": "GET",

@@ -166,9 +166,12 @@ function ClientDialog({
   async function test() {
     setPending("test");
     try {
+      // Include the id when editing a saved client so the server can restore any
+      // secret left as the "••••••••" placeholder (otherwise Test would send the
+      // masked bullets as the real credential).
       const res = await apiFetch<{ ok: boolean; message?: string }>("/downloadclients/test", {
         method: "POST",
-        body: JSON.stringify(body()),
+        body: JSON.stringify(initial.id !== undefined ? { ...body(), id: initial.id } : body()),
       });
       if (res.ok) {
         toast.success(res.message ?? "Connection successful");

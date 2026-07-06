@@ -1,21 +1,9 @@
 import type { NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
-import { clientBodySchema } from "../route";
+import { clientBodySchema, mergeSecrets } from "../route";
 import { badRequest, notFound, ok, serverError } from "@/lib/http";
 import { requireAdmin } from "@/server/auth/guards";
-
-// Secret fields arriving as the redaction placeholder keep their stored value.
-function mergeSecrets(
-  stored: Record<string, unknown>,
-  incoming: Record<string, unknown>
-): Record<string, unknown> {
-  const merged = { ...incoming };
-  for (const key of ["password", "apiKey"]) {
-    if (merged[key] === "••••••••") merged[key] = stored[key];
-  }
-  return merged;
-}
 
 export async function PUT(request: NextRequest, ctx: RouteContext<"/api/v1/downloadclients/[id]">) {
   const denied = requireAdmin(request);

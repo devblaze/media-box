@@ -151,7 +151,7 @@ Delete a download client.
 Test connectivity to a saved or unsaved client. Failures return `200 { ok: false }`.
 
 - **Auth:** admin
-- **Request body:** either `{ id: integer }` (test a saved client using stored secrets) **or** a full create body (`type` + `name` + `settings`, per `POST /downloadclients`).
+- **Request body:** either `{ id: integer }` (test a saved client using stored secrets) **or** a full create body (`type` + `name` + `settings`, per `POST /downloadclients`). When testing edited settings for a saved client, include its `id` alongside `settings` — any secret still sent as the `"••••••••"` redaction placeholder is then restored from the stored value (so Test never sends the mask as the real credential).
 - **Response:** `200` — `{ ok: boolean, message? }`. Unknown saved id → `{ ok: false, message: "Client not found" }`.
 
 ---
