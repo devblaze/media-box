@@ -1192,6 +1192,9 @@ export function VideoPlayerModal({
                 aria-expanded={audioOpen}
                 title="Audio track"
               >
+                {/* Headphones — deliberately NOT a speaker/volume icon, so the
+                    audio-TRACK picker isn't mistaken for a second volume control
+                    next to the native <video>'s volume button. */}
                 <svg
                   viewBox="0 0 24 24"
                   className="size-5"
@@ -1202,9 +1205,9 @@ export function VideoPlayerModal({
                   strokeLinejoin="round"
                   aria-hidden="true"
                 >
-                  <path d="M11 5 6 9H2v6h4l5 4V5z" />
-                  <path d="M15.5 8.5a5 5 0 0 1 0 7" />
-                  <path d="M19 5a9 9 0 0 1 0 14" />
+                  <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                  <path d="M21 19a2 2 0 0 1-2 2h-1a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h3z" />
+                  <path d="M3 19a2 2 0 0 0 2 2h1a1 1 0 0 0 1-1v-4a1 1 0 0 0-1-1H3z" />
                 </svg>
               </Button>
               {audioOpen && (
@@ -1518,7 +1521,7 @@ function DirectPlayer({
         ref={videoRef}
         controls
         autoPlay
-        className="h-full w-full bg-black object-contain"
+        className="mb-native-video h-full w-full bg-black object-contain"
         src={src}
         onError={() => setErrored(true)}
         onTimeUpdate={(e) => onTime?.(e.currentTarget.currentTime, e.currentTarget.duration)}
@@ -1691,7 +1694,7 @@ function TranscodePlayer({
         ref={videoRef}
         controls
         autoPlay
-        className="h-full w-full bg-black object-contain"
+        className="mb-native-video h-full w-full bg-black object-contain"
         onTimeUpdate={(e) => onTime?.(e.currentTarget.currentTime, e.currentTarget.duration)}
         onEnded={() => onEnded?.()}
       >
