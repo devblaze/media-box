@@ -79,27 +79,66 @@ function stripTrailingYear(title: string, yearHint: number | null): { title: str
   return { title, year: yearHint };
 }
 
-async function suggestFor(type: ImportType, query: string): Promise<ImportSuggestion[]> {
+/**
+ * Rank suggestions so the entry matching the parsed title AND year comes first —
+ * not just TMDB's top popularity hit. Critical when several releases share a name
+ * (e.g. "Babygirl" 2013/2018/2022/2023/2024): the year from the filename is the
+ * disambiguator. Ties keep TMDB's original (popularity) order.
+ */
+function suggestionScore(s: ImportSuggestion, query: string, yearHint: number | null): number {
+  let score = 0;
+  if (normalize(s.title) === normalize(query)) score += 2;
+  if (yearHint != null && s.year != null) {
+    const diff = Math.abs(yearHint - s.year);
+    if (diff === 0) score += 4; // exact year → the strongest disambiguator
+    else if (diff <= 1) score += 2; // ±1 tolerates release-date rounding
+  }
+  return score;
+}
+
+function rankSuggestions(
+  list: ImportSuggestion[],
+  query: string,
+  yearHint: number | null
+): ImportSuggestion[] {
+  return list
+    .map((s, i) => ({ s, i, score: suggestionScore(s, query, yearHint) }))
+    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .map((x) => x.s);
+}
+
+async function suggestFor(
+  type: ImportType,
+  query: string,
+  yearHint: number | null = null
+): Promise<ImportSuggestion[]> {
   try {
+    let raw: ImportSuggestion[];
     if (type === "movie") {
+      // Search broad (no year filter — that would exclude an off-by-one year);
+      // the yearHint is applied in the ranking below with a ±1 tolerance.
       const res = await searchMovie(query);
-      return res.results.slice(0, 6).map((r) => ({
+      raw = res.results.map((r) => ({
         tmdbId: r.id,
         title: r.title,
         year: r.release_date ? Number(r.release_date.slice(0, 4)) || null : null,
         poster: posterUrl(r.poster_path),
         overview: r.overview ?? "",
       }));
+    } else {
+      // series and anime both resolve against TMDB TV.
+      const res = await searchTv(query);
+      raw = res.results.map((r) => ({
+        tmdbId: r.id,
+        title: r.name,
+        year: r.first_air_date ? Number(r.first_air_date.slice(0, 4)) || null : null,
+        poster: posterUrl(r.poster_path),
+        overview: r.overview ?? "",
+      }));
     }
-    // series and anime both resolve against TMDB TV.
-    const res = await searchTv(query);
-    return res.results.slice(0, 6).map((r) => ({
-      tmdbId: r.id,
-      title: r.name,
-      year: r.first_air_date ? Number(r.first_air_date.slice(0, 4)) || null : null,
-      poster: posterUrl(r.poster_path),
-      overview: r.overview ?? "",
-    }));
+    // Rank the FULL result set by title + year before trimming, so a matching-year
+    // release that TMDB ranked low on popularity still surfaces (and is picked).
+    return rankSuggestions(raw, query, yearHint).slice(0, 6);
   } catch {
     return [];
   }
@@ -209,7 +248,9 @@ async function scanMoviesByFile(db: Db, root: string): Promise<ScanResult> {
 
   const candidates: ImportCandidate[] = [];
   for (const agg of limited) {
-    const suggestions = (await suggestFor("movie", agg.title)).filter((s) => !existingTmdb.has(s.tmdbId));
+    const suggestions = (await suggestFor("movie", agg.title, agg.year)).filter(
+      (s) => !existingTmdb.has(s.tmdbId)
+    );
     const { status, suggestedTmdbId } = classify(suggestions, agg.title, agg.year);
     const videoPath = agg.best.absPath;
     candidates.push({
@@ -272,7 +313,9 @@ async function scanFolders(db: Db, type: ImportType, root: string): Promise<Scan
     let yearHint = parsed.year ?? null;
     ({ title: query, year: yearHint } = stripTrailingYear(query, yearHint));
 
-    const suggestions = (await suggestFor(type, query)).filter((s) => !existingTmdb.has(s.tmdbId));
+    const suggestions = (await suggestFor(type, query, yearHint)).filter(
+      (s) => !existingTmdb.has(s.tmdbId)
+    );
     const { status, suggestedTmdbId } = classify(suggestions, query, yearHint);
 
     candidates.push({

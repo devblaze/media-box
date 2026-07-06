@@ -201,6 +201,30 @@ export async function refreshSeries(seriesId: number) {
   emitEvent({ type: "series.updated", seriesId });
 }
 
+/**
+ * Re-identify a series/anime as a different TMDB title. Swaps the TMDB id then
+ * re-pulls metadata and re-syncs seasons/episodes from the new show. Episode
+ * files key off the internal series id (and episode number), so already-imported
+ * files survive; note that if the new show has fewer episodes, stale episode rows
+ * from the old show are left in place.
+ */
+export async function reidentifySeries(seriesId: number, newTmdbId: number) {
+  const db = getDb();
+  const row = db.select().from(schema.series).where(eq(schema.series.id, seriesId)).get();
+  if (!row) throw new Error("Series not found");
+  if (row.tmdbId === newTmdbId) return; // already this title
+  const clash = db
+    .select({ id: schema.series.id })
+    .from(schema.series)
+    .where(eq(schema.series.tmdbId, newTmdbId))
+    .get()?.id;
+  if (clash != null && clash !== seriesId) {
+    throw new Error("Another series in your library already uses that TMDB title.");
+  }
+  db.update(schema.series).set({ tmdbId: newTmdbId }).where(eq(schema.series.id, seriesId)).run();
+  await refreshSeries(seriesId); // re-pull metadata + re-sync seasons/episodes
+}
+
 export async function deleteSeries(
   seriesId: number,
   deleteFiles: boolean,

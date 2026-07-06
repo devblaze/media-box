@@ -6,6 +6,7 @@ import { apiFetch, useApi } from "@/lib/api";
 import { useEvents } from "@/lib/use-events";
 import { formatBytes, tmdbPoster } from "@/lib/types";
 import { ReleaseSearchDrawer } from "@/components/release-search";
+import { ReidentifyModal } from "@/components/reidentify-modal";
 import { SubtitleSearchDrawer } from "@/components/subtitle-search";
 import { MediaInfoBadges, VideoPlayerModal } from "@/components/media-player";
 import { useQueue, DownloadStageBadge } from "@/components/download-stage";
@@ -122,6 +123,7 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
   // (admins always have it).
   const canSearch = principalHasPermission(me, "releases.search");
   const [searching, setSearching] = useState(false);
+  const [reidentifying, setReidentifying] = useState(false);
   const [subtitleSearch, setSubtitleSearch] = useState(false);
   const [playing, setPlaying] = useState(false);
   const qualityNames = useMemo(
@@ -184,6 +186,16 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
     } catch {
       toast.error("Failed to queue refresh");
     }
+  }
+
+  async function reidentify(tmdbId: number) {
+    await apiFetch(`/movies/${id}/reidentify`, {
+      method: "POST",
+      body: JSON.stringify({ tmdbId }),
+    });
+    setReidentifying(false);
+    await mutate();
+    toast.success("Re-identified — metadata refreshed.");
   }
 
   async function rescan() {
@@ -307,6 +319,9 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
                 </Button>
                 <Button variant="secondary" size="sm" onClick={refresh}>
                   Refresh metadata
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => setReidentifying(true)}>
+                  Not the right movie?
                 </Button>
                 <Button variant="secondary" size="sm" onClick={rescan}>
                   Rescan disk
@@ -455,6 +470,15 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
           title={`${data.title}${data.year ? ` (${data.year})` : ""}`}
           mediaInfo={data.file.mediaInfo}
           onClose={() => setPlaying(false)}
+        />
+      )}
+
+      {reidentifying && (
+        <ReidentifyModal
+          type="movie"
+          currentTitle={data.title}
+          onClose={() => setReidentifying(false)}
+          onConfirm={reidentify}
         />
       )}
     </div>

@@ -6,6 +6,7 @@ import { apiFetch, useApi } from "@/lib/api";
 import { useEvents } from "@/lib/use-events";
 import { tmdbPoster, type Episode, type Season } from "@/lib/types";
 import { ReleaseSearchDrawer, type SearchScope } from "@/components/release-search";
+import { ReidentifyModal } from "@/components/reidentify-modal";
 import { SubtitleSearchDrawer } from "@/components/subtitle-search";
 import { MediaInfoBadges, VideoPlayerModal } from "@/components/media-player";
 import { useQueue, DownloadStageBadge } from "@/components/download-stage";
@@ -137,6 +138,7 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
   // Interactive search & grab is delegatable via releases.search (admins have it).
   const canSearch = principalHasPermission(me, "releases.search");
   const [progressMap, setProgressMap] = useState<Map<number, EpProgress>>(new Map());
+  const [reidentifying, setReidentifying] = useState(false);
   const [searchScope, setSearchScope] = useState<{ scope: SearchScope; label: string } | null>(null);
   const [subtitleSearch, setSubtitleSearch] = useState<{ episodeId: number; label: string } | null>(
     null
@@ -288,6 +290,16 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
     } catch {
       toast.error("Failed to queue metadata refresh");
     }
+  }
+
+  async function reidentify(tmdbId: number) {
+    await apiFetch(`/series/${id}/reidentify`, {
+      method: "POST",
+      body: JSON.stringify({ tmdbId }),
+    });
+    setReidentifying(false);
+    await mutate();
+    toast.success("Re-identified — metadata refreshed.");
   }
 
   async function rescan() {
@@ -462,6 +474,9 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
               </label>
               <Button variant="secondary" size="sm" onClick={refresh}>
                 Refresh metadata
+              </Button>
+              <Button variant="secondary" size="sm" onClick={() => setReidentifying(true)}>
+                Not the right {data.isAnime ? "anime" : "series"}?
               </Button>
               <Button variant="secondary" size="sm" onClick={rescan}>
                 Rescan disk
@@ -742,6 +757,15 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
           target={{ type: "episode", id: playing.episodeId }}
           title={playing.label}
           onClose={() => setPlaying(null)}
+        />
+      )}
+
+      {reidentifying && (
+        <ReidentifyModal
+          type={data.isAnime ? "anime" : "series"}
+          currentTitle={data.title}
+          onClose={() => setReidentifying(false)}
+          onConfirm={reidentify}
         />
       )}
     </div>

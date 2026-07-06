@@ -86,6 +86,25 @@ export async function refreshMovie(movieId: number) {
   emitEvent({ type: "movie.updated", movieId });
 }
 
+/**
+ * Re-identify a movie as a different TMDB title (e.g. the auto-matcher picked the
+ * wrong same-name release). Swaps the TMDB id then re-pulls metadata. On-disk
+ * files and the `movieFile` link key off the internal movie id — not tmdbId — so
+ * an already-downloaded file is preserved and simply re-labelled.
+ */
+export async function reidentifyMovie(movieId: number, newTmdbId: number) {
+  const db = getDb();
+  const row = db.select().from(schema.movies).where(eq(schema.movies.id, movieId)).get();
+  if (!row) throw new Error("Movie not found");
+  if (row.tmdbId === newTmdbId) return; // already this title
+  const clash = getMovieIdByTmdb(newTmdbId);
+  if (clash != null && clash !== movieId) {
+    throw new Error("Another movie in your library already uses that TMDB title.");
+  }
+  db.update(schema.movies).set({ tmdbId: newTmdbId }).where(eq(schema.movies.id, movieId)).run();
+  await refreshMovie(movieId); // re-pull title/year/overview/poster from the new id
+}
+
 export async function deleteMovie(
   movieId: number,
   deleteFiles: boolean,

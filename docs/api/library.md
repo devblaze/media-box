@@ -95,6 +95,15 @@ Remove a movie from the library, optionally deleting its files from disk.
   curl -sS -X DELETE "$MEDIABOX_URL/api/v1/movies/12?deleteFiles=true" -H "x-api-key: $MEDIABOX_API_KEY"
   ```
 
+## `POST /api/v1/movies/{id}/reidentify`
+
+Re-identify a movie as a different TMDB title (the auto-matcher picked the wrong same-name release). Swaps the movie's `tmdbId` and re-pulls metadata; the on-disk file is kept (files key off the internal movie id, not `tmdbId`).
+
+- **Auth:** admin
+- **Path params:** `id` — movie id.
+- **Request body:** `{ "tmdbId": number }` — the correct TMDB movie id.
+- **Response:** `200` — `{ reidentified: true }`. Errors: `400` (invalid id / body); `409`-style `500` message if another library movie already uses that TMDB id; `500`.
+
 ## `DELETE /api/v1/movies/{id}/versions/{fileId}`
 
 Delete one quality version (a single `movieFiles` row) of a movie. If it was the primary, the largest remaining version becomes primary.
@@ -192,6 +201,15 @@ Remove a series from the library, optionally deleting its files from disk.
   ```bash
   curl -sS -X DELETE "$MEDIABOX_URL/api/v1/series/3?deleteFiles=true" -H "x-api-key: $MEDIABOX_API_KEY"
   ```
+
+## `POST /api/v1/series/{id}/reidentify`
+
+Re-identify a series/anime as a different TMDB title. Swaps the series' `tmdbId`, re-pulls metadata, and re-syncs seasons/episodes from the new show. Already-imported episode files are preserved (they key off the internal series id + episode number); stale episode rows from the old show are left in place if the new show has fewer episodes.
+
+- **Auth:** admin
+- **Path params:** `id` — series id.
+- **Request body:** `{ "tmdbId": number }` — the correct TMDB TV id.
+- **Response:** `200` — `{ reidentified: true }`. Errors: `400` (invalid id / body); `500` (incl. "another series already uses that TMDB title").
 
 ## `GET /api/v1/episodes/{id}/neighbors`
 
