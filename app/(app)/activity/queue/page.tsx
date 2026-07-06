@@ -5,6 +5,12 @@ import { apiFetch, useApi } from "@/lib/api";
 import { useEvents } from "@/lib/use-events";
 import { formatBytes } from "@/lib/types";
 import {
+  DOWNLOAD_STATUS_LABEL,
+  downloadProgress,
+  downloadStatusTone,
+  type QueueItem,
+} from "@/lib/download-status";
+import {
   Badge,
   Button,
   EmptyState,
@@ -17,38 +23,6 @@ import {
   TR,
   useToast,
 } from "@/components/ui";
-
-interface QueueItem {
-  id: number;
-  title: string;
-  status: string;
-  statusMessage: string | null;
-  mediaType: "series" | "movie";
-  seriesId: number | null;
-  movieId: number | null;
-  size: number | null;
-  sizeLeft: number | null;
-  grabbedAt: number | string;
-  clientName: string | null;
-  clientType: string | null;
-}
-
-const STATUS_LABEL: Record<string, string> = {
-  queued: "Queued",
-  downloading: "Downloading",
-  remoteCompleted: "Completed (remote)",
-  fetching: "Fetching from TorBox",
-  importPending: "Waiting to import",
-  importing: "Importing",
-  warning: "Needs attention",
-  failed: "Failed",
-};
-
-function statusTone(status: string): "danger" | "success" | "neutral" {
-  if (status === "failed" || status === "warning") return "danger";
-  if (status === "importPending" || status === "importing") return "success";
-  return "neutral";
-}
 
 export default function QueuePage() {
   const { data, mutate } = useApi<QueueItem[]>("/queue");
@@ -107,10 +81,7 @@ export default function QueuePage() {
           </THead>
           <TBody>
             {data.map((item) => {
-              const pct =
-                item.size && item.size > 0
-                  ? Math.round((1 - (item.sizeLeft ?? 0) / item.size) * 100)
-                  : 0;
+              const pct = downloadProgress(item);
               const link =
                 item.mediaType === "series" && item.seriesId
                   ? `/series/${item.seriesId}`
@@ -137,8 +108,8 @@ export default function QueuePage() {
                     </div>
                   </TD>
                   <TD className="pr-3">
-                    <Badge tone={statusTone(item.status)} title={item.statusMessage ?? ""}>
-                      {STATUS_LABEL[item.status] ?? item.status}
+                    <Badge tone={downloadStatusTone(item.status)} title={item.statusMessage ?? ""}>
+                      {DOWNLOAD_STATUS_LABEL[item.status] ?? item.status}
                     </Badge>
                     {item.statusMessage && (
                       <div className="mt-1 max-w-56 text-xs text-zinc-500">{item.statusMessage}</div>
