@@ -277,8 +277,8 @@ export default function GeneralSettingsPage() {
             </Select>
           </Field>
 
-          {transcodeHwAccel === "vaapi" && (
-            <Field label="VAAPI render device" htmlFor="transcode-vaapi-device">
+          {(transcodeHwAccel === "vaapi" || transcodeHwAccel === "qsv") && (
+            <Field label="GPU render device" htmlFor="transcode-vaapi-device">
               <Input
                 id="transcode-vaapi-device"
                 value={transcodeVaapiDevice}
@@ -289,6 +289,14 @@ export default function GeneralSettingsPage() {
                 className="font-mono"
                 placeholder="/dev/dri/renderD128"
               />
+              <p className="mt-1.5 text-xs text-zinc-500">
+                Which GPU transcodes. Only matters with more than one — e.g. a dedicated
+                transcode card next to an AI GPU. First GPU is usually{" "}
+                <code className="text-zinc-400">/dev/dri/renderD128</code>, second{" "}
+                <code className="text-zinc-400">/dev/dri/renderD129</code>. Run{" "}
+                <code className="text-zinc-400">ls -l /dev/dri/by-path/</code> on the host to see
+                which node is which card, then <strong>Test</strong> to confirm.
+              </p>
             </Field>
           )}
 

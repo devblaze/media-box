@@ -74,20 +74,27 @@ const TRANSCODE_ROOT = path.join(CONFIG_DIR, "transcode");
 
 type HwAccel = "none" | "vaapi" | "qsv" | "nvenc";
 
-/** Input-side flags (must precede `-i`) that select the hardware decode path. */
-function hwaccelInputArgs(mode: HwAccel, vaapiDevice: string): string[] {
+/**
+ * Input-side flags (must precede `-i`) that select the hardware decode path.
+ * `device` is the DRM render node (`/dev/dri/renderD12x`); it pins VAAPI and QSV
+ * to a specific GPU — essential when the host has more than one (e.g. a dedicated
+ * transcode card alongside an AI card).
+ */
+function hwaccelInputArgs(mode: HwAccel, device: string): string[] {
   switch (mode) {
     case "vaapi":
       return [
         "-hwaccel",
         "vaapi",
         "-hwaccel_device",
-        vaapiDevice || "/dev/dri/renderD128",
+        device || "/dev/dri/renderD128",
         "-hwaccel_output_format",
         "vaapi",
       ];
     case "qsv":
-      return ["-hwaccel", "qsv"];
+      // `-qsv_device <render node>` pins QSV to a specific Intel GPU; omitting it
+      // lets ffmpeg pick the default one.
+      return device ? ["-qsv_device", device, "-hwaccel", "qsv"] : ["-hwaccel", "qsv"];
     case "nvenc":
       return ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"];
     case "none":
@@ -207,7 +214,7 @@ const HW_LABELS: Record<HwAccel, string> = {
  * a few frames with the selected encoder to a null muxer — no real file needed.
  * For VAAPI the frames are uploaded to the GPU (which also exercises the device).
  */
-function buildHwTestArgs(mode: HwAccel, vaapiDevice: string): string[] {
+function buildHwTestArgs(mode: HwAccel, device: string): string[] {
   const src = ["-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=10"];
   const base = ["-hide_banner", "-loglevel", "error"];
   switch (mode) {
@@ -215,7 +222,7 @@ function buildHwTestArgs(mode: HwAccel, vaapiDevice: string): string[] {
       return [
         ...base,
         "-vaapi_device",
-        vaapiDevice || "/dev/dri/renderD128",
+        device || "/dev/dri/renderD128",
         ...src,
         "-vf",
         "format=nv12,hwupload",
@@ -226,7 +233,17 @@ function buildHwTestArgs(mode: HwAccel, vaapiDevice: string): string[] {
         "-",
       ];
     case "qsv":
-      return [...base, ...src, "-c:v", "h264_qsv", "-f", "null", "-"];
+      // Pin the self-test to the chosen GPU too, so it validates the right card.
+      return [
+        ...base,
+        ...(device ? ["-qsv_device", device] : []),
+        ...src,
+        "-c:v",
+        "h264_qsv",
+        "-f",
+        "null",
+        "-",
+      ];
     case "nvenc":
       return [...base, ...src, "-c:v", "h264_nvenc", "-f", "null", "-"];
     case "none":

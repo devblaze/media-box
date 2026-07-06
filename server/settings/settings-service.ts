@@ -24,6 +24,8 @@ export const appSettingsSchema = z.object({
   fileOperationsEnabled: z.coerce.boolean().default(true),
   // HLS transcoding pipeline.
   transcodeHwAccel: z.enum(["none", "vaapi", "qsv", "nvenc"]).default("none"),
+  // DRM render node (/dev/dri/renderD12x) that pins VAAPI *and* QSV to a specific
+  // GPU — used to choose the transcode card when the host has more than one.
   transcodeVaapiDevice: z.string().default("/dev/dri/renderD128"),
   maxTranscodeSessions: z.coerce.number().int().min(1).max(10).default(3),
   // Max releases the 24h backlog search grabs per run (slow backfill; 0 = unlimited).
