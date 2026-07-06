@@ -722,19 +722,24 @@ export function VideoPlayerModal({
         body: JSON.stringify({ command }),
       }).catch(() => {});
     };
-    let lastSeekSent = 0;
+    let seekTimer: ReturnType<typeof setTimeout> | null = null;
     const onPlay = () => postCommand({ kind: "play", positionSeconds: videoEl.currentTime });
     const onPause = () => postCommand({ kind: "pause", positionSeconds: videoEl.currentTime });
+    // Trailing-edge debounce: after a scrub settles, send the FINAL position so
+    // joiners land exactly where the host did (a leading-edge throttle would
+    // drop the last settle position and leave joiners offset).
     const onSeeked = () => {
-      const now = Date.now();
-      if (now - lastSeekSent < 400) return; // throttle rapid scrub events
-      lastSeekSent = now;
-      postCommand({ kind: "seek", positionSeconds: videoEl.currentTime });
+      if (seekTimer) clearTimeout(seekTimer);
+      seekTimer = setTimeout(() => {
+        seekTimer = null;
+        postCommand({ kind: "seek", positionSeconds: videoEl.currentTime });
+      }, 300);
     };
     videoEl.addEventListener("play", onPlay);
     videoEl.addEventListener("pause", onPause);
     videoEl.addEventListener("seeked", onSeeked);
     return () => {
+      if (seekTimer) clearTimeout(seekTimer);
       videoEl.removeEventListener("play", onPlay);
       videoEl.removeEventListener("pause", onPause);
       videoEl.removeEventListener("seeked", onSeeked);

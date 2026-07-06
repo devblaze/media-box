@@ -1,5 +1,6 @@
-import { onEvent } from "@/server/events/bus";
+import { emitEvent, onEvent } from "@/server/events/bus";
 import { getRequestUser } from "@/server/auth/auth-service";
+import { connectionClosed, connectionOpened, hostOf, leave } from "@/server/watch-together/session";
 
 export const dynamic = "force-dynamic";
 
@@ -9,8 +10,15 @@ export async function GET(request: Request) {
 
   // Resolve the connection's user so targeted events (watch-together) can be
   // filtered to only their own connections. Untargeted events still fan out to
-  // everyone. An unauthenticated connection sees only untargeted events.
-  const user = getRequestUser(request);
+  // everyone. An unauthenticated connection sees only untargeted events. A
+  // session-lookup hiccup must not 500 the whole live-update endpoint.
+  let user: ReturnType<typeof getRequestUser> = null;
+  try {
+    user = getRequestUser(request);
+  } catch {
+    user = null;
+  }
+  if (user?.id) connectionOpened(user.id);
 
   const stream = new ReadableStream({
     start(controller) {
@@ -34,6 +42,17 @@ export async function GET(request: Request) {
       request.signal.addEventListener("abort", () => {
         clearInterval(keepAlive);
         unsubscribe();
+        // When a joiner's LAST connection closes (e.g. tab hard-closed without a
+        // proper Leave), reap their watch-together membership so the registry
+        // can't grow unbounded and the host stops fanning sync events at a dead
+        // connection — and gets a "left" toast.
+        if (user?.id && connectionClosed(user.id)) {
+          const host = hostOf(user.id);
+          leave(user.id);
+          if (host != null) {
+            emitEvent({ type: "watch.peerLeft", targetUserId: host, joinerUsername: user.username });
+          }
+        }
         try {
           controller.close();
         } catch {

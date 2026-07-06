@@ -53,3 +53,35 @@ export function hostOf(joinerId: number): number | null {
   }
   return null;
 }
+
+// ---- live SSE connection counting (for reaping stale joiners) ----
+// A user can have several SSE connections open at once (multiple tabs / the
+// player + the app-shell notifier). We only reap their watch-together membership
+// when their LAST connection closes, so closing one tab doesn't break a session
+// still open in another.
+
+const CONN_KEY = Symbol.for("mediabox.watchTogether.conns");
+type GlobalWithConns = typeof globalThis & { [CONN_KEY]?: Map<number, number> };
+
+function connections(): Map<number, number> {
+  const g = globalThis as GlobalWithConns;
+  if (!g[CONN_KEY]) g[CONN_KEY] = new Map();
+  return g[CONN_KEY];
+}
+
+/** Record that a user opened an SSE connection. */
+export function connectionOpened(userId: number): void {
+  connections().set(userId, (connections().get(userId) ?? 0) + 1);
+}
+
+/** Record that a user's SSE connection closed; returns true if it was their last. */
+export function connectionClosed(userId: number): boolean {
+  const c = connections();
+  const next = (c.get(userId) ?? 1) - 1;
+  if (next <= 0) {
+    c.delete(userId);
+    return true;
+  }
+  c.set(userId, next);
+  return false;
+}
