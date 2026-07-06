@@ -394,6 +394,11 @@ function useWatchProgress(
   }, [videoRef, target.type, target.id]);
 }
 
+/** Seconds to jump on the ← / → arrow keys. */
+const SEEK_STEP_SECONDS = 10;
+/** Volume change (0–1) per ↑ / ↓ arrow key press. */
+const VOLUME_STEP = 0.1;
+
 /** Subtitle-sync nudge, in seconds, per button press / keypress. */
 const SUBTITLE_OFFSET_STEP = 0.1;
 /** Clamp the sync offset so it can never run away. */
@@ -455,6 +460,12 @@ export function VideoPlayerModal({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<number | null>(null);
+  // The live <video>, registered up from whichever child player is mounted, so
+  // the keyboard shortcuts (seek / volume / mute) can drive it directly.
+  const videoElRef = useRef<HTMLVideoElement | null>(null);
+  const registerVideo = useCallback((el: HTMLVideoElement | null) => {
+    videoElRef.current = el;
+  }, []);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
@@ -829,12 +840,51 @@ export function VideoPlayerModal({
     };
   }, []);
 
+  // ---- keyboard media controls (operate on the live <video> directly) ----
+
+  // Seek by a relative offset, clamped to [0, duration]; reveals the controls
+  // so the native scrubber shows the new position.
+  const seekBy = useCallback(
+    (deltaSeconds: number) => {
+      const v = videoElRef.current;
+      if (!v) return;
+      const dur = Number.isFinite(v.duration) ? v.duration : Infinity;
+      v.currentTime = Math.max(0, Math.min(dur, v.currentTime + deltaSeconds));
+      showControls();
+    },
+    [showControls]
+  );
+
+  // Nudge volume (0–1). A volume-up also unmutes, matching most players.
+  const changeVolume = useCallback(
+    (delta: number) => {
+      const v = videoElRef.current;
+      if (!v) return;
+      if (delta > 0) v.muted = false;
+      v.volume = Math.max(0, Math.min(1, Math.round((v.volume + delta) * 100) / 100));
+      showControls();
+    },
+    [showControls]
+  );
+
+  const toggleMute = useCallback(() => {
+    const v = videoElRef.current;
+    if (!v) return;
+    v.muted = !v.muted;
+    showControls();
+  }, [showControls]);
+
   // F toggles fullscreen. Esc is deliberately layered so it never closes the
   // player by surprise: an open dropdown closes first, then fullscreen exits,
   // and only a bare Esc (nothing open, not fullscreen) actually closes it.
   // [ / ] nudge subtitle sync earlier / later (only while a subtitle is on).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Never hijack typing (e.g. a future search field) or modified shortcuts.
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+
       if (e.key === "f" || e.key === "F") {
         e.preventDefault();
         toggleFullscreen();
@@ -848,6 +898,21 @@ export function VideoPlayerModal({
         } else {
           handleClose();
         }
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        seekBy(-SEEK_STEP_SECONDS);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        seekBy(SEEK_STEP_SECONDS);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        changeVolume(VOLUME_STEP);
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        changeVolume(-VOLUME_STEP);
+      } else if (e.key === "m" || e.key === "M") {
+        e.preventDefault();
+        toggleMute();
       } else if (e.key === "[" && selectedSub >= 0) {
         e.preventDefault();
         nudgeOffset(-SUBTITLE_OFFSET_STEP);
@@ -858,7 +923,18 @@ export function VideoPlayerModal({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleFullscreen, handleClose, nudgeOffset, selectedSub, ccOpen, qualityOpen, audioOpen]);
+  }, [
+    toggleFullscreen,
+    handleClose,
+    nudgeOffset,
+    selectedSub,
+    ccOpen,
+    qualityOpen,
+    audioOpen,
+    seekBy,
+    changeVolume,
+    toggleMute,
+  ]);
 
   // The currently-playing version (if the list resolved) and the label for the
   // always-on quality chip. Prefer the selected version's short tag; otherwise
@@ -898,6 +974,7 @@ export function VideoPlayerModal({
           onTime={handleTime}
           onEnded={handleEnded}
           seekReq={seekReq}
+          onVideoEl={registerVideo}
         />
       ) : (
         <TranscodePlayer
@@ -912,6 +989,7 @@ export function VideoPlayerModal({
           onEnded={handleEnded}
           seekReq={seekReq}
           audioTrack={selectedAudio}
+          onVideoEl={registerVideo}
         />
       )}
 
@@ -1488,6 +1566,17 @@ function useSeekRequest(
   }, [videoRef, seekReq]);
 }
 
+/** Publish this player's <video> up to the parent (for keyboard media controls). */
+function useRegisterVideo(
+  videoRef: React.RefObject<HTMLVideoElement | null>,
+  onVideoEl?: (el: HTMLVideoElement | null) => void
+) {
+  useEffect(() => {
+    onVideoEl?.(videoRef.current);
+    return () => onVideoEl?.(null);
+  }, [videoRef, onVideoEl]);
+}
+
 /** Native direct play with a "Try transcoding" fallback on <video> error. */
 function DirectPlayer({
   target,
@@ -1500,6 +1589,7 @@ function DirectPlayer({
   onTime,
   onEnded,
   seekReq,
+  onVideoEl,
 }: {
   target: PlaybackTarget;
   fileId: number | null;
@@ -1511,6 +1601,7 @@ function DirectPlayer({
   onTime?: (currentTime: number, duration: number) => void;
   onEnded?: () => void;
   seekReq?: { t: number; n: number } | null;
+  onVideoEl?: (el: HTMLVideoElement | null) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const subtitleSinkRef = useRef<HTMLDivElement>(null);
@@ -1519,6 +1610,7 @@ function DirectPlayer({
   useWatchProgress(videoRef, target);
   useStyledSubtitles(videoRef, tracks, selectedSub, subtitleOffset, subtitleSinkRef);
   useSeekRequest(videoRef, seekReq);
+  useRegisterVideo(videoRef, onVideoEl);
 
   // A specific version streams from `?file=<id>`; the primary/default omits it.
   const src = `/api/v1/stream/${target.type}/${target.id}${fileId != null ? `?file=${fileId}` : ""}`;
@@ -1575,6 +1667,7 @@ function TranscodePlayer({
   onEnded,
   seekReq,
   audioTrack,
+  onVideoEl,
 }: {
   target: PlaybackTarget;
   fileId: number | null;
@@ -1586,6 +1679,7 @@ function TranscodePlayer({
   onEnded?: () => void;
   seekReq?: { t: number; n: number } | null;
   audioTrack?: number | null;
+  onVideoEl?: (el: HTMLVideoElement | null) => void;
 }) {
   const { type, id } = target;
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1596,6 +1690,7 @@ function TranscodePlayer({
   useWatchProgress(videoRef, target);
   useStyledSubtitles(videoRef, tracks, selectedSub, subtitleOffset, subtitleSinkRef);
   useSeekRequest(videoRef, seekReq);
+  useRegisterVideo(videoRef, onVideoEl);
 
   useEffect(() => {
     let cancelled = false;
