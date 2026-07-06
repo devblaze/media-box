@@ -103,7 +103,9 @@ export async function DELETE(request: NextRequest, ctx: RouteContext<"/api/v1/se
     const seriesId = Number(id);
     if (!Number.isInteger(seriesId)) return badRequest("Invalid id");
     const deleteFiles = request.nextUrl.searchParams.get("deleteFiles") === "true";
-    await deleteSeries(seriesId, deleteFiles);
+    const res = await deleteSeries(seriesId, deleteFiles);
+    // Ask mode: a with-files delete is held for approval rather than performed now.
+    if (res && "held" in res) return ok({ held: true, id: res.id });
     return ok({ deleted: true });
   } catch (err) {
     return serverError(err);

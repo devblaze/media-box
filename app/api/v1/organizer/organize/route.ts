@@ -38,6 +38,8 @@ export async function POST(request: NextRequest) {
       seasonNumber: input.seasonNumber,
       episodeNumbers: input.episodeNumbers,
     });
+    // Ask mode: the organize was held for approval rather than performed now.
+    if (result.status === "held") return ok({ held: true, id: result.id });
     return ok(result);
   } catch (err) {
     // Conflicts (already in library / not-in-library) surface as 409 so the UI

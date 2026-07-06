@@ -24,9 +24,22 @@ export class MediaWritesDisabledError extends Error {
   }
 }
 
-/** True when media-box is allowed to move/rename/delete files. Defaults to true. */
+/**
+ * The 3-state file-operations mode:
+ *   - `allow` — moves/renames/deletes happen freely.
+ *   - `ask`   — file changes are held as pending approvals (see file-change-service).
+ *   - `off`   — never move/rename/delete (read-only mode; the guards below hard-block).
+ * The "ask" gating lives at the operation sites, not here: `placeFile`/`removeMedia`
+ * only ever hard-block on `off`, so an approved "ask" change (which runs in `ask`
+ * mode) can still complete.
+ */
+export function fileOperationsMode(): "allow" | "ask" | "off" {
+  return getSettings().fileOperationsMode;
+}
+
+/** True when media-box is allowed to move/rename/delete files (mode is not `off`). */
 export function fileOperationsEnabled(): boolean {
-  return getSettings().fileOperationsEnabled;
+  return fileOperationsMode() !== "off";
 }
 
 /** Throw `MediaWritesDisabledError` when file operations are disabled. */

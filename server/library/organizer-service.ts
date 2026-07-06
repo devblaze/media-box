@@ -6,6 +6,8 @@ import type { QualityModel } from "@/server/parser/quality";
 import { parseTitle } from "@/server/parser/release-parser";
 import { renderEpisodeFilename, renderMovieFilename, renderSeasonFolder } from "./naming";
 import { applyOwnership, freeSpace, mkdirp, placeFile, removeMedia } from "./filesystem";
+import { fileOperationsMode } from "./media-guard";
+import { recordPendingFileChange } from "./file-change-service";
 import { probeMediaInfo } from "./media-info";
 import { walkVideoFiles } from "./disk-scanner";
 import { emitEvent } from "@/server/events/bus";
@@ -210,8 +212,22 @@ export async function scanDownloads(): Promise<OrganizeItem[]> {
  */
 export async function organizeFile(
   sourcePath: string,
-  target: OrganizeTarget
-): Promise<OrganizeResult> {
+  target: OrganizeTarget,
+  opts: { bypassHold?: boolean } = {}
+): Promise<OrganizeResult | { status: "held"; id: number }> {
+  // Ask mode: hold the organize for an approver instead of placing the file now.
+  // `bypassHold` is set when an approval re-runs this to actually organize.
+  if (!opts.bypassHold && fileOperationsMode() === "ask") {
+    const name = path.basename(sourcePath);
+    const id = recordPendingFileChange(
+      "organize",
+      `Organize “${name}”`,
+      `→ ${target.kind} #${target.id}`,
+      { sourcePath, target }
+    );
+    return { status: "held", id };
+  }
+
   const db = getDb();
   const logMediaType = target.kind; // "series" | "anime" | "movie" — matches organize_log enum
   try {

@@ -7,6 +7,7 @@ import { mapMovie } from "@/server/metadata/tmdb-map";
 import { renderMovieFolder } from "./naming";
 import { removeMedia } from "./filesystem";
 import { assertFileOperationsEnabled } from "./media-guard";
+import { holdOrRun } from "./file-change-service";
 import { emitEvent } from "@/server/events/bus";
 
 export interface AddMovieInput {
@@ -85,17 +86,39 @@ export async function refreshMovie(movieId: number) {
   emitEvent({ type: "movie.updated", movieId });
 }
 
-export async function deleteMovie(movieId: number, deleteFiles: boolean) {
+export async function deleteMovie(
+  movieId: number,
+  deleteFiles: boolean,
+  opts: { bypassHold?: boolean } = {}
+): Promise<void | { held: true; id: number }> {
   const db = getDb();
   const row = db.select().from(schema.movies).where(eq(schema.movies.id, movieId)).get();
   if (!row) return;
-  // Refuse before touching the DB so read-only mode leaves DB and disk consistent.
-  if (deleteFiles) assertFileOperationsEnabled();
-  db.delete(schema.movies).where(eq(schema.movies.id, movieId)).run();
-  if (deleteFiles) {
-    await removeMedia(row.path, { recursive: true });
+
+  const run = async () => {
+    // Refuse before touching the DB so read-only mode leaves DB and disk consistent.
+    if (deleteFiles) assertFileOperationsEnabled();
+    db.delete(schema.movies).where(eq(schema.movies.id, movieId)).run();
+    if (deleteFiles) {
+      await removeMedia(row.path, { recursive: true });
+    }
+    emitEvent({ type: "movie.updated", movieId });
+  };
+
+  // Only a with-files delete is a file operation worth holding; a library-only
+  // delete (deleteFiles=false) never touches disk, so it always runs.
+  if (!deleteFiles || opts.bypassHold) {
+    await run();
+    return;
   }
-  emitEvent({ type: "movie.updated", movieId });
+  const outcome = await holdOrRun(
+    "deleteMovie",
+    `Delete “${row.title}” and its files`,
+    row.path,
+    { movieId, deleteFiles: true },
+    run
+  );
+  if (outcome.held) return { held: true, id: outcome.id };
 }
 
 /**
@@ -106,8 +129,9 @@ export async function deleteMovie(movieId: number, deleteFiles: boolean) {
 export async function deleteMovieVersion(
   movieId: number,
   fileId: number,
-  deleteFile: boolean
-): Promise<{ deleted: boolean }> {
+  deleteFile: boolean,
+  opts: { bypassHold?: boolean } = {}
+): Promise<{ deleted: boolean } | { held: true; id: number }> {
   const db = getDb();
   const movie = db.select().from(schema.movies).where(eq(schema.movies.id, movieId)).get();
   if (!movie) return { deleted: false };
@@ -117,32 +141,46 @@ export async function deleteMovieVersion(
     .where(and(eq(schema.movieFiles.id, fileId), eq(schema.movieFiles.movieId, movieId)))
     .get();
   if (!file) return { deleted: false };
-  // Refuse before touching the DB so read-only mode leaves DB and disk consistent.
-  if (deleteFile) assertFileOperationsEnabled();
 
-  db.delete(schema.movieFiles).where(eq(schema.movieFiles.id, fileId)).run();
+  const run = async (): Promise<{ deleted: boolean }> => {
+    // Refuse before touching the DB so read-only mode leaves DB and disk consistent.
+    if (deleteFile) assertFileOperationsEnabled();
 
-  // Re-point the primary if we just deleted it (largest remaining version wins).
-  if (movie.movieFileId === fileId) {
-    const remaining = db
-      .select()
-      .from(schema.movieFiles)
-      .where(eq(schema.movieFiles.movieId, movieId))
-      .all()
-      .sort((a, b) => b.size - a.size);
-    db.update(schema.movies)
-      .set({ movieFileId: remaining[0]?.id ?? null })
-      .where(eq(schema.movies.id, movieId))
-      .run();
-  }
+    db.delete(schema.movieFiles).where(eq(schema.movieFiles.id, fileId)).run();
 
-  if (deleteFile) {
-    try {
-      await removeMedia(path.join(movie.path, file.relativePath));
-    } catch {
-      /* file already gone — ignore */
+    // Re-point the primary if we just deleted it (largest remaining version wins).
+    if (movie.movieFileId === fileId) {
+      const remaining = db
+        .select()
+        .from(schema.movieFiles)
+        .where(eq(schema.movieFiles.movieId, movieId))
+        .all()
+        .sort((a, b) => b.size - a.size);
+      db.update(schema.movies)
+        .set({ movieFileId: remaining[0]?.id ?? null })
+        .where(eq(schema.movies.id, movieId))
+        .run();
     }
-  }
-  emitEvent({ type: "movie.updated", movieId });
-  return { deleted: true };
+
+    if (deleteFile) {
+      try {
+        await removeMedia(path.join(movie.path, file.relativePath));
+      } catch {
+        /* file already gone — ignore */
+      }
+    }
+    emitEvent({ type: "movie.updated", movieId });
+    return { deleted: true };
+  };
+
+  // A version delete only touches disk when deleteFile is set — otherwise run now.
+  if (!deleteFile || opts.bypassHold) return run();
+  const outcome = await holdOrRun(
+    "deleteVersion",
+    `Delete a version of “${movie.title}”`,
+    path.join(movie.path, file.relativePath),
+    { movieId, fileId, deleteFile: true },
+    run
+  );
+  return outcome.held ? { held: true, id: outcome.id } : outcome.result;
 }

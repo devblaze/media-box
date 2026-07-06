@@ -236,9 +236,17 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
     )
       return;
     try {
-      await apiFetch(`/movies/${id}/versions/${v.fileId}?deleteFile=true`, { method: "DELETE" });
+      // In Ask mode the delete is held for approval instead of performed now.
+      const res = await apiFetch<{ held?: boolean }>(
+        `/movies/${id}/versions/${v.fileId}?deleteFile=true`,
+        { method: "DELETE" }
+      );
       await Promise.all([mutateVersions(), mutate()]);
-      toast.success(`Deleted ${v.resolution} version`);
+      toast.success(
+        res?.held
+          ? "Deletion sent for approval — see Settings → File Changes"
+          : `Deleted ${v.resolution} version`
+      );
     } catch {
       toast.error("Failed to delete version");
     }

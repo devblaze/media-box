@@ -18,6 +18,9 @@ const INVALIDATIONS: Record<string, string[]> = {
   "movie.updated": ["/movies"],
   "history.added": ["/history"],
   "request.updated": ["/requests"],
+  // Held file changes (Ask mode) — refresh the approvals list on new/decided items.
+  "fileChange.pending": ["/file-changes"],
+  "fileChange.updated": ["/file-changes"],
 };
 
 export function useEvents(onEvent?: (event: AppEvent) => void) {

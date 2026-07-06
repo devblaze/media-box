@@ -22,7 +22,8 @@ Update app-wide settings (admin). Only the fields below are accepted; unknown ke
 
   | field | type | default | notes |
   | --- | --- | --- | --- |
-  | `fileOperationsEnabled` | boolean (coerced) | `true` | **Master read-only switch.** When `false`, media-box never moves, renames, or deletes files: imports and organizing are refused, replaced-file and library-delete cleanups are refused, and downloads simply wait to be imported until it is turned back on. Blocked writes return `409`. |
+  | `fileOperationsMode` | enum `allow` \| `ask` \| `off` | `allow` | **Master file-operations control (3-state).** `allow`: moves/renames/deletes happen freely. `ask`: file changes (imports, organizing, with-files deletes) are **held** as pending approvals (see `/file-changes`) and execute only once an admin or a user with `files.approve` approves them. `off`: media-box never moves, renames, or deletes files — blocked writes return `409`. Kept in sync with the legacy `fileOperationsEnabled` (`mode !== "off"`). |
+  | `fileOperationsEnabled` | boolean (coerced) | `true` | **Legacy mirror of `fileOperationsMode`** (`true` ⇔ mode ≠ `off`). Accepted for back-compat: sending `true`/`false` maps to `allow`/`off`. Prefer `fileOperationsMode`. |
   | `tmdbApiKey` | string | `""` | TMDB v3 API key used for metadata lookups. |
   | `logLevel` | enum `debug` \| `info` \| `warn` \| `error` | `info` | Minimum level persisted to the log. |
   | `urlBase` | string | `""` | Reverse-proxy path prefix (e.g. `/mediabox`). |
@@ -481,6 +482,43 @@ Newest-first organize log, filtered by text query, media type, and status (`runt
 - **Example:**
   ```bash
   curl -sS "$MEDIABOX_URL/api/v1/organizer/log?status=failed&limit=100" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
+## `GET /api/v1/file-changes`
+
+List file changes held for approval when `fileOperationsMode` is `ask` (pending
+plus recently decided), newest first. In `ask` mode, imports, organizing, and
+with-files deletes are recorded as pending `fileChanges` rows instead of touching
+disk; approving one performs the real file operation.
+
+- **Auth:** permission `files.approve` (admins always; or a role granting it). `401`/`403` otherwise.
+- **Response:** `200` — array of `{ id, kind, status, title, detail, payload, requestedByUserId, decidedByUserId, decidedAt, error, createdAt }`.
+  - `kind`: `"import" | "organize" | "deleteMovie" | "deleteSeries" | "deleteVersion"`.
+  - `status`: `"pending" | "approved" | "declined" | "applied" | "failed"` (`applied` = the operation ran successfully on approval; `failed` = it ran but errored, with `error` set).
+- **Example:**
+  ```bash
+  curl -sS "$MEDIABOX_URL/api/v1/file-changes" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
+## `PUT /api/v1/file-changes/[id]`
+
+Approve or decline a held file change. Approving performs the real file operation
+(import / organize / delete); declining releases it (a declined import frees the
+waiting download).
+
+- **Auth:** permission `files.approve` (admins always; or a role granting it). `401`/`403` otherwise.
+- **Path params:** `id` — file-change id.
+- **Request body:**
+
+  | field | type | required | notes |
+  | --- | --- | --- | --- |
+  | `action` | `"approve"` \| `"decline"` | yes | — |
+
+- **Response:** `200` — for `approve`, `{ status: "applied" | "failed", error: string | null }` (`failed` when the operation ran but errored — the row records `error`); for `decline`, `{ status: "declined" }`. Errors: `404` — `"File change not found"`; `400` — `"File change is not pending"` or a Zod validation error.
+- **Example:**
+  ```bash
+  curl -sS -X PUT "$MEDIABOX_URL/api/v1/file-changes/7" -H "x-api-key: $MEDIABOX_API_KEY" \
+    -H 'content-type: application/json' -d '{"action":"approve"}'
   ```
 
 ## `POST /api/v1/migrate/[app]`

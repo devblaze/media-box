@@ -13,6 +13,7 @@ const NAV = [
   { label: "Users", href: "/settings/users" },
   { label: "Roles", href: "/settings/roles" },
   { label: "Media Management", href: "/settings/media-management" },
+  { label: "File Changes", href: "/settings/file-changes" },
   { label: "Monitoring", href: "/settings/monitoring" },
   { label: "Quality Profiles", href: "/settings/profiles" },
   { label: "Subtitles", href: "/settings/subtitles" },
