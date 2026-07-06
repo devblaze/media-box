@@ -103,7 +103,11 @@ export async function wantedSearchHandler(payload: unknown): Promise<string> {
       .all().length;
 
     try {
-      if (group.episodeIds.length >= Math.max(2, Math.ceil(totalInSeason / 2))) {
+      // Season-pack first: when a meaningful chunk of the season is missing
+      // (≥ a third, min 2 — so a freshly-monitored season always tries its pack),
+      // grab the whole season in one release. Only if no acceptable pack is found
+      // do we fall back to searching the missing episodes one by one.
+      if (group.episodeIds.length >= Math.max(2, Math.ceil(totalInSeason / 3))) {
         searched++;
         if (await searchAndGrab(seasonTarget(group.seriesId, group.seasonNumber, false))) {
           grabbed++;
@@ -113,7 +117,7 @@ export async function wantedSearchHandler(payload: unknown): Promise<string> {
         }
       }
       // fall back to per-episode searches (cap per season per run to stay polite)
-      for (const episodeId of group.episodeIds.slice(0, 5)) {
+      for (const episodeId of group.episodeIds.slice(0, 10)) {
         searched++;
         if (await searchAndGrab(episodeTarget(episodeId, false))) grabbed++;
         await sleep(INDEXER_DELAY_MS);

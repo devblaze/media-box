@@ -20,7 +20,7 @@ Set `MEDIABOX_URL` and `MEDIABOX_API_KEY` for the examples below.
 List all movies (summary fields), sorted by sort title.
 
 - **Auth:** any authenticated
-- **Response:** `200` — array of `{ id, tmdbId, title, sortTitle, year, status, posterPath, path, monitored, qualityProfileId, movieFileId }`. Errors: `500`.
+- **Response:** `200` — array of `{ id, tmdbId, title, sortTitle, year, status, posterPath, path, monitored, qualityProfileId, movieFileId, addedAt, importedAt }`. `addedAt` is epoch-ms when the movie was added; `importedAt` is epoch-ms when its file was imported (`null` if no file yet). Errors: `500`.
 - **Example:**
   ```bash
   curl -sS "$MEDIABOX_URL/api/v1/movies" -H "x-api-key: $MEDIABOX_API_KEY"
@@ -113,7 +113,7 @@ Delete one quality version (a single `movieFiles` row) of a movie. If it was the
 List all series (summary fields with episode counts), sorted by sort title.
 
 - **Auth:** any authenticated
-- **Response:** `200` — array of `{ id, tmdbId, title, sortTitle, year, status, network, posterPath, path, monitored, monitorMode, isAnime, qualityProfileId, episodeCount, episodeFileCount }` (counts exclude specials, season 0). Errors: `500`.
+- **Response:** `200` — array of `{ id, tmdbId, title, sortTitle, year, status, network, posterPath, path, monitored, monitorMode, isAnime, qualityProfileId, episodeCount, episodeFileCount, addedAt, importedAt }` (counts exclude specials, season 0). `addedAt` is epoch-ms when the series was added; `importedAt` is epoch-ms of the most recent episode-file import (`null` if none yet). Errors: `500`.
 - **Example:**
   ```bash
   curl -sS "$MEDIABOX_URL/api/v1/series" -H "x-api-key: $MEDIABOX_API_KEY"

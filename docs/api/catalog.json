@@ -307,13 +307,13 @@
       "method": "GET",
       "path": "/api/v1/movies",
       "auth": "session",
-      "summary": ""
+      "summary": "`addedAt` = when added to the library; `importedAt` = when the current"
     },
     {
       "method": "POST",
       "path": "/api/v1/movies",
       "auth": "session",
-      "summary": ""
+      "summary": "`addedAt` = when added to the library; `importedAt` = when the current"
     },
     {
       "method": "DELETE",
@@ -529,13 +529,13 @@
       "method": "GET",
       "path": "/api/v1/series",
       "auth": "session",
-      "summary": "pick up any pre-existing files in the folder"
+      "summary": "Latest episode-file import time per series → the series' \"imported at\"."
     },
     {
       "method": "POST",
       "path": "/api/v1/series",
       "auth": "session",
-      "summary": "pick up any pre-existing files in the folder"
+      "summary": "Latest episode-file import time per series → the series' \"imported at\"."
     },
     {
       "method": "DELETE",

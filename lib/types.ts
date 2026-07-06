@@ -50,6 +50,10 @@ export interface SeriesSummary {
   qualityProfileId: number;
   episodeCount: number;
   episodeFileCount: number;
+  /** When the series was added to the library (epoch ms). */
+  addedAt: number;
+  /** When the most recent episode file was imported (epoch ms), or null if none yet. */
+  importedAt: number | null;
 }
 
 export interface MovieSummary {
@@ -64,6 +68,10 @@ export interface MovieSummary {
   monitored: boolean;
   qualityProfileId: number;
   movieFileId: number | null;
+  /** When the movie was added to the library (epoch ms). */
+  addedAt: number;
+  /** When the movie's file was imported (epoch ms), or null if none yet. */
+  importedAt: number | null;
 }
 
 export interface Episode {

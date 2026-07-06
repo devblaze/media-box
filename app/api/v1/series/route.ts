@@ -26,11 +26,32 @@ export async function GET() {
         qualityProfileId: schema.series.qualityProfileId,
         episodeCount: sql<number>`(SELECT COUNT(*) FROM episodes e WHERE e.series_id = ${schema.series.id} AND e.season_number > 0)`,
         episodeFileCount: sql<number>`(SELECT COUNT(*) FROM episodes e WHERE e.series_id = ${schema.series.id} AND e.season_number > 0 AND e.episode_file_id IS NOT NULL)`,
+        addedAt: schema.series.addedAt,
       })
       .from(schema.series)
       .orderBy(asc(schema.series.sortTitle))
       .all();
-    return ok(rows);
+
+    // Latest episode-file import time per series → the series' "imported at".
+    const importedBySeries = new Map<number, number>();
+    const fileRows = db
+      .select({ seriesId: schema.episodes.seriesId, dateAdded: schema.episodeFiles.dateAdded })
+      .from(schema.episodeFiles)
+      .innerJoin(schema.episodes, eq(schema.episodes.episodeFileId, schema.episodeFiles.id))
+      .all();
+    for (const f of fileRows) {
+      if (!f.dateAdded) continue;
+      const ms = f.dateAdded.getTime();
+      if (ms > (importedBySeries.get(f.seriesId) ?? 0)) importedBySeries.set(f.seriesId, ms);
+    }
+
+    return ok(
+      rows.map(({ addedAt, ...r }) => ({
+        ...r,
+        addedAt: addedAt ? addedAt.getTime() : 0,
+        importedAt: importedBySeries.get(r.id) ?? null,
+      }))
+    );
   } catch (err) {
     return serverError(err);
   }

@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { asc } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, schema } from "@/server/db";
 import { addMovie } from "@/server/library/movie-service";
@@ -22,11 +22,22 @@ export async function GET() {
         monitored: schema.movies.monitored,
         qualityProfileId: schema.movies.qualityProfileId,
         movieFileId: schema.movies.movieFileId,
+        // `addedAt` = when added to the library; `importedAt` = when the current
+        // file was imported (its dateAdded). Returned as epoch ms for the UI to sort.
+        addedAt: schema.movies.addedAt,
+        fileDateAdded: schema.movieFiles.dateAdded,
       })
       .from(schema.movies)
+      .leftJoin(schema.movieFiles, eq(schema.movieFiles.id, schema.movies.movieFileId))
       .orderBy(asc(schema.movies.sortTitle))
       .all();
-    return ok(rows);
+    return ok(
+      rows.map(({ addedAt, fileDateAdded, ...r }) => ({
+        ...r,
+        addedAt: addedAt ? addedAt.getTime() : 0,
+        importedAt: fileDateAdded ? fileDateAdded.getTime() : null,
+      }))
+    );
   } catch (err) {
     return serverError(err);
   }

@@ -14,6 +14,7 @@ type ApiType = "movie" | "series";
 type MonitorMode = "all" | "future" | "none";
 type MonitorFilter = "all" | "monitored" | "unmonitored";
 type ViewMode = "list" | "tiles";
+type SortKey = "title" | "added" | "imported";
 
 interface Row {
   id: number;
@@ -23,6 +24,8 @@ interface Row {
   posterPath: string | null;
   monitored: boolean;
   monitorMode?: MonitorMode;
+  addedAt: number;
+  importedAt: number | null;
 }
 
 const TABS: { key: TabKey; label: string }[] = [
@@ -184,6 +187,7 @@ export default function MonitoringPage() {
   const [view, setView] = useState<ViewMode>("list");
   const [search, setSearch] = useState("");
   const [monitorFilter, setMonitorFilter] = useState<MonitorFilter>("all");
+  const [sort, setSort] = useState<SortKey>("title");
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [savingIds, setSavingIds] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -199,6 +203,8 @@ export default function MonitoringPage() {
       year: m.year,
       posterPath: m.posterPath,
       monitored: m.monitored,
+      addedAt: m.addedAt,
+      importedAt: m.importedAt,
     }));
     const seriesRows: Row[] = [];
     const animeRows: Row[] = [];
@@ -211,6 +217,8 @@ export default function MonitoringPage() {
         posterPath: s.posterPath,
         monitored: s.monitored,
         monitorMode: s.monitorMode,
+        addedAt: s.addedAt,
+        importedAt: s.importedAt,
       };
       (s.isAnime ? animeRows : seriesRows).push(row);
     }
@@ -240,8 +248,14 @@ export default function MonitoringPage() {
         if (q && !r.title.toLowerCase().includes(q)) return false;
         return true;
       })
-      .sort((a, b) => a.title.localeCompare(b.title));
-  }, [activeRows, search, monitorFilter]);
+      .sort((a, b) => {
+        // Newest-first for the time sorts; title A→Z otherwise (and as tiebreak).
+        if (sort === "added") return b.addedAt - a.addedAt || a.title.localeCompare(b.title);
+        if (sort === "imported")
+          return (b.importedAt ?? 0) - (a.importedAt ?? 0) || a.title.localeCompare(b.title);
+        return a.title.localeCompare(b.title);
+      });
+  }, [activeRows, search, monitorFilter, sort]);
 
   const filteredIds = useMemo(() => filtered.map((r) => r.id), [filtered]);
   const allSelected = filteredIds.length > 0 && filteredIds.every((id) => selected.has(id));
@@ -258,6 +272,7 @@ export default function MonitoringPage() {
     setSelected(new Set());
     setSearch("");
     setMonitorFilter("all");
+    setSort("title");
   }
 
   function toggleRow(id: number) {
@@ -438,6 +453,18 @@ export default function MonitoringPage() {
             <option value="all">All</option>
             <option value="monitored">Monitored only</option>
             <option value="unmonitored">Unmonitored only</option>
+          </Select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-zinc-400">
+          Sort by
+          <Select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as SortKey)}
+            className="w-full sm:w-44"
+          >
+            <option value="title">Title (A–Z)</option>
+            <option value="added">Recently added</option>
+            <option value="imported">Recently imported</option>
           </Select>
         </label>
       </div>
