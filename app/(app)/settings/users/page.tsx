@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { apiFetch, useApi } from "@/lib/api";
 import { useEvents } from "@/lib/use-events";
 import { timeAgo } from "@/lib/types";
@@ -180,6 +181,12 @@ export default function UsersPage() {
               : "Loading…"}
           </p>
         </div>
+        <Link
+          href="/settings/roles"
+          className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+        >
+          Manage roles →
+        </Link>
       </div>
 
       {!users ? (
