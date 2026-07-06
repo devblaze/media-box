@@ -1,6 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
-import { fileOperationsMode } from "./media-guard";
+import { assertFileOperationsEnabled, fileOperationsMode } from "./media-guard";
 import { emitEvent } from "@/server/events/bus";
 
 /**
@@ -124,6 +124,11 @@ export async function approveFileChange(
   const row = db.select().from(schema.fileChanges).where(eq(schema.fileChanges.id, id)).get();
   if (!row) throw new Error("File change not found");
   if (row.status !== "pending") throw new Error("File change is not pending");
+
+  // Can't apply file changes while operations are OFF — throw a
+  // MediaWritesDisabledError (→ 409) and leave the change pending rather than
+  // running a no-op and mislabelling it "applied".
+  assertFileOperationsEnabled();
 
   try {
     await executeFileChange(row);

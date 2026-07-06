@@ -85,7 +85,13 @@ export async function queueMonitorHandler(): Promise<string> {
         case "downloading":
         case "queued":
         case "stalled":
-          if (download.status !== "downloading") patch.status = "downloading";
+          // Don't downgrade a download that's already past active downloading —
+          // in particular one held in `importPending` awaiting file-change
+          // approval (a client recheck reporting "downloading" would otherwise
+          // flip it back and, on the next localComplete tick, record a duplicate
+          // pending change).
+          if (download.status !== "downloading" && download.status !== "importPending")
+            patch.status = "downloading";
           break;
         case "error":
           patch.status = "failed";
