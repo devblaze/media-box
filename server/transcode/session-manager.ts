@@ -115,6 +115,12 @@ function videoArgs(mode: HwAccel): string[] {
     case "none":
     default:
       return [
+        // Software (libx264) can't keep up with 4K/1440p in real time, so the
+        // encoder falls behind playback → the stalls/"won't play" people hit.
+        // Cap the OUTPUT height at 1080p — `min(1080,ih)` only ever scales DOWN
+        // (a ≤1080p source is untouched); `-2` keeps aspect with an even width.
+        "-vf",
+        "scale=-2:'min(1080,ih)'",
         "-c:v",
         "libx264",
         "-preset",
@@ -155,12 +161,22 @@ export function buildFfmpegArgs(
     "-map",
     `0:a:${audioIndex}?`,
     ...videoArgs(mode),
+    // Force a keyframe exactly at every HLS segment boundary (every 4s). Without
+    // this, segments can only split on the encoder's natural GOP, producing
+    // over-long/irregular segments → slow startup and mid-playback buffering.
+    "-force_key_frames",
+    "expr:gte(t,n_forced*4)",
     "-c:a",
     "aac",
     "-ac",
     "2",
     "-b:a",
     "160k",
+    // Some files interleave audio and video far apart; a larger mux queue avoids
+    // ffmpeg aborting with "Too many packets buffered for output stream" (which
+    // manifests as a transcode that just never plays).
+    "-max_muxing_queue_size",
+    "1024",
     "-sn",
     "-f",
     "hls",
