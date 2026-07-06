@@ -829,7 +829,9 @@ export function VideoPlayerModal({
     };
   }, []);
 
-  // F toggles fullscreen; Esc exits fullscreen first, otherwise closes;
+  // F toggles fullscreen. Esc is deliberately layered so it never closes the
+  // player by surprise: an open dropdown closes first, then fullscreen exits,
+  // and only a bare Esc (nothing open, not fullscreen) actually closes it.
   // [ / ] nudge subtitle sync earlier / later (only while a subtitle is on).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -837,8 +839,15 @@ export function VideoPlayerModal({
         e.preventDefault();
         toggleFullscreen();
       } else if (e.key === "Escape") {
-        if (document.fullscreenElement) exitFullscreen();
-        else handleClose();
+        if (ccOpen || qualityOpen || audioOpen) {
+          setCcOpen(false);
+          setQualityOpen(false);
+          setAudioOpen(false);
+        } else if (document.fullscreenElement) {
+          exitFullscreen();
+        } else {
+          handleClose();
+        }
       } else if (e.key === "[" && selectedSub >= 0) {
         e.preventDefault();
         nudgeOffset(-SUBTITLE_OFFSET_STEP);
@@ -849,7 +858,7 @@ export function VideoPlayerModal({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleFullscreen, handleClose, nudgeOffset, selectedSub]);
+  }, [toggleFullscreen, handleClose, nudgeOffset, selectedSub, ccOpen, qualityOpen, audioOpen]);
 
   // The currently-playing version (if the list resolved) and the label for the
   // always-on quality chip. Prefer the selected version's short tag; otherwise
