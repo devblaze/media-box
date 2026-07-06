@@ -44,8 +44,13 @@ export function ContinueRow({ title, items }: { title: string; items: ContinueIt
           className="no-scrollbar flex gap-2 overflow-x-auto scroll-smooth px-4 py-8 md:px-12"
         >
           {items.map((item) => (
+            // Key by STABLE identity only — never include updatedAt. Each card
+            // owns its own `playing` state; while playing, the player saves
+            // progress (bumping updatedAt), and a window-focus refetch of this
+            // list would then change the key, remount the card, and drop
+            // `playing` — closing the player whenever you switch windows.
             <div
-              key={`${item.kind}-${item.movieId ?? ""}-${item.episodeId ?? ""}-${item.updatedAt}`}
+              key={`${item.kind}-${item.movieId ?? ""}-${item.episodeId ?? ""}`}
               className="w-[240px] shrink-0"
             >
               <ContinueCard item={item} />
