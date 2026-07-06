@@ -8,6 +8,8 @@ import { tmdbPoster, type Episode, type Season } from "@/lib/types";
 import { ReleaseSearchDrawer, type SearchScope } from "@/components/release-search";
 import { SubtitleSearchDrawer } from "@/components/subtitle-search";
 import { MediaInfoBadges, VideoPlayerModal } from "@/components/media-player";
+import { useQueue, DownloadStageBadge } from "@/components/download-stage";
+import { seriesQueueItems, episodeQueueItem } from "@/lib/download-status";
 import type { MediaInfo } from "@/server/library/media-info";
 import {
   Badge,
@@ -141,6 +143,7 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
     [qualityDefs]
   );
   useEvents();
+  const seriesDownloads = seriesQueueItems(useQueue(), Number(id));
 
   const episodesBySeason = useMemo(() => {
     const map = new Map<number, Episode[]>();
@@ -385,6 +388,9 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
               {data.year ? <span className="text-zinc-500">({data.year})</span> : null}
             </span>
             {data.isAnime && <Badge tone="accent">Anime</Badge>}
+            {seriesDownloads.slice(0, 3).map((d) => (
+              <DownloadStageBadge key={d.id} item={d} />
+            ))}
           </h1>
           <div className="mt-1 text-sm text-zinc-400">
             {data.network ?? "—"} · {data.status} ·{" "}
@@ -586,13 +592,18 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
                             </span>
                           </TD>
                           <TD className="w-24 text-right">
-                            {ep.episodeFileId ? (
-                              <Badge tone="success">Downloaded</Badge>
-                            ) : ep.airDateUtc && new Date(ep.airDateUtc) < new Date() ? (
-                              <Badge tone="warning">Missing</Badge>
-                            ) : (
-                              <Badge tone="neutral">Unaired</Badge>
-                            )}
+                            {(() => {
+                              const epDl = episodeQueueItem(seriesDownloads, ep.id);
+                              if (epDl && !ep.episodeFileId)
+                                return <DownloadStageBadge item={epDl} />;
+                              return ep.episodeFileId ? (
+                                <Badge tone="success">Downloaded</Badge>
+                              ) : ep.airDateUtc && new Date(ep.airDateUtc) < new Date() ? (
+                                <Badge tone="warning">Missing</Badge>
+                              ) : (
+                                <Badge tone="neutral">Unaired</Badge>
+                              );
+                            })()}
                           </TD>
                           <TD className="w-40 text-right">
                             <div className="flex items-center justify-end gap-2">

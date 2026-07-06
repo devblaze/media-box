@@ -195,7 +195,7 @@ Active download queue: rows whose status is one of `queued`, `downloading`,
 `failed`, newest first.
 
 - **Auth:** any
-- **Response:** `200` — array of `{ id, title, status, statusMessage, mediaType, seriesId, movieId, size, sizeLeft, quality, grabbedAt, clientName, clientType }`.
+- **Response:** `200` — array of `{ id, title, status, statusMessage, mediaType, seriesId, movieId, episodeIds, size, sizeLeft, quality, grabbedAt, clientName, clientType }`. `episodeIds` (number[] | null) lets the UI correlate a queue row to specific episodes for per-episode download indicators.
 
 ## `POST /api/v1/queue/[id]`
 

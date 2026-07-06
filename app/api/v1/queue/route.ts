@@ -14,6 +14,7 @@ export async function GET() {
         mediaType: schema.downloads.mediaType,
         seriesId: schema.downloads.seriesId,
         movieId: schema.downloads.movieId,
+        episodeIds: schema.downloads.episodeIds,
         size: schema.downloads.size,
         sizeLeft: schema.downloads.sizeLeft,
         quality: schema.downloads.quality,

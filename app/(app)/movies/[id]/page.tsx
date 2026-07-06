@@ -8,6 +8,8 @@ import { formatBytes, tmdbPoster } from "@/lib/types";
 import { ReleaseSearchDrawer } from "@/components/release-search";
 import { SubtitleSearchDrawer } from "@/components/subtitle-search";
 import { MediaInfoBadges, VideoPlayerModal } from "@/components/media-player";
+import { useQueue, DownloadStageBadge } from "@/components/download-stage";
+import { movieQueueItem } from "@/lib/download-status";
 import type { MediaInfo } from "@/server/library/media-info";
 import {
   Badge,
@@ -122,6 +124,7 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
     [qualityDefs]
   );
   useEvents();
+  const download = movieQueueItem(useQueue(), Number(id));
 
   if (!data) {
     return (
@@ -263,6 +266,7 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
             ) : progress && progress.positionSeconds > 0 ? (
               <Badge tone="info">Resume · {formatTime(progress.positionSeconds)}</Badge>
             ) : null}
+            {download && <DownloadStageBadge item={download} />}
           </div>
           <p className="mt-3 max-w-3xl text-sm text-zinc-300">{data.overview}</p>
           <div className="mt-4 flex flex-wrap gap-2">
