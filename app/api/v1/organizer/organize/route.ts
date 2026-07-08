@@ -14,6 +14,9 @@ const organizeSchema = z.object({
   id: z.number().int().positive(),
   seasonNumber: z.number().int().min(0).optional(),
   episodeNumbers: z.array(z.number().int().positive()).optional(),
+  // When the target movie/episode already has a file: replace it (default) or
+  // skip this file and leave the existing one untouched.
+  onExisting: z.enum(["replace", "skip"]).optional(),
 });
 
 /**
@@ -32,14 +35,20 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const result = await organizeFile(input.sourcePath, {
-      kind: input.kind,
-      id: input.id,
-      seasonNumber: input.seasonNumber,
-      episodeNumbers: input.episodeNumbers,
-    });
+    const result = await organizeFile(
+      input.sourcePath,
+      {
+        kind: input.kind,
+        id: input.id,
+        seasonNumber: input.seasonNumber,
+        episodeNumbers: input.episodeNumbers,
+      },
+      { onExisting: input.onExisting }
+    );
     // Ask mode: the organize was held for approval rather than performed now.
     if (result.status === "held") return ok({ held: true, id: result.id });
+    // Skip mode: the target already had a file — nothing was touched.
+    if (result.status === "skipped") return ok({ skipped: true, reason: result.reason });
     return ok(result);
   } catch (err) {
     // Conflicts (already in library / not-in-library) surface as 409 so the UI

@@ -213,8 +213,10 @@ export async function scanDownloads(): Promise<OrganizeItem[]> {
 export async function organizeFile(
   sourcePath: string,
   target: OrganizeTarget,
-  opts: { bypassHold?: boolean } = {}
-): Promise<OrganizeResult | { status: "held"; id: number }> {
+  opts: { bypassHold?: boolean; onExisting?: "replace" | "skip" } = {}
+): Promise<
+  OrganizeResult | { status: "held"; id: number } | { status: "skipped"; reason: string }
+> {
   // Ask mode: hold the organize for an approver instead of placing the file now.
   // `bypassHold` is set when an approval re-runs this to actually organize.
   if (!opts.bypassHold && fileOperationsMode() === "ask") {
@@ -223,7 +225,7 @@ export async function organizeFile(
       "organize",
       `Organize “${name}”`,
       `→ ${target.kind} #${target.id}`,
-      { sourcePath, target }
+      { sourcePath, target, onExisting: opts.onExisting }
     );
     return { status: "held", id };
   }
@@ -247,6 +249,12 @@ export async function organizeFile(
     if (target.kind === "movie") {
       const m = db.select().from(schema.movies).where(eq(schema.movies.id, target.id)).get();
       if (!m) throw new Error("Movie is not in the library");
+
+      // Skip mode: the movie already has a file → leave everything untouched
+      // (default is replace, which swaps the file and deletes the old one).
+      if (opts.onExisting === "skip" && m.movieFileId != null) {
+        return { status: "skipped", reason: `'${m.title}' already has a file — skipped` };
+      }
 
       const quality: QualityModel = parsed.quality;
       const filename = renderMovieFilename(
@@ -371,6 +379,14 @@ export async function organizeFile(
       .all();
     if (episodeRows.length === 0) {
       throw new Error(`No matching episodes for S${pad2(seasonNumber)} in '${s.title}'`);
+    }
+
+    // Skip mode: any of the target episodes already has a file → leave untouched.
+    if (opts.onExisting === "skip" && episodeRows.some((e) => e.episodeFileId != null)) {
+      const label = `S${pad2(seasonNumber)}E${episodeRows
+        .map((e) => pad2(e.episodeNumber))
+        .join("-")}`;
+      return { status: "skipped", reason: `'${s.title}' ${label} already has a file — skipped` };
     }
 
     const quality: QualityModel = parsed.quality;

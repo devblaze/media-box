@@ -78,12 +78,13 @@ async function executeFileChange(row: FileChangeRow): Promise<void> {
       return;
     }
     case "organize": {
-      const { sourcePath, target } = row.payload as {
+      const { sourcePath, target, onExisting } = row.payload as {
         sourcePath: string;
         target: import("./organizer-service").OrganizeTarget;
+        onExisting?: "replace" | "skip";
       };
       const { organizeFile } = await import("./organizer-service");
-      await organizeFile(sourcePath, target, { bypassHold: true });
+      await organizeFile(sourcePath, target, { bypassHold: true, onExisting });
       return;
     }
     case "deleteMovie": {

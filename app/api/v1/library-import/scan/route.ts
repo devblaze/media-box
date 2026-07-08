@@ -34,6 +34,15 @@ export async function GET(request: NextRequest) {
       .where(eq(schema.rootFolders.id, rootFolderId))
       .get();
     if (!rf) return badRequest("Unknown root folder");
+    // A scan must run against a root folder of the MATCHING media type. Scanning
+    // e.g. a movies folder as "series" would persist every movie as a bogus
+    // series candidate (rows that then stick around across reloads).
+    const wanted = type === "movie" ? "movies" : type;
+    if (rf.mediaType !== wanted) {
+      return badRequest(
+        `Root folder "${rf.path}" is a ${rf.mediaType} folder — pick a ${wanted} root folder for a ${type} scan.`
+      );
+    }
     const { candidates, truncated } = await scanLibrary(type, rf.path);
     // Persist the scan so the unmatched titles survive navigation without rescanning.
     persistScanCandidates(type, rootFolderId, qualityProfileId, candidates);

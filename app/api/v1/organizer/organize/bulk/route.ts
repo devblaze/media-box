@@ -14,7 +14,12 @@ const itemSchema = z.object({
   seasonNumber: z.number().int().min(0).optional(),
   episodeNumbers: z.array(z.number().int().positive()).optional(),
 });
-const bulkSchema = z.object({ items: z.array(itemSchema).min(1).max(500) });
+const bulkSchema = z.object({
+  items: z.array(itemSchema).min(1).max(500),
+  // When a target movie/episode already has a file: replace it (default) or
+  // skip that item and leave the existing file untouched.
+  onExisting: z.enum(["replace", "skip"]).optional(),
+});
 
 /**
  * Organize many files in one request — e.g. assign a batch of episodes to a
@@ -47,16 +52,26 @@ export async function POST(request: NextRequest) {
 
   for (const it of input.items) {
     try {
-      const r = await organizeFile(it.sourcePath, {
-        kind: it.kind,
-        id: it.id,
-        seasonNumber: it.seasonNumber,
-        episodeNumbers: it.episodeNumbers,
-      });
+      const r = await organizeFile(
+        it.sourcePath,
+        {
+          kind: it.kind,
+          id: it.id,
+          seasonNumber: it.seasonNumber,
+          episodeNumbers: it.episodeNumbers,
+        },
+        { onExisting: input.onExisting }
+      );
       // Ask mode: each organize is held for approval instead of performed now.
       if (r.status === "held") {
         held++;
         results.push({ sourcePath: it.sourcePath, status: "held", id: r.id });
+        continue;
+      }
+      // Skip mode: target already had a file — nothing touched.
+      if (r.status === "skipped") {
+        skipped++;
+        results.push({ sourcePath: it.sourcePath, status: "skipped", detail: r.reason });
         continue;
       }
       organized++;

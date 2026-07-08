@@ -11,6 +11,7 @@ import {
   Checkbox,
   EmptyState,
   Input,
+  Modal,
   Select,
   Spinner,
   Table,
@@ -177,6 +178,8 @@ function FilesTab() {
   const [bulkSeriesId, setBulkSeriesId] = useState<number | null>(null);
   const [bulkRunning, setBulkRunning] = useState(false);
   const [bulkErrors, setBulkErrors] = useState<{ sourcePath: string; error: string }[]>([]);
+  // "Organize all matched" replace-vs-skip prompt.
+  const [askExisting, setAskExisting] = useState(false);
 
   const { data: series } = useApi<SeriesSummary[]>("/series");
   const { data: movies } = useApi<MovieSummary[]>("/movies");
@@ -276,23 +279,25 @@ function FilesTab() {
     });
   }
 
-  async function runBulk(bulkItems: BulkItem[], notSent = 0) {
+  async function runBulk(bulkItems: BulkItem[], notSent = 0, onExisting?: "replace" | "skip") {
     if (bulkItems.length === 0) return;
     setBulkRunning(true);
     try {
       const res = await apiFetch<BulkResponse>("/organizer/organize/bulk", {
         method: "POST",
-        body: JSON.stringify({ items: bulkItems }),
+        body: JSON.stringify({ items: bulkItems, ...(onExisting ? { onExisting } : {}) }),
       });
-      // Organized (and "already in the library" skips) drop out of the list.
+      // Organized (and "already in the library" / "already has a file" skips)
+      // drop out of the list — they're resolved, not problems.
+      const skipText = (r: BulkResultRow) => r.error ?? r.detail ?? "";
       const donePaths = res.results
-        .filter((r) => r.status === "organized" || (r.status === "skipped" && /already/i.test(r.error ?? "")))
+        .filter((r) => r.status === "organized" || (r.status === "skipped" && /already/i.test(skipText(r))))
         .map((r) => r.sourcePath);
       markOrganizedMany(donePaths);
       // Real problems (failures + "not in the library" skips) get surfaced.
       const errs = res.results
-        .filter((r) => r.status === "failed" || (r.status === "skipped" && !/already/i.test(r.error ?? "")))
-        .map((r) => ({ sourcePath: r.sourcePath, error: r.error ?? "Unknown error" }));
+        .filter((r) => r.status === "failed" || (r.status === "skipped" && !/already/i.test(skipText(r))))
+        .map((r) => ({ sourcePath: r.sourcePath, error: r.error ?? r.detail ?? "Unknown error" }));
       setBulkErrors(errs);
 
       let msg = `Organized ${res.organized} · skipped ${res.skipped} · failed ${res.failed}`;
@@ -341,6 +346,26 @@ function FilesTab() {
       episodeNumbers: f.episodes.length ? f.episodes : undefined,
     }));
     runBulk(bulkItems, notSent);
+  }
+
+  // Every visible, not-yet-organized file with a confident library match — what
+  // the one-click "Organize all matched" button acts on (respects the filters).
+  const allMatched = useMemo(
+    () => selectableVisible.filter((f) => f.match.kind !== "none" && f.match.id != null),
+    [selectableVisible]
+  );
+
+  /** One-click organize of every matched file. Asks replace-vs-skip first. */
+  function organizeAllMatched(onExisting: "replace" | "skip") {
+    setAskExisting(false);
+    const bulkItems: BulkItem[] = allMatched.map((f) => ({
+      sourcePath: f.sourcePath,
+      kind: f.match.kind as "series" | "anime" | "movie",
+      id: f.match.id as number,
+      seasonNumber: f.season ?? undefined,
+      episodeNumbers: f.episodes.length ? f.episodes : undefined,
+    }));
+    runBulk(bulkItems, 0, onExisting);
   }
 
   return (
@@ -412,6 +437,14 @@ function FilesTab() {
               <option value="matched">Matched</option>
               <option value="unmatched">Unmatched</option>
             </Select>
+            <Button
+              onClick={() => setAskExisting(true)}
+              disabled={allMatched.length === 0 || bulkRunning}
+              loading={bulkRunning}
+              className="sm:ml-auto"
+            >
+              Organize all matched ({allMatched.length})
+            </Button>
           </div>
 
           {selectedItems.length > 0 && (
@@ -560,6 +593,31 @@ function FilesTab() {
           description="No un-organized video files in your downloads folder."
         />
       )}
+
+      {/* Replace-vs-skip prompt for "Organize all matched". */}
+      <Modal
+        open={askExisting}
+        onClose={() => setAskExisting(false)}
+        title={`Organize ${allMatched.length} matched file${allMatched.length === 1 ? "" : "s"}`}
+        size="sm"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setAskExisting(false)}>
+              Cancel
+            </Button>
+            <Button variant="secondary" onClick={() => organizeAllMatched("skip")}>
+              Skip existing
+            </Button>
+            <Button onClick={() => organizeAllMatched("replace")}>Replace existing</Button>
+          </>
+        }
+      >
+        <p className="text-sm text-zinc-300">
+          Each file is organized into its matched movie/series. If a title{" "}
+          <strong>already has a file</strong>, should the new file replace it (the old file is
+          deleted) or be skipped (the existing file is kept)?
+        </p>
+      </Modal>
     </div>
   );
 }

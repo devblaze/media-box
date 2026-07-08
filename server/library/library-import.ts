@@ -200,6 +200,15 @@ async function scanMoviesByFile(db: Db, root: string): Promise<ScanResult> {
     existingSignatures.add(`${path.basename(mf.relativePath)}|${mf.size}`);
   }
 
+  // Cross-type guard: skip files living inside an imported SERIES/anime folder.
+  // If a series directory is (mis)scanned as movies, every episode file would
+  // otherwise surface as a bogus movie candidate.
+  const seriesPrefixes = db
+    .select({ path: schema.series.path })
+    .from(schema.series)
+    .all()
+    .map((s) => path.resolve(s.path) + path.sep);
+
   interface Agg {
     title: string;
     year: number | null;
@@ -215,6 +224,8 @@ async function scanMoviesByFile(db: Db, root: string): Promise<ScanResult> {
     ) {
       continue;
     }
+    const resolved = path.resolve(file.absPath);
+    if (seriesPrefixes.some((p) => resolved.startsWith(p))) continue;
 
     const fromFile = parseTitle(path.basename(file.absPath));
     let title = fromFile.title;
@@ -289,6 +300,13 @@ async function scanFolders(db: Db, type: ImportType, root: string): Promise<Scan
     .all()) {
     existingPaths.add(r.path);
     existingTmdb.add(r.tmdbId);
+  }
+  // Cross-type guard: also skip folders that belong to imported MOVIES. If a
+  // movies directory is (mis)scanned as series/anime — e.g. a root folder
+  // registered under the wrong media type — each movie folder would otherwise
+  // surface here as a bogus series candidate.
+  for (const m of db.select({ path: schema.movies.path }).from(schema.movies).all()) {
+    existingPaths.add(m.path);
   }
 
   const dirs = entries
