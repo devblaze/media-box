@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { CONFIG_DIR } from "@/server/config/paths";
 import { getSettings } from "@/server/settings/settings-service";
 import { probeAudioTracks } from "@/server/library/media-info";
+import { recordLog } from "@/server/logging/logger";
 
 const execFileAsync = promisify(execFile);
 
@@ -76,7 +77,11 @@ const TRANSCODE_ROOT = path.join(CONFIG_DIR, "transcode");
 type HwAccel = "none" | "vaapi" | "qsv" | "nvenc";
 
 /**
- * Input-side flags (must precede `-i`) that select the hardware decode path.
+ * Input-side flags (must precede `-i`). Decoding is deliberately done in
+ * SOFTWARE for every mode — only the (expensive) encode is offloaded to the GPU.
+ * Hardware *decoding* of 10-bit HEVC (the typical anime source) is exactly where
+ * older iGPUs/drivers produce smeared, blocky frames or fail mid-stream; software
+ * decode is cheap next to the encode and behaves identically for every codec.
  * `device` is the DRM render node (`/dev/dri/renderD12x`); it pins VAAPI and QSV
  * to a specific GPU — essential when the host has more than one (e.g. a dedicated
  * transcode card alongside an AI card).
@@ -84,44 +89,50 @@ type HwAccel = "none" | "vaapi" | "qsv" | "nvenc";
 function hwaccelInputArgs(mode: HwAccel, device: string): string[] {
   switch (mode) {
     case "vaapi":
-      return [
-        "-hwaccel",
-        "vaapi",
-        "-hwaccel_device",
-        device || "/dev/dri/renderD128",
-        "-hwaccel_output_format",
-        "vaapi",
-      ];
+      // Device init only (for the encoder); frames are uploaded in videoArgs.
+      return ["-vaapi_device", device || "/dev/dri/renderD128"];
     case "qsv":
-      // `-qsv_device <render node>` pins QSV to a specific Intel GPU; omitting it
-      // lets ffmpeg pick the default one.
-      return device ? ["-qsv_device", device, "-hwaccel", "qsv"] : ["-hwaccel", "qsv"];
+      // `-qsv_device <render node>` pins the QSV encoder to a specific Intel GPU.
+      return device ? ["-qsv_device", device] : [];
     case "nvenc":
-      return ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"];
     case "none":
     default:
       return [];
   }
 }
 
+/**
+ * Every source (incl. 10-bit HEVC) is downscaled to at most 1080p and converted
+ * to 8-bit nv12/yuv420p BEFORE the encoder, so no encoder ever sees a pixel
+ * format it can't handle. `min(1080,ih)` only ever scales DOWN.
+ */
+const DOWNSCALE = "scale=-2:'min(1080,ih)'";
+
 /** Output-side video encoder flags per hardware mode. */
 function videoArgs(mode: HwAccel): string[] {
   switch (mode) {
     case "vaapi":
-      return ["-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi", "-qp", "23"];
+      return ["-vf", `${DOWNSCALE},format=nv12,hwupload`, "-c:v", "h264_vaapi", "-qp", "23"];
     case "qsv":
-      return ["-c:v", "h264_qsv", "-global_quality", "23"];
+      return ["-vf", `${DOWNSCALE},format=nv12`, "-c:v", "h264_qsv", "-global_quality", "23"];
     case "nvenc":
-      return ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"];
+      return [
+        "-vf",
+        `${DOWNSCALE},format=nv12`,
+        "-c:v",
+        "h264_nvenc",
+        "-preset",
+        "p4",
+        "-cq",
+        "23",
+      ];
     case "none":
     default:
       return [
         // Software (libx264) can't keep up with 4K/1440p in real time, so the
         // encoder falls behind playback → the stalls/"won't play" people hit.
-        // Cap the OUTPUT height at 1080p — `min(1080,ih)` only ever scales DOWN
-        // (a ≤1080p source is untouched); `-2` keeps aspect with an even width.
         "-vf",
-        "scale=-2:'min(1080,ih)'",
+        DOWNSCALE,
         "-c:v",
         "libx264",
         "-preset",
@@ -424,6 +435,12 @@ export async function startSession(absPath: string, opts: StartOpts = {}): Promi
       } else {
         session.status = "error";
         session.error = stderrTail.trim() || `ffmpeg exited with code ${code ?? "unknown"}`;
+        // Surface the failure in Settings → Logs — otherwise a broken transcode
+        // is invisible (the player just shows a generic error / never plays).
+        recordLog("error", `Transcode of '${path.basename(absPath)}' failed`, {
+          source: "transcode",
+          context: { code, stderr: session.error.slice(0, 2_000), args: args.join(" ") },
+        });
       }
     });
 

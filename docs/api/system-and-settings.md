@@ -300,7 +300,7 @@ Available quality versions (files) for a movie or episode — powers the player'
 Liveness probe — runs `SELECT 1` against the DB. Public, no auth.
 
 - **Auth:** public
-- **Response:** `200` — `{ "status": "healthy" }`. Errors: `500` if the DB query fails.
+- **Response:** `200` — `{ "status": "healthy", "version": "<app version>" }` (`version` = the running build's `package.json` version, so a remote check can confirm which build is deployed). Errors: `500` if the DB query fails.
 - **Example:**
   ```bash
   curl -sS "$MEDIABOX_URL/api/v1/health"
