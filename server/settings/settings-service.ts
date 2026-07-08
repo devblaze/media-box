@@ -56,6 +56,14 @@ export const appSettingsSchema = z.object({
   // approval step). When false, requests land as "pending" for an admin to
   // approve or decline.
   requestsAutoApprove: z.coerce.boolean().default(false),
+  // Optional AI assistant (Ollama or OpenRouter) — powers filename recognition in
+  // Library Import and the "Diagnose with AI" button on the Logs page. "none"
+  // keeps every AI feature fully inert.
+  aiProvider: z.enum(["none", "ollama", "openrouter"]).default("none"),
+  ollamaUrl: z.string().default("http://localhost:11434"),
+  ollamaModel: z.string().default("llama3.1"),
+  openrouterApiKey: z.string().default(""),
+  openrouterModel: z.string().default("openai/gpt-4o-mini"),
   // Remembered migration-wizard credentials (last successful connection) so the
   // admin doesn't retype URL + API key each time. Only ever read back by admins.
   sonarrUrl: z.string().default(""),

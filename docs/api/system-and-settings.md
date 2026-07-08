@@ -1,6 +1,6 @@
 # System, Settings & Import
 
-Admin-facing endpoints for app-wide settings, quality profiles/definitions, system status & scheduled tasks, logs, the on-disk directory browser, the library-import wizard, the download organizer, and the Sonarr/Radarr/Bazarr migration wizard. Every request authenticates via the `session` cookie or an `x-api-key: <apiKey>` header (treated as a synthetic admin — id `0`, username `api`); `/health` is the only public endpoint. Success bodies come from `ok(...)` (200 unless noted); errors use `badRequest` (400), `notFound` (404), `serverError` (500, or 400 on a Zod `"Validation failed"` with an `issues` array, or 409 on `MediaWritesDisabledError` — a write blocked because `fileOperationsEnabled` is off).
+Admin-facing endpoints for app-wide settings, quality profiles/definitions, system status & scheduled tasks, logs, the optional AI assistant, the on-disk directory browser, the library-import wizard, the download organizer, and the Sonarr/Radarr/Bazarr migration wizard. Every request authenticates via the `session` cookie or an `x-api-key: <apiKey>` header (treated as a synthetic admin — id `0`, username `api`); `/health` is the only public endpoint. Success bodies come from `ok(...)` (200 unless noted); errors use `badRequest` (400), `notFound` (404), `serverError` (500, or 400 on a Zod `"Validation failed"` with an `issues` array, or 409 on `MediaWritesDisabledError` — a write blocked because `fileOperationsEnabled` is off).
 
 ## `GET /api/v1/settings`
 
@@ -45,6 +45,11 @@ Update app-wide settings (admin). Only the fields below are accepted; unknown ke
   | `openSubtitlesPassword` | string | `""` | OpenSubtitles account password. |
   | `pushoverAppToken` | string | `""` | Pushover Application API token — enables per-user request notifications. |
   | `requestsAutoApprove` | boolean (coerced) | `false` | When `true`, user requests are added immediately (no admin approval); when `false` they land as `pending`. |
+  | `aiProvider` | enum `none` \| `ollama` \| `openrouter` | `none` | Optional AI assistant provider — powers filename recognition in Library Import scans and `POST /ai/diagnose`. `none` keeps every AI feature fully inert. |
+  | `ollamaUrl` | string | `http://localhost:11434` | Base URL of the local Ollama instance (`ollama` provider). |
+  | `ollamaModel` | string | `llama3.1` | Ollama model name (`ollama` provider). |
+  | `openrouterApiKey` | string | `""` | OpenRouter API key (`openrouter` provider). |
+  | `openrouterModel` | string | `openai/gpt-4o-mini` | OpenRouter model id (`openrouter` provider). |
 
   Not settable here (read-only via GET): `apiKey`, `kioskToken`, and the remembered migration credentials `sonarrUrl` / `sonarrApiKey` / `radarrUrl` / `radarrApiKey` / `bazarrUrl` / `bazarrApiKey` (those are written by the migration routes).
 
@@ -90,6 +95,35 @@ Run a short synthetic ffmpeg encode with the chosen hardware-accel path to verif
   ```bash
   curl -sS -X POST "$MEDIABOX_URL/api/v1/settings/transcode-test" -H "x-api-key: $MEDIABOX_API_KEY" \
     -H 'content-type: application/json' -d '{"transcodeHwAccel":"vaapi"}'
+  ```
+
+## `GET /api/v1/ai/test`
+
+Tiny round-trip against the configured AI assistant provider (Ollama or OpenRouter) so the admin can verify it works before relying on it — asks the model to reply with `{"ok":true}` (`runtime = "nodejs"`). Tests the **saved** settings, not a request body.
+
+- **Auth:** admin
+- **Response:** `200` — `{ ok: boolean, message: string }`. `ok: false` (still `200`) when no provider is configured, when the provider errors/times out (30s), or when it replies without the expected JSON — `message` says which. Errors: `500`.
+- **Example:**
+  ```bash
+  curl -sS "$MEDIABOX_URL/api/v1/ai/test" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
+## `POST /api/v1/ai/diagnose`
+
+Ask the configured AI assistant to diagnose the instance. The server gathers the context itself — app version, key settings as booleans/enums only (secrets are never sent to the model), the last ~40 warn/error log rows, active + failed downloads (top 10, with status messages), and the enabled download clients (name/type) and indexers (name) — and sends it together with the optional question (`runtime = "nodejs"`). Model call timeout: 120s.
+
+- **Auth:** admin
+- **Request body:** optional (an empty/absent body is fine).
+
+  | field | type | required | notes |
+  | --- | --- | --- | --- |
+  | `question` | string | no | What to diagnose; defaults to a general "point out any problems" prompt. |
+
+- **Response:** `200` — `{ "answer": string }` (the model's plain-text diagnosis). Errors: `503` — `"AI assistant is not configured — pick a provider under Settings → General."` when `aiProvider` is `none` (or its required fields are unset); `400` on a bad body; `500` — provider/network failure.
+- **Example:**
+  ```bash
+  curl -sS -X POST "$MEDIABOX_URL/api/v1/ai/diagnose" -H "x-api-key: $MEDIABOX_API_KEY" \
+    -H 'content-type: application/json' -d '{"question":"Why do my downloads keep failing?"}'
   ```
 
 ## `GET /api/v1/qualityprofiles`

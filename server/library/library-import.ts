@@ -4,6 +4,9 @@ import { and, eq } from "drizzle-orm";
 import { getDb, schema, type Db } from "@/server/db";
 import { parseTitle } from "@/server/parser/release-parser";
 import { searchMovie, searchTv, posterUrl } from "@/server/metadata/tmdb";
+import { aiEnabled } from "@/server/ai/llm";
+import { aiResolveCandidate } from "@/server/ai/media-match";
+import { recordLog } from "@/server/logging/logger";
 import { walkVideoFiles } from "./disk-scanner";
 
 export type ImportType = "movie" | "series" | "anime";
@@ -162,6 +165,82 @@ function classify(
   return { status: "unsure", suggestedTmdbId: null };
 }
 
+// AI-assisted matching (optional; see Settings → General → AI assistant). Hard
+// caps so a slow/broken model can only ever delay a scan, never hang or fail it.
+const MAX_AI_CALLS_PER_SCAN = 25;
+const AI_TIMEOUT_MS = 30_000;
+
+/** Mutable per-scan AI-call allowance, shared by every candidate of the scan. */
+interface AiBudget {
+  remaining: number;
+}
+
+function newAiBudget(): AiBudget {
+  return { remaining: aiEnabled() ? MAX_AI_CALLS_PER_SCAN : 0 };
+}
+
+/**
+ * Best-effort AI pass over an "unsure" candidate: ask the model to pick one of
+ * the existing suggestions (→ matched) or to extract a cleaner search query from
+ * the raw name (→ retry TMDB once and adopt the result if it improves). Returns
+ * null — leaving the candidate exactly as it was — when AI is off, the budget is
+ * spent, the model fails, or its answer doesn't improve anything. Never throws.
+ */
+async function aiRefineCandidate(
+  type: ImportType,
+  rawName: string,
+  parsedTitle: string,
+  parsedYear: number | null,
+  suggestions: ImportSuggestion[],
+  excludeTmdb: Set<number>,
+  budget: AiBudget
+): Promise<{
+  status: "matched" | "unsure";
+  suggestedTmdbId: number | null;
+  suggestions: ImportSuggestion[];
+} | null> {
+  if (budget.remaining <= 0) return null;
+  budget.remaining -= 1;
+  try {
+    const res = await aiResolveCandidate(
+      {
+        type,
+        fileName: rawName,
+        parsedTitle,
+        parsedYear,
+        suggestions: suggestions.map((s) => ({ tmdbId: s.tmdbId, title: s.title, year: s.year })),
+      },
+      { timeoutMs: AI_TIMEOUT_MS }
+    );
+    // The model picked one of the offered suggestions → confident match.
+    if (res.tmdbId != null && suggestions.some((s) => s.tmdbId === res.tmdbId)) {
+      return { status: "matched", suggestedTmdbId: res.tmdbId, suggestions };
+    }
+    // The model extracted a cleaner query → retry TMDB once with it.
+    if (res.searchQuery) {
+      const retried = (await suggestFor(type, res.searchQuery, res.year)).filter(
+        (s) => !excludeTmdb.has(s.tmdbId)
+      );
+      const reclassified = classify(retried, res.searchQuery, res.year);
+      // Adopt only when the retry improves on the original: a confident match,
+      // or at least some suggestions where there were none before.
+      if (
+        reclassified.status === "matched" ||
+        (suggestions.length === 0 && retried.length > 0)
+      ) {
+        return { ...reclassified, suggestions: retried };
+      }
+    }
+  } catch (err) {
+    recordLog(
+      "warn",
+      `AI-assisted match failed for "${rawName}": ${err instanceof Error ? err.message : String(err)}`,
+      { source: "ai" }
+    );
+  }
+  return null;
+}
+
 /**
  * Movies: recurse the whole tree and produce one candidate per movie FILE (not per
  * top-level folder). Files that share a normalized title+year — multiple parts,
@@ -257,13 +336,26 @@ async function scanMoviesByFile(db: Db, root: string): Promise<ScanResult> {
   const truncated = aggs.length > MAX_CANDIDATES;
   const limited = aggs.slice(0, MAX_CANDIDATES);
 
+  const aiBudget = newAiBudget();
   const candidates: ImportCandidate[] = [];
   for (const agg of limited) {
-    const suggestions = (await suggestFor("movie", agg.title, agg.year)).filter(
+    let suggestions = (await suggestFor("movie", agg.title, agg.year)).filter(
       (s) => !existingTmdb.has(s.tmdbId)
     );
-    const { status, suggestedTmdbId } = classify(suggestions, agg.title, agg.year);
+    let { status, suggestedTmdbId } = classify(suggestions, agg.title, agg.year);
     const videoPath = agg.best.absPath;
+    if (status === "unsure") {
+      const refined = await aiRefineCandidate(
+        "movie",
+        path.basename(videoPath),
+        agg.title,
+        agg.year,
+        suggestions,
+        existingTmdb,
+        aiBudget
+      );
+      if (refined) ({ status, suggestedTmdbId, suggestions } = refined);
+    }
     candidates.push({
       path: path.dirname(videoPath), // loose file → its category folder; dedicated folder → that folder
       videoPath,
@@ -314,6 +406,7 @@ async function scanFolders(db: Db, type: ImportType, root: string): Promise<Scan
     .map((e) => ({ name: e.name, path: path.join(root, e.name) }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
+  const aiBudget = newAiBudget();
   const candidates: ImportCandidate[] = [];
   let truncated = false;
   for (const d of dirs) {
@@ -331,10 +424,22 @@ async function scanFolders(db: Db, type: ImportType, root: string): Promise<Scan
     let yearHint = parsed.year ?? null;
     ({ title: query, year: yearHint } = stripTrailingYear(query, yearHint));
 
-    const suggestions = (await suggestFor(type, query, yearHint)).filter(
+    let suggestions = (await suggestFor(type, query, yearHint)).filter(
       (s) => !existingTmdb.has(s.tmdbId)
     );
-    const { status, suggestedTmdbId } = classify(suggestions, query, yearHint);
+    let { status, suggestedTmdbId } = classify(suggestions, query, yearHint);
+    if (status === "unsure") {
+      const refined = await aiRefineCandidate(
+        type,
+        d.name,
+        query,
+        yearHint,
+        suggestions,
+        existingTmdb,
+        aiBudget
+      );
+      if (refined) ({ status, suggestedTmdbId, suggestions } = refined);
+    }
 
     candidates.push({
       path: d.path,

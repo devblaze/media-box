@@ -6,6 +6,7 @@ import {
   Badge,
   Button,
   EmptyState,
+  Modal,
   Select,
   Skeleton,
   Table,
@@ -47,11 +48,14 @@ export default function LogsPage() {
   const query =
     level === "all" ? `/logs?limit=${LIMIT}` : `/logs?level=${level}&limit=${LIMIT}`;
   const { data: logs, mutate, isLoading } = useApi<LogEntry[]>(query);
+  const { data: settings } = useApi<{ aiProvider: "none" | "ollama" | "openrouter" }>("/settings");
   const toast = useToast();
   const confirm = useConfirm();
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [refreshing, setRefreshing] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [diagnosing, setDiagnosing] = useState(false);
+  const [diagnosis, setDiagnosis] = useState<string | null>(null);
 
   function toggle(id: number) {
     setExpanded((prev) => {
@@ -92,6 +96,21 @@ export default function LogsPage() {
     }
   }
 
+  async function diagnose() {
+    setDiagnosing(true);
+    try {
+      const { answer } = await apiFetch<{ answer: string }>("/ai/diagnose", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      setDiagnosis(answer);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "AI diagnosis failed");
+    } finally {
+      setDiagnosing(false);
+    }
+  }
+
   return (
     <div className="max-w-4xl space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -109,6 +128,11 @@ export default function LogsPage() {
             <option value="info">Info</option>
             <option value="debug">Debug</option>
           </Select>
+          {settings && settings.aiProvider !== "none" && (
+            <Button variant="secondary" size="sm" onClick={diagnose} loading={diagnosing}>
+              {diagnosing ? "Diagnosing…" : "Diagnose with AI"}
+            </Button>
+          )}
           <Button variant="secondary" size="sm" onClick={refresh} loading={refreshing}>
             Refresh
           </Button>
@@ -198,6 +222,21 @@ export default function LogsPage() {
           </TBody>
         </Table>
       )}
+
+      <Modal
+        open={diagnosis !== null}
+        onClose={() => setDiagnosis(null)}
+        title="AI diagnosis"
+        description="Generated from the app version, sanitized settings, recent warnings/errors, and download state."
+        size="lg"
+        footer={
+          <Button variant="secondary" size="sm" onClick={() => setDiagnosis(null)}>
+            Close
+          </Button>
+        }
+      >
+        <div className="whitespace-pre-wrap text-sm text-zinc-200">{diagnosis}</div>
+      </Modal>
     </div>
   );
 }

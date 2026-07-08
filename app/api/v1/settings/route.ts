@@ -38,6 +38,11 @@ const patchSchema = z.object({
   openSubtitlesPassword: z.string().optional(),
   pushoverAppToken: z.string().optional(),
   requestsAutoApprove: z.coerce.boolean().optional(),
+  aiProvider: z.enum(["none", "ollama", "openrouter"]).optional(),
+  ollamaUrl: z.string().optional(),
+  ollamaModel: z.string().optional(),
+  openrouterApiKey: z.string().optional(),
+  openrouterModel: z.string().optional(),
 });
 
 export async function PUT(request: NextRequest) {

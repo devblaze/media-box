@@ -18,6 +18,7 @@ import {
 } from "@/components/ui";
 
 type HwAccel = "none" | "vaapi" | "qsv" | "nvenc";
+type AiProvider = "none" | "ollama" | "openrouter";
 
 interface AppSettings {
   tmdbApiKey: string;
@@ -28,6 +29,11 @@ interface AppSettings {
   transcodeVaapiDevice: string;
   maxTranscodeSessions: number;
   pushoverAppToken: string;
+  aiProvider: AiProvider;
+  ollamaUrl: string;
+  ollamaModel: string;
+  openrouterApiKey: string;
+  openrouterModel: string;
 }
 
 export default function GeneralSettingsPage() {
@@ -39,6 +45,12 @@ export default function GeneralSettingsPage() {
   const [transcodeVaapiDevice, setTranscodeVaapiDevice] = useState("/dev/dri/renderD128");
   const [maxTranscodeSessions, setMaxTranscodeSessions] = useState(3);
   const [pushoverAppToken, setPushoverAppToken] = useState("");
+  const [aiProvider, setAiProvider] = useState<AiProvider>("none");
+  const [ollamaUrl, setOllamaUrl] = useState("http://localhost:11434");
+  const [ollamaModel, setOllamaModel] = useState("llama3.1");
+  const [openrouterApiKey, setOpenrouterApiKey] = useState("");
+  const [openrouterModel, setOpenrouterModel] = useState("openai/gpt-4o-mini");
+  const [testingAi, setTestingAi] = useState(false);
   const [testResult, setTestResult] = useState<null | { ok: boolean; message?: string }>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -57,6 +69,11 @@ export default function GeneralSettingsPage() {
       setTranscodeVaapiDevice(data.transcodeVaapiDevice);
       setMaxTranscodeSessions(data.maxTranscodeSessions);
       setPushoverAppToken(data.pushoverAppToken);
+      setAiProvider(data.aiProvider);
+      setOllamaUrl(data.ollamaUrl);
+      setOllamaModel(data.ollamaModel);
+      setOpenrouterApiKey(data.openrouterApiKey);
+      setOpenrouterModel(data.openrouterModel);
     }
   }, [data]);
 
@@ -99,6 +116,19 @@ export default function GeneralSettingsPage() {
     }
   }
 
+  async function testAi() {
+    setTestingAi(true);
+    try {
+      const result = await apiFetch<{ ok: boolean; message: string }>("/ai/test");
+      if (result.ok) toast.success(result.message);
+      else toast.error(result.message);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "AI test failed");
+    } finally {
+      setTestingAi(false);
+    }
+  }
+
   async function save() {
     setSaving(true);
     try {
@@ -111,6 +141,11 @@ export default function GeneralSettingsPage() {
           transcodeVaapiDevice,
           maxTranscodeSessions,
           pushoverAppToken,
+          aiProvider,
+          ollamaUrl,
+          ollamaModel,
+          openrouterApiKey,
+          openrouterModel,
         }),
       });
       await mutate();
@@ -227,6 +262,96 @@ export default function GeneralSettingsPage() {
             Pushover Application API token. Each user then adds their personal user key under Account
             to receive request-available notifications.
           </p>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>AI assistant</CardTitle>
+        </CardHeader>
+        <CardBody className="space-y-4">
+          <p className="text-sm text-zinc-400">
+            Optional. A local Ollama instance or OpenRouter helps recognize messy file names during
+            Library Import and powers “Diagnose with AI” on the Logs page. Everything works without
+            it.
+          </p>
+
+          <Field label="Provider" htmlFor="ai-provider">
+            <Select
+              id="ai-provider"
+              value={aiProvider}
+              onChange={(e) => setAiProvider(e.target.value as AiProvider)}
+            >
+              <option value="none">None (disabled)</option>
+              <option value="ollama">Ollama (local)</option>
+              <option value="openrouter">OpenRouter</option>
+            </Select>
+          </Field>
+
+          {aiProvider === "ollama" && (
+            <>
+              <Field label="Ollama URL" htmlFor="ollama-url">
+                <Input
+                  id="ollama-url"
+                  value={ollamaUrl}
+                  onChange={(e) => setOllamaUrl(e.target.value)}
+                  className="font-mono"
+                  placeholder="http://localhost:11434"
+                />
+              </Field>
+              <Field label="Model" htmlFor="ollama-model">
+                <Input
+                  id="ollama-model"
+                  value={ollamaModel}
+                  onChange={(e) => setOllamaModel(e.target.value)}
+                  className="font-mono"
+                  placeholder="llama3.1"
+                />
+              </Field>
+            </>
+          )}
+
+          {aiProvider === "openrouter" && (
+            <>
+              <Field label="API Key" htmlFor="openrouter-api-key">
+                <Input
+                  id="openrouter-api-key"
+                  type="password"
+                  value={openrouterApiKey}
+                  onChange={(e) => setOpenrouterApiKey(e.target.value)}
+                  className="font-mono"
+                  placeholder="OpenRouter API key"
+                />
+              </Field>
+              <Field label="Model" htmlFor="openrouter-model">
+                <Input
+                  id="openrouter-model"
+                  value={openrouterModel}
+                  onChange={(e) => setOpenrouterModel(e.target.value)}
+                  className="font-mono"
+                  placeholder="openai/gpt-4o-mini"
+                />
+              </Field>
+            </>
+          )}
+
+          {aiProvider !== "none" && (
+            <div className="space-y-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={testAi}
+                loading={testingAi}
+                disabled={testingAi}
+              >
+                {testingAi ? "Testing…" : "Test"}
+              </Button>
+              <p className="text-xs text-zinc-500">
+                Runs a tiny round-trip against the <em>saved</em> provider settings — save your
+                changes first.
+              </p>
+            </div>
+          )}
         </CardBody>
       </Card>
 
