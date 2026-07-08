@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 import { loadScanCandidates } from "@/server/library/library-import";
 import { badRequest, ok, serverError } from "@/lib/http";
 
@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
  * without rescanning). Imported rows have already dropped off.
  */
 export async function GET(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "libraryImport.access");
   if (denied) return denied;
 
   const type = request.nextUrl.searchParams.get("type");

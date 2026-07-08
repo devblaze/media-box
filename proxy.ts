@@ -42,7 +42,12 @@ export async function proxy(request: NextRequest) {
     login.search = "";
     return NextResponse.redirect(login);
   }
-  return NextResponse.next();
+  // Server layouts can't read the URL; forward the pathname as a header so the
+  // /settings layout can apply per-section permission guards (see
+  // app/(app)/settings/layout.tsx). Missing header falls back to admin-only.
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-pathname", pathname);
+  return NextResponse.next({ request: { headers: requestHeaders } });
 }
 
 export const config = {

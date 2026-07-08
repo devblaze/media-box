@@ -4,7 +4,7 @@ import { z } from "zod";
 import { getDb, schema } from "@/server/db";
 import { qbittorrentSettingsSchema, torboxSettingsSchema } from "@/server/download/client";
 import { ok, serverError } from "@/lib/http";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 
 /** Placeholder shown to the client in place of a stored secret. */
 export const REDACTED = "••••••••";
@@ -36,7 +36,7 @@ export function mergeSecrets(
 }
 
 export async function GET(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "downloadClients.manage");
   if (denied) return denied;
   try {
     const db = getDb();
@@ -71,7 +71,7 @@ export const clientBodySchema = z.discriminatedUnion("type", [
 ]);
 
 export async function POST(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "downloadClients.manage");
   if (denied) return denied;
   try {
     const input = clientBodySchema.parse(await request.json());

@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 import { addMovie, getMovieIdByTmdb } from "@/server/library/movie-service";
 import { addSeries } from "@/server/library/series-service";
 import {
@@ -33,7 +33,7 @@ const importSchema = z.object({
  * as available immediately.
  */
 export async function POST(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "libraryImport.access");
   if (denied) return denied;
 
   let input: z.infer<typeof importSchema>;

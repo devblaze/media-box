@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 import { scanLibrary, persistScanCandidates } from "@/server/library/library-import";
 import { badRequest, ok, serverError } from "@/lib/http";
 
@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
  * root folder identified by `rootFolderId`.
  */
 export async function GET(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "libraryImport.access");
   if (denied) return denied;
 
   const type = request.nextUrl.searchParams.get("type");

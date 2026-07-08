@@ -240,9 +240,25 @@ Delete a user by id. An admin cannot delete their own account.
 
 Custom, admin-defined roles grant granular capabilities to non-admin users. The
 built-in `admin` role is super-admin (holds every permission, bypasses all
-checks) and is independent of these. Permission keys in v1: `requests.approve`
-(approve/decline any request), `releases.search` (interactive search + grab /
-override). Assign a role to a user via `POST`/`PUT /api/v1/users/[id]`.
+checks) and is independent of these. Assign a role to a user via
+`POST`/`PUT /api/v1/users/[id]`. The catalog lives in `lib/permissions.ts`:
+
+| key | grants |
+| --- | --- |
+| `requests.approve` | Approve/decline any request (+ see everyone's requests, `/settings/requests`). |
+| `releases.search` | Interactive release search + grab/override (`GET`/`POST /release`). |
+| `files.approve` | Approve/decline held file changes in Ask mode (`/file-changes`, `/settings/file-changes`). |
+| `monitoring.access` | Monitoring page + `POST /monitoring/bulk`. |
+| `libraryImport.access` | Library Import page + all `/library-import/*` endpoints. |
+| `organizer.access` | Downloads Organizer page + `/organizer/*` endpoints. |
+| `profiles.manage` | Quality Profiles page + `qualityprofiles` mutations. |
+| `indexers.manage` | Indexers page + `/indexers/*` endpoints. |
+| `downloadClients.manage` | Download Clients page + `/downloadclients/*` endpoints. |
+
+Page access: the `/settings/*` layout admits a non-admin only to the sections
+their permissions unlock (the mapping in `SETTINGS_SECTION_PERMISSIONS`); every
+other settings page redirects them. The admin-panel nav shows each user only
+the sections they can open.
 
 ### `GET /api/v1/roles`
 

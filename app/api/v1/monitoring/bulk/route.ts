@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { inArray } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, schema } from "@/server/db";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 import { applyMonitorMode } from "@/server/library/series-service";
 import { ok, badRequest, serverError } from "@/lib/http";
 import { emitEvent } from "@/server/events/bus";
@@ -34,7 +34,7 @@ const bulkSchema = z.object({
  */
 export async function POST(request: NextRequest) {
   try {
-    const denied = requireAdmin(request);
+    const denied = requirePermission(request, "monitoring.access");
     if (denied) return denied;
 
     const { items, monitorMode } = bulkSchema.parse(await request.json());

@@ -4,10 +4,10 @@ import { getDb, schema } from "@/server/db";
 import { getClient } from "@/server/download/client";
 import { clientBodySchema, mergeSecrets } from "../route";
 import { ok, serverError } from "@/lib/http";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 
 export async function POST(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "downloadClients.manage");
   if (denied) return denied;
   try {
     const raw = (await request.json()) as Record<string, unknown>;

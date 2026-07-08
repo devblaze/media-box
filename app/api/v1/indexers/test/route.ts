@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { getCaps } from "@/server/indexers/torznab";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 import { ok, serverError } from "@/lib/http";
 
 const bodySchema = z.object({
@@ -10,7 +10,7 @@ const bodySchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "indexers.manage");
   if (denied) return denied;
   try {
     const { url, apiKey } = bodySchema.parse(await request.json());

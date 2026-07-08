@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 import { organizeFile } from "@/server/library/organizer-service";
 import { ok, badRequest, serverError } from "@/lib/http";
 
@@ -24,7 +24,7 @@ const organizeSchema = z.object({
  * the importer: place file + register file row + link episode/movie + log).
  */
 export async function POST(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "organizer.access");
   if (denied) return denied;
 
   let input: z.infer<typeof organizeSchema>;

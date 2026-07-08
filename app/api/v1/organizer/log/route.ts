@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 import { getOrganizeLog } from "@/server/library/organizer-service";
 import { ok, serverError } from "@/lib/http";
 
@@ -13,7 +13,7 @@ type LogStatus = (typeof STATUSES)[number];
 
 /** Newest-first organize log filtered by text query, media type and status. */
 export async function GET(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "organizer.access");
   if (denied) return denied;
 
   try {

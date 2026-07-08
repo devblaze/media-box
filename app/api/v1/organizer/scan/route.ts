@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 import { scanDownloads } from "@/server/library/organizer-service";
 import { getSettings } from "@/server/settings/settings-service";
 import { ok, serverError } from "@/lib/http";
@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
  * match it to a library title. Returns `{ root, items }`.
  */
 export async function GET(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "organizer.access");
   if (denied) return denied;
 
   try {

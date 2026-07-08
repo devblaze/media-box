@@ -238,7 +238,7 @@ Missing but wanted media: monitored episodes that have aired without a file, and
 
 List configured root folders with accessibility and free space.
 
-- **Auth:** admin
+- **Auth:** user (any signed-in user)
 - **Response:** `200` — array of root folder rows, each with `accessible` (boolean, write-check) and `freeSpace` (bytes, or `null` if inaccessible). Errors: `401`/`403` (auth); `500`.
 - **Example:**
   ```bash

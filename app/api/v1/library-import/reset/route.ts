@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 import { resetLibrary } from "@/server/library/reset-service";
 import { ok, serverError } from "@/lib/http";
 
@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
  * number of rows deleted per table.
  */
 export async function POST(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "libraryImport.access");
   if (denied) return denied;
   try {
     return ok(resetLibrary());

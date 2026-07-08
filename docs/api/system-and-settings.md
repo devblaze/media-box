@@ -130,7 +130,7 @@ Ask the configured AI assistant to diagnose the instance. The server gathers the
 
 List all quality profiles, ordered by id.
 
-- **Auth:** admin
+- **Auth:** user (any signed-in user)
 - **Response:** `200` — array of quality-profile rows. Errors: `500`.
 - **Example:**
   ```bash
@@ -141,7 +141,7 @@ List all quality profiles, ordered by id.
 
 Create a quality profile.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `profiles.manage`
 - **Request body:**
 
   | field | type | required | default | notes |
@@ -166,7 +166,7 @@ Create a quality profile.
 
 Replace a quality profile by id.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `profiles.manage`
 - **Path params:** `id` — profile id.
 - **Request body:** same fields as `POST`, except `upgradeAllowed` is **required** here (no default). Cutoff must still be one of the allowed items.
 - **Response:** `200` — the updated profile row. Errors: `404` — `"Profile not found"`; `400` — `"Cutoff must be one of the allowed qualities"` or a Zod validation error.
@@ -181,7 +181,7 @@ Replace a quality profile by id.
 
 Delete a quality profile by id.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `profiles.manage`
 - **Path params:** `id` — profile id.
 - **Response:** `200` — `{ "deleted": true }`. Errors: `400` — `"Invalid id"` (non-integer) or `"Profile is in use by library items"` (any series/movie still references it).
 - **Example:**
@@ -193,7 +193,7 @@ Delete a quality profile by id.
 
 Merge duplicate profiles that share a name (case-insensitive). Per name group, the lowest-id row is canonical; series/movies pointing at duplicates are reassigned to it, then duplicates are deleted. Idempotent.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `profiles.manage`
 - **Response:** `200` — `{ "merged": number, "reassignedSeries": number, "reassignedMovies": number }`. Errors: `500`.
 - **Example:**
   ```bash
@@ -204,7 +204,7 @@ Merge duplicate profiles that share a name (case-insensitive). Per name group, t
 
 List the built-in quality definitions (the fixed `QUALITIES` set), sorted by ascending rank. These are the `qualityId` values referenced by profiles.
 
-- **Auth:** admin
+- **Auth:** user (any signed-in user)
 - **Response:** `200` — array of quality definitions sorted by `rank`.
 - **Example:**
   ```bash
@@ -361,7 +361,7 @@ Server-side directory browser powering path pickers in the UI. Lists immediate s
 
 Import an existing on-disk folder into the library at its current path (no move): creates the movie/series, then registers the files already there so it shows as available immediately (`runtime = "nodejs"`).
 
-- **Auth:** admin
+- **Auth:** admin, or permission `libraryImport.access`
 - **Request body:**
 
   | field | type | required | default | notes |
@@ -386,7 +386,7 @@ Import an existing on-disk folder into the library at its current path (no move)
 
 Scan a library root folder for on-disk titles not yet imported, matching each against TMDB; persists the scan so results survive navigation (`runtime = "nodejs"`).
 
-- **Auth:** admin
+- **Auth:** admin, or permission `libraryImport.access`
 - **Query params:**
 
   | param | type | required | notes |
@@ -405,7 +405,7 @@ Scan a library root folder for on-disk titles not yet imported, matching each ag
 
 Reload the not-yet-imported candidates from the last persisted scan of `type` (imported rows have already dropped off) (`runtime = "nodejs"`).
 
-- **Auth:** admin
+- **Auth:** admin, or permission `libraryImport.access`
 - **Query params:**
 
   | param | type | required | notes |
@@ -422,7 +422,7 @@ Reload the not-yet-imported candidates from the last persisted scan of `type` (i
 
 Kick off a background batch import of every confidently-matched, not-yet-imported candidate of `type`. Returns immediately; work runs as a scheduler command (`LibraryImportBatch`) tracked via `command.updated` events (`runtime = "nodejs"`).
 
-- **Auth:** admin
+- **Auth:** admin, or permission `libraryImport.access`
 - **Request body:**
 
   | field | type | required | notes |
@@ -440,7 +440,7 @@ Kick off a background batch import of every confidently-matched, not-yet-importe
 
 Remove every library entry from the database (movies, series, and their files, plus watch progress, subtitle files, and any persisted scan). **DB-only** — files on disk are not touched and can be re-imported (`runtime = "nodejs"`).
 
-- **Auth:** admin
+- **Auth:** admin, or permission `libraryImport.access`
 - **Response:** `200` — per-table delete counts `{ watchProgress, subtitleFiles, episodeFiles, episodes, seasons, movieFiles, movies, series }`. Errors: `500`.
 - **Example:**
   ```bash
@@ -451,7 +451,7 @@ Remove every library entry from the database (movies, series, and their files, p
 
 Scan the configured downloads folder for loose video files, classify each, and match it to a library title (`runtime = "nodejs"`).
 
-- **Auth:** admin
+- **Auth:** admin, or permission `organizer.access`
 - **Response:** `200` — `{ root: string (downloadsPath), items: [...] }`. Errors: `500`.
 - **Example:**
   ```bash
@@ -462,7 +462,7 @@ Scan the configured downloads folder for loose video files, classify each, and m
 
 Organize a single loose file into the library at an explicit target: place file + register file row + link episode/movie + log (`runtime = "nodejs"`). Blocked (`409`) when `fileOperationsEnabled` is off.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `organizer.access`
 - **Request body:**
 
   | field | type | required | notes |
@@ -486,7 +486,7 @@ Organize a single loose file into the library at an explicit target: place file 
 
 Organize many files in one request (e.g. a batch of episodes into a series). Each file is independent — a per-file failure/skip does not abort the rest (`runtime = "nodejs"`). Individual files are blocked when `fileOperationsEnabled` is off (surfaced per-file as failures).
 
-- **Auth:** admin
+- **Auth:** admin, or permission `organizer.access`
 - **Request body:**
 
   | field | type | required | notes |
@@ -506,7 +506,7 @@ Organize many files in one request (e.g. a batch of episodes into a series). Eac
 
 Newest-first organize log, filtered by text query, media type, and status (`runtime = "nodejs"`).
 
-- **Auth:** admin
+- **Auth:** admin, or permission `organizer.access`
 - **Query params:**
 
   | param | type | notes |

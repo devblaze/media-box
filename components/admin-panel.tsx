@@ -4,29 +4,43 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/cn";
+import { useApi } from "@/lib/api";
 import { APP_VERSION } from "@/lib/version";
+import { principalHasPermission, type PermissionKey } from "@/lib/permissions";
 
-/** Management nav for the admin panel. Order mirrors the settings/system routes. */
-const NAV = [
+/**
+ * Management nav for the admin panel. Order mirrors the settings/system routes.
+ * Entries with a `permission` are also visible to non-admins whose role grants
+ * it (mirroring the /settings layout's server-side guard); the rest are
+ * admin-only.
+ */
+const NAV: { label: string; href: string; permission?: PermissionKey }[] = [
   { label: "Dashboard", href: "/settings" },
-  { label: "Requests", href: "/settings/requests" },
+  { label: "Requests", href: "/settings/requests", permission: "requests.approve" },
   { label: "Users", href: "/settings/users" },
   { label: "Roles", href: "/settings/roles" },
   { label: "Media Management", href: "/settings/media-management" },
-  { label: "File Changes", href: "/settings/file-changes" },
-  { label: "Monitoring", href: "/settings/monitoring" },
-  { label: "Quality Profiles", href: "/settings/profiles" },
+  { label: "File Changes", href: "/settings/file-changes", permission: "files.approve" },
+  { label: "Monitoring", href: "/settings/monitoring", permission: "monitoring.access" },
+  { label: "Quality Profiles", href: "/settings/profiles", permission: "profiles.manage" },
   { label: "Subtitles", href: "/settings/subtitles" },
-  { label: "Indexers", href: "/settings/indexers" },
-  { label: "Download Clients", href: "/settings/download-clients" },
-  { label: "Library Import", href: "/settings/library-import" },
-  { label: "Organizer", href: "/settings/organizer" },
+  { label: "Indexers", href: "/settings/indexers", permission: "indexers.manage" },
+  { label: "Download Clients", href: "/settings/download-clients", permission: "downloadClients.manage" },
+  { label: "Library Import", href: "/settings/library-import", permission: "libraryImport.access" },
+  { label: "Organizer", href: "/settings/organizer", permission: "organizer.access" },
   { label: "Migrate", href: "/settings/migrate" },
   { label: "General", href: "/settings/general" },
   { label: "Failures", href: "/settings/failures" },
   { label: "Logs", href: "/settings/logs" },
   { label: "Tasks", href: "/system/tasks" },
-] as const;
+];
+
+interface Me {
+  id: number;
+  username: string;
+  role: "admin" | "user";
+  permissions?: string[];
+}
 
 /** Dashboard highlights only on exactly /settings; others match their route + sub-paths. */
 function isActive(pathname: string, href: string): boolean {
@@ -71,6 +85,13 @@ export function AdminPanel({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
+  const { data: me } = useApi<Me>("/auth/me");
+
+  // Admins see the full nav; a permission-holder sees only their sections.
+  const nav = NAV.filter(
+    (item) =>
+      me?.role === "admin" || (item.permission && principalHasPermission(me, item.permission))
+  );
 
   useEffect(() => {
     setOpen(false);
@@ -139,7 +160,7 @@ export function AdminPanel({ children }: { children: React.ReactNode }) {
               Management
             </div>
             <nav className="flex flex-col gap-1">
-              {NAV.map((item) => (
+              {nav.map((item) => (
                 <ManageLink
                   key={item.href}
                   href={item.href}

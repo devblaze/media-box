@@ -23,7 +23,7 @@ errors → 500. All error bodies are `{ error }`.
 
 List all indexers, ordered by ascending `priority`.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `indexers.manage`
 - **Response:** `200` — array of indexer rows (includes `id`, `name`, `url`, `apiKey`, `categories`, `enableRss`, `enableAutomaticSearch`, `enableInteractiveSearch`, `minimumSeeders`, `priority`, `enabled`, `supportsTv`, `supportsMovies`).
 
 ## `POST /api/v1/indexers`
@@ -31,7 +31,7 @@ List all indexers, ordered by ascending `priority`.
 Create an indexer. Capabilities (`supportsTv`/`supportsMovies`) are probed from
 the Torznab caps endpoint on save; if probing fails both default to `true`.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `indexers.manage`
 - **Request body:**
 
   | field | type | required | default | notes |
@@ -54,7 +54,7 @@ the Torznab caps endpoint on save; if probing fails both default to `true`.
 Partial update of an indexer. Body is the create schema made partial; an omitted
 `apiKey` keeps the stored value.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `indexers.manage`
 - **Path params:** `id` — indexer id.
 - **Request body:** any subset of the `POST /indexers` fields.
 - **Response:** `200` — the updated indexer row. `404` if not found.
@@ -63,7 +63,7 @@ Partial update of an indexer. Body is the create schema made partial; an omitted
 
 Delete an indexer.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `indexers.manage`
 - **Path params:** `id` — indexer id (must be an integer).
 - **Response:** `200` — `{ deleted: true }`. `400` on non-integer id.
 
@@ -72,7 +72,7 @@ Delete an indexer.
 Probe a Torznab endpoint's caps without saving. Connection failures are returned
 as `200 { ok: false }`, not an error status.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `indexers.manage`
 - **Request body:**
 
   | field | type | required | default | notes |
@@ -89,14 +89,14 @@ as `200 { ok: false }`, not an error status.
 List download clients ordered by ascending `priority`. Secret settings
 (`password`, `apiKey`) are redacted to `••••••••`.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `downloadClients.manage`
 - **Response:** `200` — array of client rows (`id`, `name`, `type`, `settings` (redacted), `enabled`, `priority`, `removeCompletedDownloads`).
 
 ## `POST /api/v1/downloadclients`
 
 Create a download client. Body is a discriminated union on `type`.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `downloadClients.manage`
 - **Request body (common):**
 
   | field | type | required | default | notes |
@@ -133,7 +133,7 @@ Create a download client. Body is a discriminated union on `type`.
 Update a download client. `type` is fixed to the stored value. Secret fields
 sent as the redaction placeholder `••••••••` retain their stored values.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `downloadClients.manage`
 - **Path params:** `id` — client id.
 - **Request body:** same shape as `POST /downloadclients` (minus `type`, which is inherited from the stored row).
 - **Response:** `200` — `{ updated: true }`. `404` if not found.
@@ -142,7 +142,7 @@ sent as the redaction placeholder `••••••••` retain their stored
 
 Delete a download client.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `downloadClients.manage`
 - **Path params:** `id` — client id (must be an integer).
 - **Response:** `200` — `{ deleted: true }`. `400` on non-integer id.
 
@@ -150,7 +150,7 @@ Delete a download client.
 
 Test connectivity to a saved or unsaved client. Failures return `200 { ok: false }`.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `downloadClients.manage`
 - **Request body:** either `{ id: integer }` (test a saved client using stored secrets) **or** a full create body (`type` + `name` + `settings`, per `POST /downloadclients`). When testing edited settings for a saved client, include its `id` alongside `settings` — any secret still sent as the `"••••••••"` redaction placeholder is then restored from the stored value (so Test never sends the mask as the real credential).
 - **Response:** `200` — `{ ok: boolean, message? }`. Unknown saved id → `{ ok: false, message: "Client not found" }`.
 
@@ -377,7 +377,7 @@ name+payload already `queued` or `started` is deduped (no new row).
 Bulk-set the `monitored` flag on many movies/series, or bulk-apply a series
 monitor mode, in a single request.
 
-- **Auth:** admin
+- **Auth:** admin, or permission `monitoring.access`
 - **Request body:**
 
   | field | type | required | default | notes |

@@ -25,6 +25,57 @@ interface Role {
   createdAt: number | string;
 }
 
+/** The permission catalog grouped by its category, preserving catalog order. */
+const PERMISSION_GROUPS: [string, (typeof PERMISSIONS)[number][]][] = (() => {
+  const groups = new Map<string, (typeof PERMISSIONS)[number][]>();
+  for (const p of PERMISSIONS) {
+    const list = groups.get(p.category) ?? [];
+    list.push(p);
+    groups.set(p.category, list);
+  }
+  return [...groups.entries()];
+})();
+
+/** Grouped permission checkboxes, shared by the create form and each role card. */
+function PermissionPicker({
+  selected,
+  onToggle,
+}: {
+  selected: readonly PermissionKey[];
+  onToggle: (key: PermissionKey) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      {PERMISSION_GROUPS.map(([category, perms]) => (
+        <div key={category}>
+          <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+            {category}
+          </p>
+          <div className="grid gap-2 md:grid-cols-2">
+            {perms.map((p) => (
+              <label
+                key={p.key}
+                className="flex cursor-pointer items-start gap-2 rounded-md border border-zinc-800 bg-zinc-900/40 p-2 text-sm transition-colors hover:border-zinc-600"
+              >
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={selected.includes(p.key)}
+                  onChange={() => onToggle(p.key)}
+                />
+                <span>
+                  <span className="text-zinc-100">{p.label}</span>
+                  <span className="block text-xs text-zinc-500">{p.description}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function RolesPage() {
   const { data: roles, mutate } = useApi<Role[]>("/roles");
   const toast = useToast();
@@ -123,22 +174,10 @@ export default function RolesPage() {
             placeholder="Role name (e.g. Moderators)"
             className="max-w-sm"
           />
-          <div className="flex flex-col gap-2">
-            {PERMISSIONS.map((p) => (
-              <label key={p.key} className="flex items-start gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="mt-0.5"
-                  checked={perms.includes(p.key)}
-                  onChange={() => setPerms((cur) => toggle(cur, p.key))}
-                />
-                <span>
-                  <span className="text-zinc-100">{p.label}</span>
-                  <span className="block text-xs text-zinc-500">{p.description}</span>
-                </span>
-              </label>
-            ))}
-          </div>
+          <PermissionPicker
+            selected={perms}
+            onToggle={(key) => setPerms((cur) => toggle(cur, key))}
+          />
           <div>
             <Button size="sm" onClick={create} loading={creating} disabled={!name.trim()}>
               Create role
@@ -173,27 +212,18 @@ export default function RolesPage() {
                     <Badge tone="neutral">
                       {role.userCount} user{role.userCount === 1 ? "" : "s"}
                     </Badge>
+                    <Badge tone={role.permissions.length > 0 ? "info" : "neutral"}>
+                      {role.permissions.length} permission{role.permissions.length === 1 ? "" : "s"}
+                    </Badge>
                   </div>
                   <Button variant="danger" size="sm" onClick={() => remove(role)}>
                     Delete
                   </Button>
                 </div>
-                <div className="flex flex-col gap-2">
-                  {PERMISSIONS.map((p) => (
-                    <label key={p.key} className="flex items-start gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        className="mt-0.5"
-                        checked={role.permissions.includes(p.key)}
-                        onChange={() => savePermissions(role, toggle(role.permissions, p.key))}
-                      />
-                      <span>
-                        <span className="text-zinc-100">{p.label}</span>
-                        <span className="block text-xs text-zinc-500">{p.description}</span>
-                      </span>
-                    </label>
-                  ))}
-                </div>
+                <PermissionPicker
+                  selected={role.permissions}
+                  onToggle={(key) => savePermissions(role, toggle(role.permissions, key))}
+                />
               </CardBody>
             </Card>
           ))

@@ -4,10 +4,10 @@ import { z } from "zod";
 import { getDb, schema } from "@/server/db";
 import { getCaps } from "@/server/indexers/torznab";
 import { ok, serverError } from "@/lib/http";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 
 export async function GET(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "indexers.manage");
   if (denied) return denied;
   try {
     const db = getDb();
@@ -31,7 +31,7 @@ export const indexerSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "indexers.manage");
   if (denied) return denied;
   try {
     const input = indexerSchema.parse(await request.json());

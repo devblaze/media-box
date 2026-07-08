@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, schema } from "@/server/db";
 import { badRequest, notFound, ok, serverError } from "@/lib/http";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 
 const profileSchema = z.object({
   name: z.string().min(1),
@@ -18,7 +18,7 @@ const profileSchema = z.object({
 });
 
 export async function PUT(request: NextRequest, ctx: RouteContext<"/api/v1/qualityprofiles/[id]">) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "profiles.manage");
   if (denied) return denied;
   try {
     const { id } = await ctx.params;
@@ -44,7 +44,7 @@ export async function PUT(request: NextRequest, ctx: RouteContext<"/api/v1/quali
 }
 
 export async function DELETE(request: NextRequest, ctx: RouteContext<"/api/v1/qualityprofiles/[id]">) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "profiles.manage");
   if (denied) return denied;
   try {
     const { id } = await ctx.params;

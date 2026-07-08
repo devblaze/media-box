@@ -3,10 +3,10 @@ import fs from "node:fs";
 import { z } from "zod";
 import { getDb, schema } from "@/server/db";
 import { ok, serverError } from "@/lib/http";
-import { requireAdmin } from "@/server/auth/guards";
+import { requireAdmin, requireUser } from "@/server/auth/guards";
 
 export async function GET(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requireUser(request);
   if (denied) return denied;
   try {
     const db = getDb();

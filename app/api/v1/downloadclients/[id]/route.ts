@@ -3,10 +3,10 @@ import { eq } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { clientBodySchema, mergeSecrets } from "../route";
 import { badRequest, notFound, ok, serverError } from "@/lib/http";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 
 export async function PUT(request: NextRequest, ctx: RouteContext<"/api/v1/downloadclients/[id]">) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "downloadClients.manage");
   if (denied) return denied;
   try {
     const { id } = await ctx.params;
@@ -38,7 +38,7 @@ export async function PUT(request: NextRequest, ctx: RouteContext<"/api/v1/downl
 }
 
 export async function DELETE(request: NextRequest, ctx: RouteContext<"/api/v1/downloadclients/[id]">) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "downloadClients.manage");
   if (denied) return denied;
   try {
     const { id } = await ctx.params;

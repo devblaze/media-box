@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { z } from "zod";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 import { enqueueCommand } from "@/server/jobs/scheduler";
 import { badRequest, ok, serverError } from "@/lib/http";
 
@@ -16,7 +16,7 @@ const bodySchema = z.object({ type: z.enum(["movie", "series", "anime"]) });
  * the page tracks completion via `command.updated` events.
  */
 export async function POST(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "libraryImport.access");
   if (denied) return denied;
 
   let body: z.infer<typeof bodySchema>;

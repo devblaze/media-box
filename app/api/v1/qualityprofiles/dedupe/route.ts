@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { asc, eq } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { ok, serverError } from "@/lib/http";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 
 /**
  * Merge duplicate quality profiles that share a name (case-insensitive).
@@ -14,7 +14,7 @@ import { requireAdmin } from "@/server/auth/guards";
  * pointing at a deleted profile) and idempotent (a second run is a no-op).
  */
 export async function POST(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "profiles.manage");
   if (denied) return denied;
   try {
     const db = getDb();

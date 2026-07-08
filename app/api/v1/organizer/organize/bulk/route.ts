@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { z } from "zod";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission } from "@/server/auth/guards";
 import { organizeFile } from "@/server/library/organizer-service";
 import { ok, badRequest } from "@/lib/http";
 
@@ -27,7 +27,7 @@ const bulkSchema = z.object({
  * per-file failure/skip doesn't abort the rest; results are returned per file.
  */
 export async function POST(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "organizer.access");
   if (denied) return denied;
 
   let input: z.infer<typeof bulkSchema>;

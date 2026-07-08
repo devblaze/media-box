@@ -3,10 +3,10 @@ import { asc } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, schema } from "@/server/db";
 import { badRequest, ok, serverError } from "@/lib/http";
-import { requireAdmin } from "@/server/auth/guards";
+import { requirePermission, requireUser } from "@/server/auth/guards";
 
 export async function GET(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requireUser(request);
   if (denied) return denied;
   try {
     const db = getDb();
@@ -29,7 +29,7 @@ const profileSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  const denied = requireAdmin(request);
+  const denied = requirePermission(request, "profiles.manage");
   if (denied) return denied;
   try {
     const input = profileSchema.parse(await request.json());

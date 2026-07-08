@@ -366,31 +366,31 @@
     {
       "method": "GET",
       "path": "/api/v1/downloadclients",
-      "auth": "admin",
+      "auth": "session",
       "summary": "Placeholder shown to the client in place of a stored secret."
     },
     {
       "method": "POST",
       "path": "/api/v1/downloadclients",
-      "auth": "admin",
+      "auth": "session",
       "summary": "Placeholder shown to the client in place of a stored secret."
     },
     {
       "method": "DELETE",
       "path": "/api/v1/downloadclients/{id}",
-      "auth": "admin",
+      "auth": "session",
       "summary": ""
     },
     {
       "method": "PUT",
       "path": "/api/v1/downloadclients/{id}",
-      "auth": "admin",
+      "auth": "session",
       "summary": ""
     },
     {
       "method": "POST",
       "path": "/api/v1/downloadclients/test",
-      "auth": "admin",
+      "auth": "session",
       "summary": "`{ id }` with no settings → test a saved client using its stored secrets."
     },
     {
@@ -438,31 +438,31 @@
     {
       "method": "GET",
       "path": "/api/v1/indexers",
-      "auth": "admin",
+      "auth": "session",
       "summary": "discover capabilities on save"
     },
     {
       "method": "POST",
       "path": "/api/v1/indexers",
-      "auth": "admin",
+      "auth": "session",
       "summary": "discover capabilities on save"
     },
     {
       "method": "DELETE",
       "path": "/api/v1/indexers/{id}",
-      "auth": "admin",
+      "auth": "session",
       "summary": ""
     },
     {
       "method": "PUT",
       "path": "/api/v1/indexers/{id}",
-      "auth": "admin",
+      "auth": "session",
       "summary": ""
     },
     {
       "method": "POST",
       "path": "/api/v1/indexers/test",
-      "auth": "admin",
+      "auth": "session",
       "summary": ""
     },
     {
@@ -480,31 +480,31 @@
     {
       "method": "POST",
       "path": "/api/v1/library-import",
-      "auth": "admin",
+      "auth": "session",
       "summary": "Absolute path of the specific movie file to register (movies only)."
     },
     {
       "method": "GET",
       "path": "/api/v1/library-import/candidates",
-      "auth": "admin",
+      "auth": "session",
       "summary": "The not-yet-imported candidates from the last scan of `type`, so the Library"
     },
     {
       "method": "POST",
       "path": "/api/v1/library-import/import-all",
-      "auth": "admin",
+      "auth": "session",
       "summary": "Kick off the background batch import of every confidently-matched, not-yet-"
     },
     {
       "method": "POST",
       "path": "/api/v1/library-import/reset",
-      "auth": "admin",
+      "auth": "session",
       "summary": "Remove every library entry from the database (movies, series, and their files)."
     },
     {
       "method": "GET",
       "path": "/api/v1/library-import/scan",
-      "auth": "admin",
+      "auth": "session",
       "summary": "Scan a library root folder for on-disk titles not yet imported, matching each"
     },
     {
@@ -546,7 +546,7 @@
     {
       "method": "POST",
       "path": "/api/v1/monitoring/bulk",
-      "auth": "admin",
+      "auth": "session",
       "summary": "Bulk-set the `monitored` flag on many movies/series in a single request."
     },
     {
@@ -606,61 +606,61 @@
     {
       "method": "GET",
       "path": "/api/v1/organizer/log",
-      "auth": "admin",
+      "auth": "session",
       "summary": "Newest-first organize log filtered by text query, media type and status."
     },
     {
       "method": "POST",
       "path": "/api/v1/organizer/organize",
-      "auth": "admin",
+      "auth": "session",
       "summary": "Organize a single loose file into the library at an explicit target (mirrors"
     },
     {
       "method": "POST",
       "path": "/api/v1/organizer/organize/bulk",
-      "auth": "admin",
+      "auth": "session",
       "summary": "Organize many files in one request — e.g. assign a batch of episodes to a"
     },
     {
       "method": "GET",
       "path": "/api/v1/organizer/scan",
-      "auth": "admin",
+      "auth": "session",
       "summary": "Scan the configured downloads folder for loose video files, classify each and"
     },
     {
       "method": "GET",
       "path": "/api/v1/qualitydefinitions",
-      "auth": "admin",
+      "auth": "user",
       "summary": ""
     },
     {
       "method": "GET",
       "path": "/api/v1/qualityprofiles",
-      "auth": "admin",
+      "auth": "user",
       "summary": ""
     },
     {
       "method": "POST",
       "path": "/api/v1/qualityprofiles",
-      "auth": "admin",
+      "auth": "user",
       "summary": ""
     },
     {
       "method": "DELETE",
       "path": "/api/v1/qualityprofiles/{id}",
-      "auth": "admin",
+      "auth": "session",
       "summary": ""
     },
     {
       "method": "PUT",
       "path": "/api/v1/qualityprofiles/{id}",
-      "auth": "admin",
+      "auth": "session",
       "summary": ""
     },
     {
       "method": "POST",
       "path": "/api/v1/qualityprofiles/dedupe",
-      "auth": "admin",
+      "auth": "session",
       "summary": "Merge duplicate quality profiles that share a name (case-insensitive)."
     },
     {

@@ -1,6 +1,6 @@
 {
   "name": "media-box",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "private": true,
   "packageManager": "yarn@1.22.22",
   "scripts": {
