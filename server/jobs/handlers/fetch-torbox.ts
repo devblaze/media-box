@@ -37,7 +37,13 @@ export async function fetchTorboxHandler(payload: unknown): Promise<string> {
     if (files.length === 0) throw new Error("No video files in TorBox torrent");
 
     const destDir = path.join(settings.stagingDir, sanitizePathComponent(download.title));
-    await fs.mkdir(destDir, { recursive: true });
+    await fs.mkdir(destDir, { recursive: true }).catch((err: NodeJS.ErrnoException) => {
+      // EACCES/EROFS here means the staging volume isn't mapped into the
+      // container (or has wrong ownership) — say so instead of a bare mkdir error.
+      throw new Error(
+        `Cannot create staging directory '${destDir}'${err.code ? ` (${err.code})` : ""} — check the TorBox client's staging dir and your container's volume mapping/permissions.`
+      );
+    });
 
     const totalSize = files.reduce((sum, f) => sum + f.size, 0);
     if ((await freeSpace(destDir)) < totalSize + 500 * 1024 * 1024) {

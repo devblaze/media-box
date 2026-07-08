@@ -35,6 +35,9 @@ export async function grab(release: DecoratedRelease, target: GrabTarget) {
       const { externalId } = await client.add({
         magnetUrl: release.magnetUrl,
         torrentFileUrl: release.magnetUrl ? undefined : release.downloadUrl,
+        // Lets the client fall back to a synthesized magnet when the indexer's
+        // .torrent link turns out to be dead/expired.
+        infoHash: release.infoHash ?? undefined,
         title: release.title,
         category,
       });

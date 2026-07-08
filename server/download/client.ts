@@ -3,6 +3,9 @@ import { z } from "zod";
 export interface AddDownloadRequest {
   magnetUrl?: string;
   torrentFileUrl?: string;
+  /** Announced infohash (from the indexer) — used to synthesize a magnet link
+   *  as a fallback when the `.torrent` download link is dead/expired. */
+  infoHash?: string;
   title: string;
   category: string;
   savePath?: string;
