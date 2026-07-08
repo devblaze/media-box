@@ -4,7 +4,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { parseTitle } from "@/server/parser/release-parser";
 import { isUpgrade, type ProfileLike } from "@/server/parser/scoring";
-import type { QualityModel } from "@/server/parser/quality";
+import { QUALITIES, type QualityModel } from "@/server/parser/quality";
 import { renderEpisodeFilename, renderMovieFilename, renderSeasonFolder } from "./naming";
 import { applyOwnership, freeSpace, mkdirp, placeFile, removeMedia, type ImportMode } from "./filesystem";
 import { fileOperationsEnabled, fileOperationsMode } from "./media-guard";
@@ -21,6 +21,11 @@ import { enqueueCommand } from "@/server/jobs/scheduler";
 type DownloadRow = typeof schema.downloads.$inferSelect;
 
 class ImportWarning extends Error {}
+
+/** Pixel height of a stored quality (0 when unknown) — for version detection. */
+function resolutionOfQuality(q: QualityModel | null | undefined): number {
+  return QUALITIES.find((d) => d.id === q?.qualityId)?.resolution ?? 0;
+}
 
 async function findVideoFiles(root: string): Promise<{ absPath: string; size: number }[]> {
   const stat = await fs.stat(root).catch(() => null);
@@ -261,6 +266,11 @@ async function importMovie(
   const quality =
     parsed.quality.qualityId !== 0 ? parsed.quality : (download.quality as QualityModel);
 
+  // Whether the existing file is KEPT as another quality version instead of
+  // replaced. A manual override always keeps it; a DIFFERENT-resolution
+  // non-upgrade auto-versions too (grabbing a 4K next to a 1080p — or a lighter
+  // 720p next to a 4K — is a deliberate additional version, not a duplicate).
+  let keepOldAsVersion = download.override;
   if (m.movieFileId && !download.override) {
     const existing = db
       .select()
@@ -268,7 +278,13 @@ async function importMovie(
       .where(eq(schema.movieFiles.id, m.movieFileId))
       .get();
     if (existing && !isUpgrade(profile, quality, existing.quality as QualityModel)) {
-      throw new ImportWarning("Not an upgrade over the existing file");
+      const oldRes = resolutionOfQuality(existing.quality as QualityModel);
+      const newRes = resolutionOfQuality(quality);
+      if (oldRes > 0 && newRes > 0 && oldRes !== newRes) {
+        keepOldAsVersion = true;
+      } else {
+        throw new ImportWarning("Not an upgrade over the existing file");
+      }
     }
   }
 
@@ -312,10 +328,11 @@ async function importMovie(
     .get();
   db.update(schema.movies).set({ movieFileId: fileRow.id }).where(eq(schema.movies.id, m.id)).run();
 
-  // On a normal upgrade we replace: delete the old file. On a manual override we
-  // KEEP the old file as another quality version (movieFiles allows several rows
-  // per movie); the just-imported file becomes the primary movieFileId above.
-  if (oldFileId && !download.override) {
+  // On a normal upgrade we replace: delete the old file. On a manual override —
+  // or a different-resolution auto-version — we KEEP the old file as another
+  // quality version (movieFiles allows several rows per movie); the
+  // just-imported file becomes the primary movieFileId above.
+  if (oldFileId && !keepOldAsVersion) {
     const old = db.select().from(schema.movieFiles).where(eq(schema.movieFiles.id, oldFileId)).get();
     if (old) {
       const oldPath = path.join(m.path, old.relativePath);
