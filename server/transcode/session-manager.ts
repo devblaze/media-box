@@ -5,6 +5,7 @@ import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { CONFIG_DIR } from "@/server/config/paths";
 import { getSettings } from "@/server/settings/settings-service";
+import { probeAudioTracks } from "@/server/library/media-info";
 
 const execFileAsync = promisify(execFile);
 
@@ -133,6 +134,12 @@ function videoArgs(mode: HwAccel): string[] {
         "16M",
         "-pix_fmt",
         "yuv420p",
+        // Keyframes ONLY at the forced 4s boundaries (no mid-segment scene-cut
+        // IDRs) → every segment starts on a keyframe. A segment that doesn't is
+        // undecodable on its own; if hls.js starts/recovers there, the picture
+        // smears into blocky garbage until the next keyframe.
+        "-sc_threshold",
+        "0",
       ];
   }
 }
@@ -172,6 +179,10 @@ export function buildFfmpegArgs(
     "2",
     "-b:a",
     "160k",
+    // Stretch/squeeze audio to its timestamps so long files can't drift out of
+    // A/V sync (drifty sources play "weird" — lips ahead/behind the picture).
+    "-af",
+    "aresample=async=1",
     // Some files interleave audio and video far apart; a larger mux queue avoids
     // ffmpeg aborting with "Too many packets buffered for output stream" (which
     // manifests as a transcode that just never plays).
@@ -184,8 +195,11 @@ export function buildFfmpegArgs(
     "4",
     "-hls_playlist_type",
     "event",
+    // temp_file: write each segment to a temp name and rename when complete, so
+    // a client can never read a half-written .ts (truncated segments decode as
+    // corrupted smears and stall playback).
     "-hls_flags",
-    "independent_segments",
+    "independent_segments+temp_file",
     "-hls_segment_type",
     "mpegts",
     "-hls_segment_filename",
@@ -352,6 +366,16 @@ export async function startSession(absPath: string, opts: StartOpts = {}): Promi
 
   ensureReaper();
 
+  // No explicit track chosen → transcode the file's DEFAULT audio track (what a
+  // browser would play in direct play), not blindly the first one. On dual-audio
+  // files whose default is the second stream, `0:a:0` played the wrong language.
+  let audioTrack = opts.audioTrack;
+  if (audioTrack == null) {
+    const tracks = await probeAudioTracks(absPath).catch(() => []);
+    const def = tracks.find((t) => t.isDefault);
+    if (def) audioTrack = def.index;
+  }
+
   const id = crypto.randomBytes(12).toString("hex");
   const dir = path.join(TRANSCODE_ROOT, id);
 
@@ -374,7 +398,7 @@ export async function startSession(absPath: string, opts: StartOpts = {}): Promi
       settings.transcodeHwAccel,
       settings.transcodeVaapiDevice,
       opts.startSec,
-      opts.audioTrack
+      audioTrack
     );
 
     const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });

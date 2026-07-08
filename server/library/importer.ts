@@ -351,16 +351,49 @@ async function importMovie(
  * is configured with removeCompletedDownloads. Best-effort: never fails an
  * already-successful import. We pass deleteData=false so seeding source files are
  * left for the client to manage (move mode already relocated the source).
+ *
+ * TorBox additionally leaves its fetched copy in the local staging directory —
+ * in copy/hardlink import mode that copy would otherwise linger forever, filling
+ * the disk. Those files are media-box's own transient fetches (nothing seeds from
+ * them), so the download's staging folder is always deleted after a successful
+ * import, guarded to be strictly inside the configured staging dir.
  */
 async function cleanupCompletedDownload(download: DownloadRow): Promise<void> {
+  const db = getDb();
+  const clientRow = db
+    .select()
+    .from(schema.downloadClients)
+    .where(eq(schema.downloadClients.id, download.downloadClientId))
+    .get();
+  if (!clientRow) return;
+
+  // Local TorBox staging leftovers — remove our fetched copy now that it's imported.
+  if (clientRow.type === "torbox" && download.outputPath) {
+    try {
+      const stagingDir = String(
+        (clientRow.settings as { stagingDir?: string } | null)?.stagingDir ?? ""
+      );
+      const staged = path.resolve(download.outputPath);
+      // Only ever delete a path strictly INSIDE the staging dir (never the dir
+      // itself, never anything outside it — e.g. a remapped library path).
+      if (
+        stagingDir &&
+        staged !== path.resolve(stagingDir) &&
+        staged.startsWith(path.resolve(stagingDir) + path.sep)
+      ) {
+        await fs.rm(staged, { recursive: true, force: true });
+      }
+    } catch (err) {
+      console.warn(
+        `[import] staging cleanup of '${download.title}' failed:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
+  // Remove from the client (TorBox cloud / qBittorrent) when configured to.
+  if (!clientRow.removeCompletedDownloads) return;
   try {
-    const db = getDb();
-    const clientRow = db
-      .select()
-      .from(schema.downloadClients)
-      .where(eq(schema.downloadClients.id, download.downloadClientId))
-      .get();
-    if (!clientRow || !clientRow.removeCompletedDownloads) return;
     const client = await getClient(clientRow);
     await client.remove(download.externalId, false);
   } catch (err) {

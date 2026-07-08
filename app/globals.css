@@ -124,16 +124,3 @@ html {
     animation: none !important;
   }
 }
-
-/* ---- Media player: trim the native <video> control bar ----
-   The player keeps the browser's native controls for play/pause, the scrubber,
-   time, and volume, but layers its own cluster (Direct/Transcode, quality,
-   audio, CC, Play-on-TV, fullscreen) on top. That made WebKit/Chromium render a
-   SECOND fullscreen button and the ⋮ overflow menu underneath the app's own —
-   the duplicates users saw. Hide just those redundant native buttons; the rest
-   of the native bar stays. WebKit/Chromium only (Firefox exposes no such hooks). */
-.mb-native-video::-webkit-media-controls-fullscreen-button,
-.mb-native-video::-webkit-media-controls-overflow-button,
-.mb-native-video::-webkit-media-controls-picture-in-picture-button {
-  display: none !important;
-}

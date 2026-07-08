@@ -41,6 +41,7 @@ interface FfprobeStream {
   channels?: number;
   color_transfer?: string;
   color_primaries?: string;
+  disposition?: { default?: number };
   tags?: { language?: string };
 }
 
@@ -78,7 +79,13 @@ function detectHdr(stream: FfprobeStream): string | null {
 function mapOutput(absPath: string, data: FfprobeOutput): MediaInfo {
   const streams = data.streams ?? [];
   const videoStream = streams.find((s) => s.codec_type === "video");
-  const audioStream = streams.find((s) => s.codec_type === "audio");
+  // Report the DEFAULT-disposition audio track — that's the one a browser plays
+  // in direct play. On dual-audio files (e.g. AAC + default AC3) reporting the
+  // first track made canDirectPlay approve direct play of an undecodable default
+  // track → video with no sound. Fall back to the first track when none is
+  // flagged default.
+  const audioStreams = streams.filter((s) => s.codec_type === "audio");
+  const audioStream = audioStreams.find((s) => s.disposition?.default === 1) ?? audioStreams[0];
   const subtitleStreams = streams.filter((s) => s.codec_type === "subtitle");
 
   const container =

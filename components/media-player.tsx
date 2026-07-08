@@ -138,6 +138,15 @@ function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
+/** Playback clock, e.g. 75 → "1:15", 3675 → "1:01:15". */
+function fmtClock(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h > 0 ? `${h}:${pad2(m)}:${pad2(sec)}` : `${m}:${pad2(sec)}`;
+}
+
 /**
  * The previous / next PLAYABLE episode relative to the one now playing, as served
  * by `GET /api/v1/episodes/{id}/neighbors`. `null` when there is no such neighbor.
@@ -513,6 +522,11 @@ export function VideoPlayerModal({
   const [playedSeconds, setPlayedSeconds] = useState(0);
   const seekNonce = useRef(0);
   const [seekReq, setSeekReq] = useState<{ t: number; n: number } | null>(null);
+  // Transport state for the custom control bar (native <video> controls are off).
+  const [paused, setPaused] = useState(true);
+  const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(1);
+  const [mediaDurationSec, setMediaDurationSec] = useState(0);
   // Audio-track picker (multi-audio files). `selectedAudio` is the chosen 0:a:index,
   // or null = the default track. Choosing one forces transcode (to remap audio).
   const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
@@ -887,9 +901,15 @@ export function VideoPlayerModal({
   // the skip button) and, in the last stretch of an episode that has a next
   // neighbour (unless dismissed), reveal the auto-advance "Up next" card.
   const handleTime = useCallback(
-    (currentTime: number) => {
+    (currentTime: number, duration?: number) => {
       const sec = Math.floor(currentTime);
       setPlayedSeconds((prev) => (prev === sec ? prev : sec));
+      // Track the element's duration for the custom seek bar (a live transcode
+      // reports only the encoded-so-far length — the probed duration wins there).
+      if (duration != null && Number.isFinite(duration) && duration > 0) {
+        const d = Math.floor(duration);
+        setMediaDurationSec((prev) => (prev === d ? prev : d));
+      }
       if (current.type !== "episode" || !neighbors.next || upNextCancelled) return;
       // Only using the PROBED duration — never the live transcode's <video>.duration
       // (which starts tiny) — so this can't fire early. If unknown, don't auto-advance.
@@ -1031,6 +1051,72 @@ export function VideoPlayerModal({
     showControls();
   }, [showControls]);
 
+  const togglePlay = useCallback(() => {
+    const v = videoElRef.current;
+    if (!v) return;
+    if (v.paused) void v.play().catch(() => {});
+    else v.pause();
+    showControls();
+  }, [showControls]);
+
+  const seekTo = useCallback(
+    (t: number) => {
+      const v = videoElRef.current;
+      if (!v) return;
+      try {
+        v.currentTime = Math.max(0, t);
+      } catch {
+        /* not seekable yet — ignore */
+      }
+      showControls();
+    },
+    [showControls]
+  );
+
+  const setVolumeTo = useCallback(
+    (v01: number) => {
+      const v = videoElRef.current;
+      if (!v) return;
+      const clamped = Math.max(0, Math.min(1, v01));
+      v.muted = clamped === 0;
+      v.volume = clamped;
+      showControls();
+    },
+    [showControls]
+  );
+
+  // Mirror the live <video>'s transport state into React so the custom bar's
+  // play/pause + volume UI stays in sync whatever changed it (keyboard, remote
+  // watch-together commands, autoplay policies). Also: clicking the video
+  // itself toggles play/pause, like every mainstream player.
+  useEffect(() => {
+    const v = videoEl;
+    if (!v) return;
+    const sync = () => {
+      setPaused(v.paused);
+      setMuted(v.muted);
+      setVolume(v.volume);
+    };
+    const onClick = () => {
+      if (v.paused) void v.play().catch(() => {});
+      else v.pause();
+      showControls();
+    };
+    // Initial read deferred a frame (the element may already be mid-autoplay).
+    const raf = requestAnimationFrame(sync);
+    v.addEventListener("play", sync);
+    v.addEventListener("pause", sync);
+    v.addEventListener("volumechange", sync);
+    v.addEventListener("click", onClick);
+    return () => {
+      cancelAnimationFrame(raf);
+      v.removeEventListener("play", sync);
+      v.removeEventListener("pause", sync);
+      v.removeEventListener("volumechange", sync);
+      v.removeEventListener("click", onClick);
+    };
+  }, [videoEl, showControls]);
+
   // F toggles fullscreen. Esc is deliberately layered so it never closes the
   // player by surprise: an open dropdown closes first, then fullscreen exits,
   // and only a bare Esc (nothing open, not fullscreen) actually closes it.
@@ -1070,6 +1156,9 @@ export function VideoPlayerModal({
       } else if (e.key === "m" || e.key === "M") {
         e.preventDefault();
         toggleMute();
+      } else if (e.key === " " || e.key === "k" || e.key === "K") {
+        e.preventDefault();
+        togglePlay();
       } else if (e.key === "[" && selectedSub >= 0) {
         e.preventDefault();
         nudgeOffset(-SUBTITLE_OFFSET_STEP);
@@ -1091,6 +1180,7 @@ export function VideoPlayerModal({
     seekBy,
     changeVolume,
     toggleMute,
+    togglePlay,
   ]);
 
   // The currently-playing version (if the list resolved) and the label for the
@@ -1098,6 +1188,10 @@ export function VideoPlayerModal({
   // fall back to a tag derived from the probed height; hide it if nothing known.
   const selectedVersion = versions.find((v) => v.fileId === selectedFileId) ?? null;
   const qualityChip = selectedVersion?.resolution ?? qualityTagFromHeight(mediaInfo?.video?.height);
+
+  // Seek-bar length: the probed real runtime when known (a live transcode's
+  // element duration only covers what's encoded so far), else the element's.
+  const displayDurationSec = realDurationSec > 0 ? realDurationSec : mediaDurationSec;
 
   const overlay = (
     <div
@@ -1254,77 +1348,140 @@ export function VideoPlayerModal({
         </div>
       </div>
 
-      {/* Bottom control cluster — Direct/Transcode, CC (opens upward), fullscreen.
-          The wrapper is click-through so it never blocks the native <video>
-          controls; only the chip itself captures pointer events, and it sits
-          above the native control bar. */}
+      {/* THE control bar — replaces the native <video> controls entirely so there
+          is exactly one bar: a full-width scrubber on top, then transport on the
+          left (play/pause, prev/next, volume, time) and the settings cluster
+          (Direct/Transcode, quality, audio, CC, Play-on-TV, fullscreen) on the
+          right. Auto-hides with the rest of the chrome. */}
       <div
         className={cn(
           "pointer-events-none absolute inset-x-0 bottom-0 z-10 transition-opacity duration-300",
           barVisible ? "opacity-100" : "opacity-0"
         )}
       >
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-black/80 via-black/40 to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-36 bg-gradient-to-t from-black/90 via-black/50 to-transparent" />
 
         <div
           className={cn(
-            "absolute right-3 bottom-16 flex items-center gap-2 rounded-lg bg-black/50 p-1.5 backdrop-blur-sm sm:right-4",
+            "absolute inset-x-0 bottom-0 flex flex-col gap-1 px-3 pb-2 sm:px-4",
             barVisible ? "pointer-events-auto" : "pointer-events-none"
           )}
         >
-          {/* Previous / Next episode (episodes only) — disabled when no neighbour. */}
-          {current.type === "episode" && (
-            <div className="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="icon"
-                disabled={!neighbors.prev}
-                onClick={() => {
-                  if (neighbors.prev) goTo(neighbors.prev);
-                  showControls();
-                }}
-                aria-label="Previous episode"
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  className="size-5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
+          <SeekBar value={playedSeconds} max={displayDurationSec} onSeek={seekTo} />
+
+          <div className="flex flex-wrap items-center gap-1 sm:gap-1.5">
+            {/* Play / pause */}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={togglePlay}
+              aria-label={paused ? "Play" : "Pause"}
+            >
+              <svg viewBox="0 0 24 24" className="size-6" fill="currentColor" aria-hidden="true">
+                {paused ? <path d="M8 5v14l11-7-11-7z" /> : <path d="M7 5h4v14H7zM13 5h4v14h-4z" />}
+              </svg>
+            </Button>
+
+            {/* Previous / Next episode (episodes only) — disabled when no neighbour. */}
+            {current.type === "episode" && (
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  disabled={!neighbors.prev}
+                  onClick={() => {
+                    if (neighbors.prev) goTo(neighbors.prev);
+                    showControls();
+                  }}
+                  aria-label="Previous episode"
                 >
-                  <path d="M18 6L9 12l9 6V6z" />
-                  <line x1="6" y1="6" x2="6" y2="18" />
-                </svg>
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                disabled={!neighbors.next}
-                onClick={() => {
-                  if (neighbors.next) goTo(neighbors.next);
-                  showControls();
-                }}
-                aria-label="Next episode"
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  className="size-5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="size-5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M18 6L9 12l9 6V6z" />
+                    <line x1="6" y1="6" x2="6" y2="18" />
+                  </svg>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  disabled={!neighbors.next}
+                  onClick={() => {
+                    if (neighbors.next) goTo(neighbors.next);
+                    showControls();
+                  }}
+                  aria-label="Next episode"
                 >
-                  <path d="M6 6l9 6-9 6V6z" />
-                  <line x1="18" y1="6" x2="18" y2="18" />
-                </svg>
-              </Button>
-            </div>
-          )}
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="size-5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M6 6l9 6-9 6V6z" />
+                    <line x1="18" y1="6" x2="18" y2="18" />
+                  </svg>
+                </Button>
+              </div>
+            )}
+
+            {/* Volume: mute toggle + slider (slider hidden on small screens) */}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleMute}
+              aria-label={muted ? "Unmute" : "Mute"}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="size-5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M11 5 6 9H2v6h4l5 4V5z" />
+                {muted ? (
+                  <path d="m16 9 6 6M22 9l-6 6" />
+                ) : (
+                  <>
+                    <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+                    <path d="M19 5a9 9 0 0 1 0 14" />
+                  </>
+                )}
+              </svg>
+            </Button>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={muted ? 0 : volume}
+              onChange={(e) => setVolumeTo(Number(e.target.value))}
+              aria-label="Volume"
+              className="hidden h-1 w-20 cursor-pointer accent-amber-500 sm:block"
+            />
+
+            {/* Time */}
+            <span className="ml-1 whitespace-nowrap text-[11px] tabular-nums text-zinc-300">
+              {fmtClock(playedSeconds)}
+              {displayDurationSec > 0 ? ` / ${fmtClock(displayDurationSec)}` : ""}
+            </span>
+
+            <div className="min-w-0 flex-1" />
 
           {/* Playback mode is chosen automatically, but the chip is a toggle: force
               transcode to fix a file that plays with no audio (undecodable codec on
@@ -1673,12 +1830,54 @@ export function VideoPlayerModal({
               )}
             </svg>
           </Button>
+          </div>
         </div>
       </div>
     </div>
   );
 
   return mounted ? createPortal(overlay, document.body) : null;
+}
+
+/**
+ * The control bar's scrubber. Dragging previews locally and only seeks on
+ * release, so scrubbing doesn't fire a seek per pixel; arrow keys on the range
+ * commit on key-up (the player's global arrow shortcuts skip inputs).
+ */
+function SeekBar({
+  value,
+  max,
+  onSeek,
+}: {
+  value: number;
+  max: number;
+  onSeek: (t: number) => void;
+}) {
+  const [drag, setDrag] = useState<number | null>(null);
+  const boundedMax = Math.max(1, Math.floor(max));
+  const shown = Math.min(Math.floor(drag ?? value), boundedMax);
+  const commit = () => {
+    if (drag != null) {
+      onSeek(drag);
+      setDrag(null);
+    }
+  };
+  return (
+    <input
+      type="range"
+      min={0}
+      max={boundedMax}
+      step={1}
+      value={shown}
+      disabled={max <= 0}
+      onChange={(e) => setDrag(Number(e.target.value))}
+      onPointerUp={commit}
+      onKeyUp={commit}
+      onBlur={commit}
+      aria-label="Seek"
+      className="h-1 w-full cursor-pointer accent-amber-500 disabled:cursor-default"
+    />
+  );
 }
 
 function SubtitleMenuItem({
@@ -1781,9 +1980,8 @@ function DirectPlayer({
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video
         ref={videoRef}
-        controls
         autoPlay
-        className="mb-native-video h-full w-full bg-black object-contain"
+        className="h-full w-full bg-black object-contain"
         src={src}
         onError={() => setErrored(true)}
         onTimeUpdate={(e) => onTime?.(e.currentTarget.currentTime, e.currentTarget.duration)}
@@ -1959,9 +2157,8 @@ function TranscodePlayer({
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video
         ref={videoRef}
-        controls
         autoPlay
-        className="mb-native-video h-full w-full bg-black object-contain"
+        className="h-full w-full bg-black object-contain"
         onTimeUpdate={(e) => onTime?.(e.currentTarget.currentTime, e.currentTarget.duration)}
         onEnded={() => onEnded?.()}
       >
