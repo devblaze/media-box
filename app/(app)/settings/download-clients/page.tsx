@@ -16,6 +16,7 @@ import {
   useConfirm,
   useToast,
 } from "@/components/ui";
+import { DirectoryPicker } from "@/components/directory-picker";
 
 type ClientType = "qbittorrent" | "torbox";
 
@@ -143,6 +144,8 @@ function ClientDialog({
   // torbox
   const [apiKey, setApiKey] = useState(String(s.apiKey ?? ""));
   const [stagingDir, setStagingDir] = useState(String(s.stagingDir ?? "/data/torbox"));
+  // Whether the folder browser overlay is open for the staging directory.
+  const [browsing, setBrowsing] = useState(false);
 
   // Tracks which async action is in flight so buttons show their own spinner.
   const [pending, setPending] = useState<null | "test" | "save">(null);
@@ -218,6 +221,22 @@ function ClientDialog({
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Delete failed");
     }
+  }
+
+  // Browse for the staging folder in place of the form. The form's values live in
+  // this component's state, so they survive while the picker is shown and are still
+  // there when we come back — this avoids stacking two portalled modals (which would
+  // double-fire Escape and fight over the body scroll lock).
+  if (browsing) {
+    return (
+      <DirectoryPicker
+        onClose={() => setBrowsing(false)}
+        onPick={async (path) => {
+          setStagingDir(path);
+          setBrowsing(false);
+        }}
+      />
+    );
   }
 
   return (
@@ -345,13 +364,19 @@ function ClientDialog({
             <Field
               label="Local staging directory"
               htmlFor="dc-staging"
-              description="Completed TorBox downloads are fetched here before import."
+              description="Completed TorBox downloads are fetched here before import. Browse to pick a folder media-box can write to."
             >
-              <Input
-                id="dc-staging"
-                value={stagingDir}
-                onChange={(e) => setStagingDir(e.target.value)}
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="dc-staging"
+                  className="flex-1"
+                  value={stagingDir}
+                  onChange={(e) => setStagingDir(e.target.value)}
+                />
+                <Button variant="secondary" onClick={() => setBrowsing(true)} disabled={busy}>
+                  Browse
+                </Button>
+              </div>
             </Field>
 
             <HowTo title="How do I connect TorBox?">
