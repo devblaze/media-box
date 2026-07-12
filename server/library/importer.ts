@@ -16,6 +16,7 @@ import { markRequestsAvailable } from "@/server/requests/request-service";
 import { getSettings } from "@/server/settings/settings-service";
 import { getClient } from "@/server/download/client";
 import { recordDownloadFailure } from "@/server/download/failure-log";
+import { recordLog } from "@/server/logging/logger";
 import { enqueueCommand } from "@/server/jobs/scheduler";
 
 type DownloadRow = typeof schema.downloads.$inferSelect;
@@ -490,6 +491,17 @@ export async function importDownload(
       .run();
     emitEvent({ type: "queue.updated" });
     emitEvent({ type: "history.added" });
+
+    // Success breadcrumb for the admin Logs page (the catch below logs failures).
+    recordLog("info", `[import] imported ${count} file(s) from '${download.title}'`, {
+      source: "import",
+      context: {
+        downloadId,
+        files: count,
+        mediaType: download.mediaType,
+        outputPath: download.outputPath,
+      },
+    });
 
     await cleanupCompletedDownload(download);
     return `imported ${count} file(s) from '${download.title}'`;

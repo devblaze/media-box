@@ -11,6 +11,7 @@ import { freeSpace } from "@/server/library/filesystem";
 import { enqueueCommand } from "@/server/jobs/scheduler";
 import { sanitizePathComponent } from "@/server/library/naming-utils";
 import { recordDownloadFailure } from "@/server/download/failure-log";
+import { recordLog } from "@/server/logging/logger";
 import type { QualityModel } from "@/server/parser/quality";
 import { emitEvent } from "@/server/events/bus";
 
@@ -72,6 +73,11 @@ export async function fetchTorboxHandler(payload: unknown): Promise<string> {
       .run();
     emitEvent({ type: "queue.updated" });
     enqueueCommand("ImportDownload", { downloadId }, "system", 5);
+    // Success breadcrumb for the admin Logs page (the catch below logs failures).
+    recordLog("info", `[fetch-torbox] fetched ${files.length} file(s) for '${download.title}'`, {
+      source: "fetch",
+      context: { downloadId, files: files.length, destDir },
+    });
     return `fetched ${files.length} file(s) to ${destDir}`;
   } catch (err) {
     const reason = `TorBox fetch failed: ${err instanceof Error ? err.message : String(err)}`;

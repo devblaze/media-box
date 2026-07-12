@@ -150,7 +150,9 @@ export default function LogsPage() {
       </div>
 
       <p className="text-sm text-zinc-400">
-        Captured warnings and errors from the running app. Click a row to inspect its context.
+        Captured activity from the running app — successful grabs, fetches and imports (
+        <span className="text-sky-400">info</span>) alongside warnings and errors. Filter by level
+        or click a row to inspect its context.
       </p>
 
       {isLoading && !logs ? (

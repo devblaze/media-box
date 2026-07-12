@@ -4,6 +4,7 @@ import { getClient } from "./client";
 import type { DecoratedRelease } from "@/server/indexers/release-search";
 import { emitEvent } from "@/server/events/bus";
 import { recordDownloadFailure } from "./failure-log";
+import { recordLog } from "@/server/logging/logger";
 
 export interface GrabTarget {
   mediaType: "series" | "movie";
@@ -83,6 +84,19 @@ export async function grab(release: DecoratedRelease, target: GrabTarget) {
 
       emitEvent({ type: "queue.updated" });
       emitEvent({ type: "history.added" });
+      // Success breadcrumb for the admin Logs page — the failure paths below and
+      // in the queue/import handlers already log, so log the wins too and the page
+      // reflects the real grab success rate instead of only failures.
+      recordLog("info", `[grab] sent '${release.title}' to '${row.name}'`, {
+        source: "grab",
+        context: {
+          client: row.name,
+          indexer: release.indexerName,
+          size: release.size,
+          mediaType: target.mediaType,
+          externalId,
+        },
+      });
       return download ?? { externalId };
     } catch (err) {
       lastError = err;
