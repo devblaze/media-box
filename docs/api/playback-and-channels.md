@@ -140,7 +140,7 @@ Direct-play a movie's video file with byte-range (seek) support. Exports both `G
 - **Auth:** Any authenticated (`getRequestUser`); returns `401` `Unauthorized` (plain text) otherwise.
 - **Path params:** `id` — movie id.
 - **Query params:** `file` — optional numeric movie-file id (selects a specific file when a movie has more than one).
-- **Response:** binary video stream, `Content-Type` inferred from file extension (MP4/M4V use `video/mp4`; MKV/WebM use their native types). No `Range` header → `200` full body with `Content-Length` + `Accept-Ranges: bytes`; `Range: bytes=start-end` → `206` partial with `Content-Range`; invalid/unsatisfiable range → `416`. `HEAD` returns the same status/headers with no body. Errors: `401` (plain), `404` `Not Found` (plain) if the media or file is missing.
+- **Response:** binary video stream, `Content-Type` inferred from file extension (mp4/mkv/webm/…). No `Range` header → `200` full body with `Content-Length` + `Accept-Ranges: bytes`; `Range: bytes=start-end` → `206` partial with `Content-Range`; invalid/unsatisfiable range → `416`. `HEAD` returns the same status/headers with no body. Errors: `401` (plain), `404` `Not Found` (plain) if the media or file is missing.
 - **Example:**
   ```bash
   curl -sS -r 0-1048575 "$MEDIABOX_URL/api/v1/stream/movie/12?file=34" \
@@ -165,7 +165,7 @@ Direct-play an episode's video file with byte-range (seek) support. Exports both
 
 ## `POST /api/v1/transcode`
 
-Start an on-the-fly HLS playback session (used when a file can't be direct-played or needs deterministic audio-track selection). Browser-safe 8-bit H.264 video is direct-streamed without re-encoding while the selected audio is converted to stereo AAC; incompatible video is transcoded to H.264. Returns the session id and its playlist URL.
+Start an on-the-fly HLS transcode session (used when a file can't be direct-played). Returns the session id and its playlist URL.
 
 - **Auth:** Any authenticated (`getRequestUser`); `401` otherwise.
 - **Request body:** JSON
@@ -173,7 +173,7 @@ Start an on-the-fly HLS playback session (used when a file can't be direct-playe
   - `id` — positive integer, coerced from string (required).
   - `fileId` — positive integer, optional (specific source file).
   - `startSec` — number ≥ 0, optional (seek offset to begin transcoding at).
-  - `audioTrack` — integer ≥ 0, optional. 0-based audio-stream index to map (`0:a:index`, from `/audio-tracks`); defaults to the stream marked default, then the first track. Used to fix multi-audio files whose default track is silent/wrong.
+  - `audioTrack` — integer ≥ 0, optional. 0-based audio-stream index to map (`0:a:index`, from `/audio-tracks`); defaults to the first track. Used to fix multi-audio files whose default track is silent/wrong.
 - **Response:** `200` — `{ "sessionId": "…", "url": "/api/v1/transcode/{sessionId}/index.m3u8" }`. Errors: `400` `Invalid request body` (bad/failed Zod parse), `404` `Media not found`, `429` `{ error }` when the concurrent-session cap is reached, `503` `{ error: "ffmpeg not available" }`, `500`.
 - **Example:**
   ```bash
@@ -231,7 +231,7 @@ Skippable intro/recap segments for a movie/episode, derived from the file's chap
 Audio tracks in a movie/episode file (via ffprobe), so the player can offer an audio-track picker. Fixes "no sound" on multi-audio files (anime JP/EN dubs, commentary tracks) whose default/first track is silent or the wrong one — the chosen track's `index` is passed to `POST /transcode` as `audioTrack`.
 
 - **Auth:** Any authenticated (`getRequestUser`); `401` `{ error: "Not signed in" }` otherwise.
-- **Query params:** `movieId` **or** `episodeId` (one required); `fileId` optionally selects a specific movie quality/version.
+- **Query params:** `movieId` **or** `episodeId` (one required).
 - **Response:** `200` — array of `{ index, codec, channels, language, title, isDefault, label }` in `0:a:index` order. Empty when the file has 0/1 audio track or ffprobe is unavailable. Errors: `400` (neither id), `500`.
 - **Example:**
   ```bash

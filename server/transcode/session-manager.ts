@@ -5,7 +5,7 @@ import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { CONFIG_DIR } from "@/server/config/paths";
 import { getSettings } from "@/server/settings/settings-service";
-import { probeAudioTracks, probeMediaInfo } from "@/server/library/media-info";
+import { probeAudioTracks } from "@/server/library/media-info";
 import { recordLog } from "@/server/logging/logger";
 
 const execFileAsync = promisify(execFile);
@@ -36,15 +36,6 @@ export interface StartOpts {
   startSec?: number;
   /** 0-based audio-stream index to map (`0:a:index`). Defaults to the first track. */
   audioTrack?: number;
-}
-
-/** H.264 8-bit video can be remuxed while only audio is converted to AAC. */
-function canCopyVideo(codec: string | undefined, pixelFormat: string | null | undefined): boolean {
-  const normalized = (codec ?? "").toLowerCase();
-  if (!["h264", "avc", "avc1"].includes(normalized)) return false;
-  // Unknown is accepted for older/probe-limited files; known 10-bit and 4:2:2
-  // formats must be encoded because browsers commonly render them incorrectly.
-  return pixelFormat == null || ["yuv420p", "yuvj420p", "nv12"].includes(pixelFormat.toLowerCase());
 }
 
 /** Thrown when the configured concurrent-session cap is already reached. */
@@ -164,10 +155,6 @@ function videoArgs(mode: HwAccel): string[] {
   }
 }
 
-function copiedVideoArgs(): string[] {
-  return ["-c:v", "copy"];
-}
-
 /** Build the full ffmpeg argv for an HLS (mpegts, event) transcode. */
 export function buildFfmpegArgs(
   absPath: string,
@@ -175,8 +162,7 @@ export function buildFfmpegArgs(
   mode: HwAccel,
   vaapiDevice: string,
   startSec?: number,
-  audioTrack?: number,
-  copyVideo = false
+  audioTrack?: number
 ): string[] {
   const seek = startSec && startSec > 0 ? ["-ss", String(startSec)] : [];
   const audioIndex = Number.isInteger(audioTrack) && audioTrack! >= 0 ? audioTrack! : 0;
@@ -192,11 +178,12 @@ export function buildFfmpegArgs(
     "0:v:0",
     "-map",
     `0:a:${audioIndex}?`,
-    ...(copyVideo ? copiedVideoArgs() : videoArgs(mode)),
+    ...videoArgs(mode),
     // Force a keyframe exactly at every HLS segment boundary (every 4s). Without
     // this, segments can only split on the encoder's natural GOP, producing
     // over-long/irregular segments → slow startup and mid-playback buffering.
-    ...(copyVideo ? [] : ["-force_key_frames", "expr:gte(t,n_forced*4)"]),
+    "-force_key_frames",
+    "expr:gte(t,n_forced*4)",
     "-c:a",
     "aac",
     "-ac",
@@ -206,17 +193,12 @@ export function buildFfmpegArgs(
     // Stretch/squeeze audio to its timestamps so long files can't drift out of
     // A/V sync (drifty sources play "weird" — lips ahead/behind the picture).
     "-af",
-    "aresample=async=1000:first_pts=0",
+    "aresample=async=1",
     // Some files interleave audio and video far apart; a larger mux queue avoids
     // ffmpeg aborting with "Too many packets buffered for output stream" (which
     // manifests as a transcode that just never plays).
     "-max_muxing_queue_size",
     "1024",
-    // Repair missing/non-monotonic timestamps found in broadcast TS and older
-    // AVI/MKV files. Bad timestamps otherwise surface as frozen or corrupted
-    // frames even though encoding itself is healthy.
-    "-avoid_negative_ts",
-    "make_zero",
     "-sn",
     "-f",
     "hls",
@@ -398,23 +380,12 @@ export async function startSession(absPath: string, opts: StartOpts = {}): Promi
   // No explicit track chosen → transcode the file's DEFAULT audio track (what a
   // browser would play in direct play), not blindly the first one. On dual-audio
   // files whose default is the second stream, `0:a:0` played the wrong language.
-  // Probe video and (when needed) audio concurrently to keep startup latency
-  // low even on network-mounted libraries.
-  const [mediaInfo, tracks] = await Promise.all([
-    probeMediaInfo(absPath),
-    opts.audioTrack == null ? probeAudioTracks(absPath).catch(() => []) : Promise.resolve([]),
-  ]);
   let audioTrack = opts.audioTrack;
   if (audioTrack == null) {
+    const tracks = await probeAudioTracks(absPath).catch(() => []);
     const def = tracks.find((t) => t.isDefault);
     if (def) audioTrack = def.index;
   }
-
-  // Jellyfin-style "direct stream": when the picture is already browser-safe
-  // H.264, keep it bit-for-bit and transcode only the selected audio to AAC.
-  // This avoids needless quality loss and is dramatically faster for dual-audio
-  // files whose video was never the incompatible part.
-  const copyVideo = canCopyVideo(mediaInfo?.video?.codec, mediaInfo?.video?.pixelFormat);
 
   const id = crypto.randomBytes(12).toString("hex");
   const dir = path.join(TRANSCODE_ROOT, id);
@@ -438,8 +409,7 @@ export async function startSession(absPath: string, opts: StartOpts = {}): Promi
       settings.transcodeHwAccel,
       settings.transcodeVaapiDevice,
       opts.startSec,
-      audioTrack,
-      copyVideo
+      audioTrack
     );
 
     const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });

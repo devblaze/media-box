@@ -22,8 +22,6 @@ export interface MediaInfo {
     width: number | null;
     height: number | null;
     hdr: string | null;
-    /** ffprobe pixel format (for example yuv420p or yuv420p10le). */
-    pixelFormat?: string | null;
   } | null;
   audio: {
     codec: string;
@@ -40,11 +38,10 @@ interface FfprobeStream {
   codec_name?: string;
   width?: number;
   height?: number;
-  pix_fmt?: string;
   channels?: number;
   color_transfer?: string;
   color_primaries?: string;
-  disposition?: { default?: number; attached_pic?: number };
+  disposition?: { default?: number };
   tags?: { language?: string };
 }
 
@@ -81,11 +78,7 @@ function detectHdr(stream: FfprobeStream): string | null {
 
 function mapOutput(absPath: string, data: FfprobeOutput): MediaInfo {
   const streams = data.streams ?? [];
-  // Some containers expose cover art as the first video stream. Never treat an
-  // attached poster as the playable picture stream.
-  const videoStream =
-    streams.find((s) => s.codec_type === "video" && s.disposition?.attached_pic !== 1) ??
-    streams.find((s) => s.codec_type === "video");
+  const videoStream = streams.find((s) => s.codec_type === "video");
   // Report the DEFAULT-disposition audio track — that's the one a browser plays
   // in direct play. On dual-audio files (e.g. AAC + default AC3) reporting the
   // first track made canDirectPlay approve direct play of an undecodable default
@@ -113,7 +106,6 @@ function mapOutput(absPath: string, data: FfprobeOutput): MediaInfo {
           width: toNumber(videoStream.width),
           height: toNumber(videoStream.height),
           hdr: detectHdr(videoStream),
-          pixelFormat: videoStream.pix_fmt ?? null,
         }
       : null,
     audio: audioStream

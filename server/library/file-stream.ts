@@ -6,9 +6,7 @@ import { Readable } from "node:stream";
 /** Extension -> Content-Type for the video formats we serve. */
 const CONTENT_TYPES: Record<string, string> = {
   ".mp4": "video/mp4",
-  // M4V is an ISO-BMFF/MP4 container. Serving the legacy x-m4v type makes some
-  // Chromium clients reject an otherwise directly playable H.264/AAC file.
-  ".m4v": "video/mp4",
+  ".m4v": "video/x-m4v",
   ".mkv": "video/x-matroska",
   ".webm": "video/webm",
   ".avi": "video/x-msvideo",
