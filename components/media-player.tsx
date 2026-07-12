@@ -213,6 +213,8 @@ function canDirectPlay(info: MediaInfo | null | undefined): boolean {
   if (!NATIVE_CONTAINERS.has(container)) return false;
   const acodec = (info.audio?.codec ?? "").toLowerCase();
   if (acodec && !WEB_AUDIO.has(acodec)) return false;
+  const pixelFormat = info.video?.pixelFormat?.toLowerCase();
+  if (pixelFormat && !["yuv420p", "yuvj420p", "nv12"].includes(pixelFormat)) return false;
   if (typeof document === "undefined") {
     // Server render — no element to probe; use the safe H.264/AAC baseline.
     const vcodec = (info.video?.codec ?? "").toLowerCase();
@@ -876,15 +878,23 @@ export function VideoPlayerModal({
     let active = true;
     setAudioTracks([]);
     setSelectedAudio(null);
-    void apiFetch<AudioTrack[]>(`/audio-tracks?${key}=${current.id}`)
+    const fileQuery = selectedFileId != null ? `&fileId=${selectedFileId}` : "";
+    void apiFetch<AudioTrack[]>(`/audio-tracks?${key}=${current.id}${fileQuery}`)
       .then((list) => {
-        if (active) setAudioTracks(Array.isArray(list) ? list : []);
+        if (!active) return;
+        const next = Array.isArray(list) ? list : [];
+        setAudioTracks(next);
+        // HTML video does not offer a reliable cross-browser way to choose among
+        // embedded audio streams. Route dual-audio files through HLS so the
+        // server deterministically maps the default/selected stream to AAC. For
+        // H.264 sources this is a fast remux; the picture is not re-encoded.
+        if (next.length > 1) setMode("transcode");
       })
       .catch(() => {});
     return () => {
       active = false;
     };
-  }, [current.type, current.id]);
+  }, [current.type, current.id, selectedFileId]);
 
   // Authoritative runtime: a live transcode's <video>.duration only reflects what's
   // been encoded so far (a few seconds early on), so end-detection must use the
@@ -1981,6 +1991,8 @@ function DirectPlayer({
       <video
         ref={videoRef}
         autoPlay
+        playsInline
+        preload="auto"
         className="h-full w-full bg-black object-contain"
         src={src}
         onError={() => setErrored(true)}
@@ -2081,12 +2093,21 @@ function TranscodePlayer({
         if (Hls.isSupported()) {
           hls = new Hls({
             enableWorker: true,
+            // Do not begin at the encoder's first segment. Holding three HLS
+            // fragments gives playback a real runway and prevents the repeated
+            // play/pause cycle seen when FFmpeg momentarily dips below realtime.
+            initialLiveManifestSize: 3,
+            liveSyncDurationCount: 3,
+            liveMaxLatencyDurationCount: 8,
+            startFragPrefetch: true,
             // Buffer the transcode generously when segments are available, so a
             // slow encoder that briefly falls behind doesn't starve playback.
             maxBufferLength: 60,
             maxMaxBufferLength: 600,
             maxBufferSize: 200 * 1000 * 1000,
             backBufferLength: 90,
+            maxBufferHole: 0.5,
+            nudgeMaxRetry: 5,
           });
           // Count CONSECUTIVE fatal errors (reset on any successful fragment): a
           // fatal error mid-transcode is usually just reaching the encoder's edge
@@ -2158,6 +2179,8 @@ function TranscodePlayer({
       <video
         ref={videoRef}
         autoPlay
+        playsInline
+        preload="auto"
         className="h-full w-full bg-black object-contain"
         onTimeUpdate={(e) => onTime?.(e.currentTarget.currentTime, e.currentTarget.duration)}
         onEnded={() => onEnded?.()}

@@ -18,9 +18,16 @@ export async function GET(request: NextRequest) {
   }
   const movieId = Number(request.nextUrl.searchParams.get("movieId")) || undefined;
   const episodeId = Number(request.nextUrl.searchParams.get("episodeId")) || undefined;
+  const fileId = Number(request.nextUrl.searchParams.get("fileId")) || undefined;
   if (!movieId && !episodeId) return badRequest("?movieId= or ?episodeId= is required");
   try {
-    return ok(await listAudioTracks({ kind: movieId ? "movie" : "episode", id: movieId ?? episodeId! }));
+    return ok(
+      await listAudioTracks({
+        kind: movieId ? "movie" : "episode",
+        id: movieId ?? episodeId!,
+        fileId,
+      })
+    );
   } catch (err) {
     return serverError(err);
   }

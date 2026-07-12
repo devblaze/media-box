@@ -65,8 +65,12 @@ function buildLabel(s: AudioStream, index: number): string {
  * Multi-track anime (JP + EN dub, commentaries) is the main reason this exists —
  * transcoding the wrong first track is a common "no sound" cause.
  */
-export async function listAudioTracks(target: { kind: MediaType; id: number }): Promise<AudioTrackInfo[]> {
-  const resolved = resolveMediaPath(target.kind, target.id);
+export async function listAudioTracks(target: {
+  kind: MediaType;
+  id: number;
+  fileId?: number;
+}): Promise<AudioTrackInfo[]> {
+  const resolved = resolveMediaPath(target.kind, target.id, target.fileId);
   if (!resolved) return [];
   const streams = await probeAudioTracks(resolved.absPath);
   return streams.map((s) => ({ ...s, label: buildLabel(s, s.index) }));
