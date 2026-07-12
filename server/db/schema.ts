@@ -291,6 +291,11 @@ export const movieTags = sqliteTable(
 export const indexers = sqliteTable("indexers", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
+  // "torznab" = external Prowlarr/Jackett feed (uses url + apiKey); "builtin" =
+  // a scraper that ships inside media-box (uses `definition`, url stays empty).
+  type: text("type").notNull().default("torznab"),
+  // Registry key of the built-in scraper (e.g. "apibay", "yts") when type = "builtin".
+  definition: text("definition"),
   url: text("url").notNull(),
   apiKey: text("api_key"),
   categories: text("categories", { mode: "json" })

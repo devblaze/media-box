@@ -16,9 +16,13 @@ import {
   useToast,
 } from "@/components/ui";
 
+type IndexerType = "torznab" | "builtin";
+
 interface Indexer {
   id: number;
   name: string;
+  type: IndexerType;
+  definition: string | null;
   url: string;
   apiKey: string | null;
   enableRss: boolean;
@@ -31,7 +35,18 @@ interface Indexer {
   enabled: boolean;
 }
 
-const EMPTY = {
+interface Builtin {
+  key: string;
+  name: string;
+  description: string;
+  site: string;
+  supportsTv: boolean;
+  supportsMovies: boolean;
+  categories: number[];
+}
+
+const EMPTY: Partial<Indexer> = {
+  type: "torznab",
   name: "",
   url: "",
   apiKey: "",
@@ -41,7 +56,9 @@ const EMPTY = {
 
 export default function IndexersPage() {
   const { data: indexers, mutate } = useApi<Indexer[]>("/indexers");
+  const { data: builtins } = useApi<Builtin[]>("/indexers/builtins");
   const [editing, setEditing] = useState<Partial<Indexer> | null>(null);
+  const [picking, setPicking] = useState(false);
 
   const list = indexers ?? [];
 
@@ -49,38 +66,44 @@ export default function IndexersPage() {
     <div className="max-w-3xl space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Indexers</h1>
-        <Button onClick={() => setEditing(EMPTY)}>Add indexer</Button>
+        <div className="flex gap-2">
+          <Button onClick={() => setPicking(true)}>Add built-in</Button>
+          <Button variant="secondary" onClick={() => setEditing({ ...EMPTY })}>
+            Add Torznab
+          </Button>
+        </div>
       </div>
 
       <p className="text-sm text-zinc-400">
-        Torznab-compatible indexers (Prowlarr, Jackett, or native tracker torznab endpoints).
+        <strong>Built-in</strong> indexers scrape popular public trackers directly — no Prowlarr or
+        Jackett required. <strong>Torznab</strong> indexers point at an external Prowlarr/Jackett
+        feed for private trackers and the long tail.
       </p>
 
       <Callout tone="tip">
-        Point media-box at a Torznab endpoint from <strong>Prowlarr</strong> or{" "}
-        <strong>Jackett</strong> and paste its API key. Use <strong>Test</strong> before saving to
-        confirm the connection works.
+        Start with a <strong>built-in</strong> source (e.g. The Pirate Bay or YTS) for zero-setup
+        public torrents, and add <strong>Torznab</strong> feeds from Prowlarr/Jackett for anything
+        they don&apos;t cover. Lower <strong>priority</strong> numbers are preferred first.
       </Callout>
 
       <HowTo title="How do I add an indexer?">
         <ol>
           <li>
-            In Prowlarr or Jackett, open the indexer you want and copy its{" "}
-            <strong>Torznab feed URL</strong> — it usually looks like{" "}
-            <code>http://prowlarr:9696/1/api</code> (Jackett uses{" "}
-            <code>http://jackett:9117/api/v2.0/indexers/&lt;id&gt;/results/torznab</code>).
+            <strong>Built-in:</strong> click <strong>Add built-in</strong> and pick a source. It
+            works immediately — no URL or API key. Use <strong>Test</strong> to confirm it&apos;s
+            reachable.
           </li>
           <li>
-            Copy the matching <strong>API key</strong> from the same screen and paste it into the{" "}
-            <strong>API key</strong> field.
+            <strong>Torznab:</strong> in Prowlarr/Jackett, copy the indexer&apos;s{" "}
+            <strong>Torznab feed URL</strong> (e.g. <code>http://prowlarr:9696/1/api</code>) and its{" "}
+            <strong>API key</strong>, then paste both here.
           </li>
           <li>
             media-box searches the standard Torznab <strong>categories</strong> for TV (5000-series)
-            and movies (2000-series); the source indexer decides which categories it exposes.
+            and movies (2000-series).
           </li>
           <li>
-            Click <strong>Test</strong> to verify connectivity and authentication, then{" "}
-            <strong>Save</strong>. Lower <strong>priority</strong> numbers are preferred first.
+            Click <strong>Test</strong> to verify, then <strong>Save</strong>.
           </li>
         </ol>
       </HowTo>
@@ -89,8 +112,8 @@ export default function IndexersPage() {
         <EmptyState
           icon="🔎"
           title="No indexers configured"
-          description="Add a Torznab-compatible indexer to start searching for releases."
-          action={<Button onClick={() => setEditing(EMPTY)}>Add indexer</Button>}
+          description="Add a built-in source or a Torznab feed to start searching for releases."
+          action={<Button onClick={() => setPicking(true)}>Add built-in</Button>}
         />
       ) : (
         <div className="space-y-2">
@@ -100,14 +123,19 @@ export default function IndexersPage() {
               onClick={() => setEditing(ix)}
               className="flex w-full items-center justify-between rounded-md border border-zinc-800 bg-zinc-900/50 px-4 py-3 text-left transition-colors hover:border-amber-500/60"
             >
-              <div>
+              <div className="min-w-0">
                 <div className="flex items-center gap-2 font-medium">
                   {ix.name}
                   {!ix.enabled && <Badge tone="neutral">Disabled</Badge>}
                 </div>
-                <div className="mt-0.5 font-mono text-xs text-zinc-500">{ix.url}</div>
+                <div className="mt-0.5 truncate font-mono text-xs text-zinc-500">
+                  {ix.type === "builtin"
+                    ? `Built-in · ${builtins?.find((b) => b.key === ix.definition)?.site ?? ix.definition}`
+                    : ix.url}
+                </div>
               </div>
-              <div className="flex gap-1.5">
+              <div className="flex shrink-0 gap-1.5">
+                {ix.type === "builtin" && <Badge tone="success">Built-in</Badge>}
                 {ix.supportsTv && <Badge tone="info">TV</Badge>}
                 {ix.supportsMovies && <Badge tone="accent">Movies</Badge>}
                 {ix.enableRss && <Badge tone="neutral">RSS</Badge>}
@@ -117,9 +145,22 @@ export default function IndexersPage() {
         </div>
       )}
 
+      {picking && (
+        <BuiltinPicker
+          builtins={builtins ?? []}
+          existing={list}
+          onClose={() => setPicking(false)}
+          onAdded={async () => {
+            setPicking(false);
+            await mutate();
+          }}
+        />
+      )}
+
       {editing && (
         <IndexerDialog
           initial={editing}
+          builtins={builtins ?? []}
           onClose={() => setEditing(null)}
           onSaved={async () => {
             setEditing(null);
@@ -135,13 +176,98 @@ export default function IndexersPage() {
   );
 }
 
+function BuiltinPicker({
+  builtins,
+  existing,
+  onClose,
+  onAdded,
+}: {
+  builtins: Builtin[];
+  existing: Indexer[];
+  onClose: () => void;
+  onAdded: () => Promise<void>;
+}) {
+  const toast = useToast();
+  const [adding, setAdding] = useState<string | null>(null);
+  const addedKeys = new Set(
+    existing.filter((i) => i.type === "builtin").map((i) => i.definition)
+  );
+
+  async function add(b: Builtin) {
+    setAdding(b.key);
+    try {
+      await apiFetch("/indexers", {
+        method: "POST",
+        body: JSON.stringify({ type: "builtin", definition: b.key, name: b.name }),
+      });
+      toast.success(`Added ${b.name}`);
+      await onAdded();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to add");
+      setAdding(null);
+    }
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Add a built-in indexer"
+      footer={
+        <Button variant="ghost" onClick={onClose}>
+          Close
+        </Button>
+      }
+    >
+      <p className="mb-3 text-sm text-zinc-400">
+        These scrape public trackers directly. No account, URL or API key needed.
+      </p>
+      {builtins.length === 0 ? (
+        <p className="text-sm text-zinc-500">No built-in sources available.</p>
+      ) : (
+        <div className="space-y-2">
+          {builtins.map((b) => {
+            const added = addedKeys.has(b.key);
+            return (
+              <div
+                key={b.key}
+                className="flex items-center justify-between gap-3 rounded-md border border-zinc-800 bg-zinc-900/50 px-4 py-3"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 font-medium">
+                    {b.name}
+                    {b.supportsTv && <Badge tone="info">TV</Badge>}
+                    {b.supportsMovies && <Badge tone="accent">Movies</Badge>}
+                  </div>
+                  <div className="mt-0.5 text-xs text-zinc-500">{b.description}</div>
+                </div>
+                <Button
+                  size="sm"
+                  variant={added ? "ghost" : "primary"}
+                  disabled={added || adding !== null}
+                  loading={adding === b.key}
+                  onClick={() => add(b)}
+                >
+                  {added ? "Added" : "Add"}
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function IndexerDialog({
   initial,
+  builtins,
   onClose,
   onSaved,
   onDeleted,
 }: {
   initial: Partial<Indexer>;
+  builtins: Builtin[];
   onClose: () => void;
   onSaved: () => Promise<void>;
   onDeleted: () => Promise<void>;
@@ -149,6 +275,8 @@ function IndexerDialog({
   const toast = useToast();
   const confirm = useConfirm();
   const isNew = initial.id === undefined;
+  const isBuiltin = initial.type === "builtin";
+  const source = isBuiltin ? builtins.find((b) => b.key === initial.definition) : undefined;
   const [form, setForm] = useState({
     name: initial.name ?? "",
     url: initial.url ?? "",
@@ -170,9 +298,12 @@ function IndexerDialog({
   async function test() {
     setPending("test");
     try {
+      const body = isBuiltin
+        ? { type: "builtin", definition: initial.definition }
+        : { type: "torznab", url: form.url, apiKey: form.apiKey || null };
       const res = await apiFetch<{ ok: boolean; message?: string }>("/indexers/test", {
         method: "POST",
-        body: JSON.stringify({ url: form.url, apiKey: form.apiKey || null }),
+        body: JSON.stringify(body),
       });
       if (res.ok) toast.success(res.message || "Indexer is reachable.");
       else toast.error(res.message || "Test failed.");
@@ -186,7 +317,19 @@ function IndexerDialog({
   async function save() {
     setPending("save");
     try {
-      const body = { ...form, apiKey: form.apiKey || null };
+      const body = isBuiltin
+        ? {
+            name: form.name,
+            type: "builtin",
+            definition: initial.definition,
+            minimumSeeders: form.minimumSeeders,
+            priority: form.priority,
+            enableRss: form.enableRss,
+            enableAutomaticSearch: form.enableAutomaticSearch,
+            enableInteractiveSearch: form.enableInteractiveSearch,
+            enabled: form.enabled,
+          }
+        : { ...form, type: "torznab", apiKey: form.apiKey || null };
       if (isNew) {
         await apiFetch("/indexers", { method: "POST", body: JSON.stringify(body) });
       } else {
@@ -216,11 +359,13 @@ function IndexerDialog({
     ["enableInteractiveSearch", "Use for interactive search"],
   ] as const;
 
+  const canSave = isBuiltin ? Boolean(form.name) : Boolean(form.name && form.url);
+
   return (
     <Modal
       open
       onClose={onClose}
-      title={isNew ? "Add indexer" : `Edit ${initial.name}`}
+      title={isNew ? (isBuiltin ? `Add ${source?.name ?? "indexer"}` : "Add Torznab indexer") : `Edit ${initial.name}`}
       footer={
         <>
           {!isNew && (
@@ -234,42 +379,52 @@ function IndexerDialog({
           <Button
             variant="secondary"
             onClick={test}
-            disabled={busy || !form.url}
+            disabled={busy || (!isBuiltin && !form.url)}
             loading={pending === "test"}
           >
             Test
           </Button>
-          <Button
-            onClick={save}
-            disabled={busy || !form.name || !form.url}
-            loading={pending === "save"}
-          >
+          <Button onClick={save} disabled={busy || !canSave} loading={pending === "save"}>
             Save
           </Button>
         </>
       }
     >
       <div className="space-y-3">
+        {isBuiltin && source && (
+          <Callout tone="info">
+            Built-in source: <strong>{source.name}</strong> —{" "}
+            <a href={source.site} target="_blank" rel="noreferrer" className="underline">
+              {source.site}
+            </a>
+            . {source.description}
+          </Callout>
+        )}
+
         <Field label="Name" htmlFor="ix-name" required>
           <Input id="ix-name" value={form.name} onChange={(e) => set("name", e.target.value)} />
         </Field>
 
-        <Field label="Torznab URL" htmlFor="ix-url" required>
-          <Input
-            id="ix-url"
-            value={form.url}
-            onChange={(e) => set("url", e.target.value)}
-            placeholder="http://prowlarr:9696/1/api"
-          />
-        </Field>
+        {!isBuiltin && (
+          <>
+            <Field label="Torznab URL" htmlFor="ix-url" required>
+              <Input
+                id="ix-url"
+                value={form.url}
+                onChange={(e) => set("url", e.target.value)}
+                placeholder="http://prowlarr:9696/1/api"
+              />
+            </Field>
 
-        <Field label="API key" htmlFor="ix-apikey" description="Copied from Prowlarr/Jackett.">
-          <Input
-            id="ix-apikey"
-            value={form.apiKey}
-            onChange={(e) => set("apiKey", e.target.value)}
-          />
-        </Field>
+            <Field label="API key" htmlFor="ix-apikey" description="Copied from Prowlarr/Jackett.">
+              <Input
+                id="ix-apikey"
+                value={form.apiKey}
+                onChange={(e) => set("apiKey", e.target.value)}
+              />
+            </Field>
+          </>
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Minimum seeders" htmlFor="ix-seeders">

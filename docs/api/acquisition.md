@@ -1,8 +1,8 @@
 # Acquisition (Indexers, Downloads, Queue, Requests, Commands)
 
-Endpoints that acquire media: Torznab indexers, download clients, the download
-queue, interactive release search/grab, user requests, history, and background
-commands.
+Endpoints that acquire media: Torznab and built-in indexers, download clients, the
+download queue, interactive release search/grab, user requests, history, and
+background commands.
 
 **Auth.** Every request must carry either the session cookie or an
 `x-api-key: <apiKey>` header (an API key is treated as an admin). At the handler
@@ -24,12 +24,17 @@ errors → 500. All error bodies are `{ error }`.
 List all indexers, ordered by ascending `priority`.
 
 - **Auth:** admin, or permission `indexers.manage`
-- **Response:** `200` — array of indexer rows (includes `id`, `name`, `url`, `apiKey`, `categories`, `enableRss`, `enableAutomaticSearch`, `enableInteractiveSearch`, `minimumSeeders`, `priority`, `enabled`, `supportsTv`, `supportsMovies`).
+- **Response:** `200` — array of indexer rows (includes `id`, `name`, `type`, `definition`, `url`, `apiKey`, `categories`, `enableRss`, `enableAutomaticSearch`, `enableInteractiveSearch`, `minimumSeeders`, `priority`, `enabled`, `supportsTv`, `supportsMovies`).
+
+An indexer is one of two kinds:
+- `type: "torznab"` — an external Prowlarr/Jackett feed, addressed by `url` + `apiKey`.
+- `type: "builtin"` — a scraper that ships inside media-box (see `GET /indexers/builtins`), identified by `definition` (e.g. `"apibay"`, `"yts"`); `url` is empty and no `apiKey` is used.
 
 ## `POST /api/v1/indexers`
 
-Create an indexer. Capabilities (`supportsTv`/`supportsMovies`) are probed from
-the Torznab caps endpoint on save; if probing fails both default to `true`.
+Create an indexer. For `torznab`, capabilities (`supportsTv`/`supportsMovies`) are
+probed from the Torznab caps endpoint on save (both default to `true` if probing
+fails); for `builtin`, they come from the registry.
 
 - **Auth:** admin, or permission `indexers.manage`
 - **Request body:**
@@ -37,8 +42,10 @@ the Torznab caps endpoint on save; if probing fails both default to `true`.
   | field | type | required | default | notes |
   | --- | --- | --- | --- | --- |
   | name | string | yes | — | min length 1 |
-  | url | string (url) | yes | — | Torznab base URL |
-  | apiKey | string \| null | no | null | |
+  | type | `"torznab"` \| `"builtin"` | no | `"torznab"` | |
+  | url | string (url) | for torznab | — | required & validated when `type` is torznab |
+  | apiKey | string \| null | no | null | torznab only |
+  | definition | string \| null | for builtin | — | registry key when `type` is builtin |
   | categories | number[] | no | — | integer Torznab category ids |
   | enableRss | boolean | no | — | |
   | enableAutomaticSearch | boolean | no | — | |
@@ -47,7 +54,16 @@ the Torznab caps endpoint on save; if probing fails both default to `true`.
   | priority | integer | no | — | 1–50 |
   | enabled | boolean | no | — | |
 
-- **Response:** `201` — the created indexer row.
+- **Response:** `201` — the created indexer row. `400` if a built-in `definition`
+  is unknown or that built-in is already added, or if a torznab `url` is missing/invalid.
+
+## `GET /api/v1/indexers/builtins`
+
+List the built-in scrapers that ship with media-box, for the "add built-in
+indexer" picker. Metadata only — no secrets.
+
+- **Auth:** admin, or permission `indexers.manage`
+- **Response:** `200` — array of `{ key, name, description, site, supportsTv, supportsMovies, categories }`.
 
 ## `PUT /api/v1/indexers/[id]`
 
@@ -69,7 +85,8 @@ Delete an indexer.
 
 ## `POST /api/v1/indexers/test`
 
-Probe a Torznab endpoint's caps without saving. Connection failures are returned
+Probe an indexer without saving. For `torznab` it fetches the caps endpoint; for
+`builtin` it fetches the source's recent feed. Connection failures are returned
 as `200 { ok: false }`, not an error status.
 
 - **Auth:** admin, or permission `indexers.manage`
@@ -77,10 +94,12 @@ as `200 { ok: false }`, not an error status.
 
   | field | type | required | default | notes |
   | --- | --- | --- | --- | --- |
-  | url | string (url) | yes | — | |
-  | apiKey | string \| null | no | null | |
+  | type | `"torznab"` \| `"builtin"` | no | `"torznab"` | |
+  | url | string (url) | for torznab | — | required & validated when `type` is torznab |
+  | apiKey | string \| null | no | null | torznab only |
+  | definition | string \| null | for builtin | — | registry key when `type` is builtin |
 
-- **Response:** `200` — on success `{ ok: true, message, caps }` where `caps = { tvSearchAvailable, movieSearchAvailable, categories: [{ id, name }] }`; on failure `{ ok: false, message }`.
+- **Response:** `200` — on success `{ ok: true, message, caps? }` (torznab includes `caps = { tvSearchAvailable, movieSearchAvailable, categories: [{ id, name }] }`); on failure `{ ok: false, message }`.
 
 ---
 

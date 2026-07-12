@@ -1,6 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
-import { search } from "@/server/indexers/torznab";
+import { queryIndexer } from "@/server/indexers/query";
 import { parseTitle } from "@/server/parser/release-parser";
 import { evaluate, type ReleaseCandidate } from "@/server/parser/scoring";
 import type { ProfileLike } from "@/server/parser/scoring";
@@ -56,8 +56,9 @@ export async function rssSyncHandler(): Promise<string> {
   for (const indexer of indexerRows) {
     let items;
     try {
-      // empty-query search = RSS mode per torznab convention
-      items = await search(indexer.url, indexer.apiKey, {
+      // empty-query search = RSS mode (torznab convention; built-ins fetch their
+      // "recent" feed for the same empty query).
+      items = await queryIndexer(indexer, {
         t: "search",
         cat: [...TV_CATS, ...MOVIE_CATS],
         limit: 100,

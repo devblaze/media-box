@@ -120,6 +120,13 @@
       "when": 1783372891840,
       "tag": "0016_fine_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1783892223176,
+      "tag": "0017_sticky_shiver_man",
+      "breakpoints": true
     }
   ]
 }

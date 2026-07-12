@@ -3,7 +3,8 @@ import { getDb, schema } from "@/server/db";
 import { parseTitle } from "@/server/parser/release-parser";
 import { evaluate, type EvaluationContext, type ReleaseCandidate } from "@/server/parser/scoring";
 import type { ProfileLike } from "@/server/parser/scoring";
-import { search, type TorznabQuery } from "./torznab";
+import { type TorznabQuery } from "./torznab";
+import { queryIndexer } from "./query";
 
 const TV_CATS = [5000, 5030, 5040];
 const MOVIE_CATS = [2000, 2010, 2020, 2030, 2040, 2045, 2060];
@@ -66,7 +67,7 @@ export async function searchReleases(target: SearchTarget): Promise<DecoratedRel
       if (target.seasonNumber !== undefined) query.season = target.seasonNumber;
       if (target.episodeNumbers?.length === 1) query.ep = target.episodeNumbers[0];
       try {
-        const items = await search(indexer.url, indexer.apiKey, query);
+        const items = await queryIndexer(indexer, query);
         return { indexer, items };
       } catch (err) {
         // Tag the failure with the indexer name — allSettled otherwise only
