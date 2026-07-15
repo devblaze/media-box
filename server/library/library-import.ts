@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { and, eq } from "drizzle-orm";
 import { getDb, schema, type Db } from "@/server/db";
 import { parseTitle } from "@/server/parser/release-parser";
-import { searchMovie, searchTv, posterUrl } from "@/server/metadata/tmdb";
+import { searchMovie, searchTv, posterUrl, isAnimeMeta } from "@/server/metadata/tmdb";
 import { aiEnabled } from "@/server/ai/llm";
 import { aiResolveCandidate } from "@/server/ai/media-match";
 import { recordLog } from "@/server/logging/logger";
@@ -129,9 +129,18 @@ async function suggestFor(
         overview: r.overview ?? "",
       }));
     } else {
-      // series and anime both resolve against TMDB TV.
+      // Series and anime both resolve against TMDB TV. For anime, keep only real
+      // anime (Japanese-language Animation) so non-anime TV stops outranking the
+      // actual show — e.g. "Bleach" was matching "Bleacher Report", and a Batman
+      // cartoon could surface under an anime scan. Fall back to the full TV list
+      // only when TMDB tagged none as anime, so a mistagged title stays matchable.
       const res = await searchTv(query);
-      raw = res.results.map((r) => ({
+      let results = res.results;
+      if (type === "anime") {
+        const anime = results.filter((r) => isAnimeMeta(r.genre_ids, r.original_language));
+        if (anime.length > 0) results = anime;
+      }
+      raw = results.map((r) => ({
         tmdbId: r.id,
         title: r.name,
         year: r.first_air_date ? Number(r.first_air_date.slice(0, 4)) || null : null,
