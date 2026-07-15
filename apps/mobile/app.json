@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "Media Box",
+    "slug": "media-box",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "mediabox",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0b0b0f",
+    "ios": {
+      "icon": "./assets/expo.icon",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true
+        },
+        "NSLocalNetworkUsageDescription": "Media Box connects to your self-hosted server on your local network."
+      }
+    },
+    "android": {
+      "usesCleartextTraffic": true,
+      "adaptiveIcon": {
+        "backgroundColor": "#0b0b0f",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0b0b0f",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 76
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": false,
+      "reactCompiler": true
+    }
+  }
+}
