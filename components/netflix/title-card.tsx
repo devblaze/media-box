@@ -69,8 +69,13 @@ export function TitleCard({ item }: { item: DiscoverItem }) {
 
   return (
     <div className="group relative aspect-video w-full">
-      {/* Scaling layer — transform keeps the row layout from reflowing. */}
-      <div className="absolute inset-0 origin-center rounded-md transition-transform duration-300 ease-out group-hover:z-30 group-hover:scale-[1.3] group-focus-within:z-30 group-focus-within:scale-[1.3]">
+      {/* Scaling layer — transform keeps the row layout from reflowing. The
+          origin defaults to center but is overridden per-column in grids (via the
+          inherited --card-origin) so edge cards scale inward, not off-screen. */}
+      <div
+        style={{ transformOrigin: "var(--card-origin, center)" }}
+        className="absolute inset-0 rounded-md transition-transform duration-300 ease-out group-hover:z-30 group-hover:scale-[1.3] group-focus-within:z-30 group-focus-within:scale-[1.3]"
+      >
         <div className="relative h-full w-full overflow-hidden rounded-md bg-zinc-900 shadow-lg group-hover:shadow-2xl">
           {image ? (
             // eslint-disable-next-line @next/next/no-img-element

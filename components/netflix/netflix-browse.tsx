@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { useApi } from "@/lib/api";
 import { useEvents } from "@/lib/use-events";
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui";
 import { HeroBillboard } from "./hero-billboard";
 import { NetflixRow } from "./netflix-row";
 import { TitleCard } from "./title-card";
+import { useGridCardOrigin } from "./use-grid-card-origin";
 import { useOptionalSearch } from "./search-context";
 // Type-only import: the route is a server module, erased from the client bundle.
 import type { DiscoverItem } from "@/app/api/v1/discover/route";
@@ -156,6 +157,9 @@ function SearchResults({
   availableOnly: boolean;
 }) {
   const [type, setType] = useState<SearchType>("all");
+  const gridRef = useRef<HTMLDivElement>(null);
+  // Keep edge cards scaling inward as the result set / filter / breakpoint change.
+  useGridCardOrigin(gridRef, [items, type, availableOnly]);
 
   if (error) {
     return (
@@ -216,7 +220,10 @@ function SearchResults({
           </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-x-4 gap-y-10 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+        <div
+          ref={gridRef}
+          className="grid grid-cols-1 gap-x-4 gap-y-10 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4"
+        >
           {filtered.map((item) => (
             <TitleCard key={`${item.mediaType}-${item.tmdbId}`} item={item} />
           ))}
