@@ -9,6 +9,20 @@ import { queryIndexer } from "./query";
 const TV_CATS = [5000, 5030, 5040];
 const MOVIE_CATS = [2000, 2010, 2020, 2030, 2040, 2045, 2060];
 
+// Cap each indexer's response time so one slow or misconfigured indexer can't
+// hold up the whole search — the user gets results from the healthy indexers
+// promptly instead of waiting on a stuck one's full fetch timeout. The abandoned
+// request still carries its own fetch-level timeout as a backstop.
+const INDEXER_DEADLINE_MS = 15_000;
+
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`no response within ${ms / 1000}s`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 export interface DecoratedRelease extends ReleaseCandidate {
   accepted: boolean;
   rejections: string[];
@@ -67,7 +81,7 @@ export async function searchReleases(target: SearchTarget): Promise<DecoratedRel
       if (target.seasonNumber !== undefined) query.season = target.seasonNumber;
       if (target.episodeNumbers?.length === 1) query.ep = target.episodeNumbers[0];
       try {
-        const items = await queryIndexer(indexer, query);
+        const items = await withDeadline(queryIndexer(indexer, query), INDEXER_DEADLINE_MS);
         return { indexer, items };
       } catch (err) {
         // Tag the failure with the indexer name — allSettled otherwise only
