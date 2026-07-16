@@ -144,6 +144,9 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
     null
   );
   const [playing, setPlaying] = useState<{ episodeId: number; label: string } | null>(null);
+  // Collapsed-by-default season sections (Sonarr-style) so long series don't force
+  // a big scroll. Holds the season numbers currently expanded.
+  const [expandedSeasons, setExpandedSeasons] = useState<Set<number>>(new Set());
   const qualityNames = useMemo(
     () => new Map((qualityDefs ?? []).map((q) => [q.id, q.name])),
     [qualityDefs]
@@ -388,6 +391,20 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
     .filter((s) => s.seasonNumber > 0 || (episodesBySeason.get(0)?.length ?? 0) > 0)
     .sort((a, b) => b.seasonNumber - a.seasonNumber);
 
+  const toggleSeason = (n: number) =>
+    setExpandedSeasons((prev) => {
+      const next = new Set(prev);
+      if (next.has(n)) next.delete(n);
+      else next.add(n);
+      return next;
+    });
+  const allSeasonsExpanded =
+    visibleSeasons.length > 0 && visibleSeasons.every((s) => expandedSeasons.has(s.seasonNumber));
+  const toggleAllSeasons = () =>
+    setExpandedSeasons(
+      allSeasonsExpanded ? new Set() : new Set(visibleSeasons.map((s) => s.seasonNumber))
+    );
+
   return (
     <div className="px-4 py-4 md:px-8 md:py-6">
       <div className="flex flex-col gap-6 md:flex-row">
@@ -522,13 +539,23 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
             description="This series has no episodes in the library. Refresh metadata to pull the latest season list."
           />
         ) : (
-          visibleSeasons.map((season) => {
+          <>
+            <div className="mb-1 flex items-center justify-between">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
+                Seasons
+              </h2>
+              <Button variant="ghost" size="sm" onClick={toggleAllSeasons}>
+                {allSeasonsExpanded ? "Collapse all" : "Expand all"}
+              </Button>
+            </div>
+            {visibleSeasons.map((season) => {
             const eps = episodesBySeason.get(season.seasonNumber) ?? [];
             const withFile = eps.filter((e) => e.episodeFileId).length;
+            const isOpen = expandedSeasons.has(season.seasonNumber);
             return (
               <Card key={season.id}>
                 <CardHeader>
-                  <div className="flex items-center gap-3">
+                  <div className="flex min-w-0 items-center gap-2">
                     {isAdmin && (
                       <Button
                         variant="ghost"
@@ -545,9 +572,23 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
                         </span>
                       </Button>
                     )}
-                    <CardTitle>
-                      {season.seasonNumber === 0 ? "Specials" : `Season ${season.seasonNumber}`}
-                    </CardTitle>
+                    <button
+                      type="button"
+                      onClick={() => toggleSeason(season.seasonNumber)}
+                      aria-expanded={isOpen}
+                      className="flex min-w-0 items-center gap-2 text-left"
+                    >
+                      <span
+                        aria-hidden
+                        className="text-zinc-500 transition-transform"
+                        style={{ transform: isOpen ? "rotate(90deg)" : "none" }}
+                      >
+                        ▸
+                      </span>
+                      <span className="text-sm font-semibold text-zinc-100">
+                        {season.seasonNumber === 0 ? "Specials" : `Season ${season.seasonNumber}`}
+                      </span>
+                    </button>
                   </div>
                   <div className="flex items-center gap-3">
                     <Badge tone="neutral">
@@ -569,6 +610,7 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
                     )}
                   </div>
                 </CardHeader>
+                {isOpen && (
                 <div className="overflow-x-auto">
                 <table className="w-full min-w-[520px] text-sm">
                   <TBody>
@@ -689,9 +731,11 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
                   </TBody>
                 </table>
                 </div>
+                )}
               </Card>
             );
-          })
+            })}
+          </>
         )}
       </div>
 
