@@ -9,13 +9,8 @@ import {
   Badge,
   Button,
   EmptyState,
+  Modal,
   Skeleton,
-  Table,
-  THead,
-  TBody,
-  TR,
-  TH,
-  TD,
   useToast,
 } from "@/components/ui";
 
@@ -64,6 +59,7 @@ export default function FileChangesPage() {
   const { data: me } = useApi<Me>("/auth/me");
   const { data: changes, mutate } = useApi<FileChange[]>("/file-changes");
   const [deciding, setDeciding] = useState<number | null>(null);
+  const [viewing, setViewing] = useState<FileChange | null>(null);
   const toast = useToast();
   useEvents();
 
@@ -125,75 +121,96 @@ export default function FileChangesPage() {
           description="Held file changes will appear here while file operations are in Ask mode."
         />
       ) : (
-        <Table>
-          <THead>
-            <TR>
-              <TH>Change</TH>
-              <TH className="w-32">Type</TH>
-              <TH className="w-28">Status</TH>
-              <TH className="w-28">Created</TH>
-              <TH className="w-48 text-right">Actions</TH>
-            </TR>
-          </THead>
-          <TBody>
-            {changes.map((c) => {
-              const status = STATUS_META[c.status] ?? STATUS_META.pending;
-              return (
-                <TR key={c.id} className="align-middle">
-                  <TD>
-                    <div className="min-w-0">
-                      <div className="truncate font-medium text-zinc-100">{c.title}</div>
-                      {c.detail ? (
-                        <div className="truncate font-mono text-xs text-zinc-500">{c.detail}</div>
-                      ) : null}
-                      {c.status === "failed" && c.error ? (
-                        <div className="mt-0.5 truncate text-xs text-red-400">{c.error}</div>
-                      ) : null}
-                    </div>
-                  </TD>
-                  <TD>
-                    <Badge tone="neutral">{KIND_LABEL[c.kind] ?? c.kind}</Badge>
-                  </TD>
-                  <TD>
-                    <Badge tone={status.tone} title={c.error ?? undefined}>
-                      {status.label}
-                    </Badge>
-                  </TD>
-                  <TD className="whitespace-nowrap text-xs text-zinc-500">
+        <div className="divide-y divide-zinc-800 overflow-hidden rounded-lg border border-zinc-800">
+          {changes.map((c) => {
+            const status = STATUS_META[c.status] ?? STATUS_META.pending;
+            return (
+              <div key={c.id} className="flex items-center gap-3 px-3 py-2.5 hover:bg-zinc-900/40">
+                {/* Name + path: flexes and truncates so the row never overflows.
+                    Click to see the full name in a dialog. */}
+                <button
+                  type="button"
+                  onClick={() => setViewing(c)}
+                  className="min-w-0 flex-1 text-left"
+                  title="View full name"
+                >
+                  <div className="truncate font-medium text-zinc-100">{c.title}</div>
+                  {c.detail ? (
+                    <div className="truncate font-mono text-xs text-zinc-500">{c.detail}</div>
+                  ) : null}
+                  {c.status === "failed" && c.error ? (
+                    <div className="truncate text-xs text-red-400">{c.error}</div>
+                  ) : null}
+                </button>
+
+                {/* Meta + actions: fixed on the right, always visible (no scrolling). */}
+                <div className="flex shrink-0 items-center gap-2">
+                  <Badge tone="neutral" className="hidden sm:inline-flex">
+                    {KIND_LABEL[c.kind] ?? c.kind}
+                  </Badge>
+                  <Badge tone={status.tone} title={c.error ?? undefined}>
+                    {status.label}
+                  </Badge>
+                  <span className="hidden whitespace-nowrap text-xs text-zinc-500 md:inline">
                     {timeAgo(toMillis(c.createdAt))}
-                  </TD>
-                  <TD className="whitespace-nowrap text-right">
-                    <div className="flex justify-end gap-2">
-                      {c.status === "pending" ? (
-                        <>
-                          <Button
-                            size="sm"
-                            loading={deciding === c.id}
-                            disabled={deciding !== null}
-                            onClick={() => decide(c.id, "approve")}
-                          >
-                            Approve
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="danger"
-                            disabled={deciding !== null}
-                            onClick={() => decide(c.id, "decline")}
-                          >
-                            Decline
-                          </Button>
-                        </>
-                      ) : (
-                        <span className="text-xs text-zinc-600">—</span>
-                      )}
-                    </div>
-                  </TD>
-                </TR>
-              );
-            })}
-          </TBody>
-        </Table>
+                  </span>
+                  {c.status === "pending" && (
+                    <>
+                      <Button
+                        size="sm"
+                        loading={deciding === c.id}
+                        disabled={deciding !== null}
+                        onClick={() => decide(c.id, "approve")}
+                      >
+                        Approve
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        disabled={deciding !== null}
+                        onClick={() => decide(c.id, "decline")}
+                      >
+                        Decline
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       )}
+
+      <Modal
+        open={viewing !== null}
+        onClose={() => setViewing(null)}
+        title="File change"
+        footer={
+          <Button variant="secondary" size="sm" onClick={() => setViewing(null)}>
+            Close
+          </Button>
+        }
+      >
+        {viewing && (
+          <div className="space-y-3">
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">Change</div>
+              <div className="mt-1 break-all text-sm text-zinc-100">{viewing.title}</div>
+            </div>
+            {viewing.detail && (
+              <div>
+                <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">Path</div>
+                <div className="mt-1 break-all font-mono text-xs text-zinc-300">
+                  {viewing.detail}
+                </div>
+              </div>
+            )}
+            {viewing.error && (
+              <div className="break-all text-sm text-red-400">{viewing.error}</div>
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
