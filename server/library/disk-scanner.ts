@@ -30,6 +30,38 @@ export async function walkVideoFiles(root: string): Promise<{ absPath: string; s
   return results;
 }
 
+/** Lowercase, alphanumeric-only, single-spaced — for loose title comparison. */
+function normalizeTitleText(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/**
+ * Anime files are usually organized in TVDB broadcast-season folders (Season 02/03…)
+ * while TMDB lists the show as one long absolute-numbered season — so an `SxxExx` lookup
+ * for a higher season finds no episode. This fallback bridges that by matching the file
+ * to a still-unlinked episode whose (distinctive) title is contained in the filename.
+ * Returns an episode id only on a single confident match; ambiguous or weak matches are
+ * skipped so a wrong link never happens (a missing episode is better than a wrong one).
+ */
+function matchEpisodeByTitle(
+  fileBaseName: string,
+  episodes: { id: number; title: string | null }[],
+  taken: Set<number>
+): number | null {
+  const haystack = normalizeTitleText(fileBaseName);
+  let matchId: number | null = null;
+  for (const ep of episodes) {
+    if (taken.has(ep.id) || !ep.title) continue;
+    const needle = normalizeTitleText(ep.title);
+    if (needle.length < 12) continue; // too short to be a distinctive anchor
+    if (haystack.includes(needle)) {
+      if (matchId !== null) return null; // two titles match this file → ambiguous, bail
+      matchId = ep.id;
+    }
+  }
+  return matchId;
+}
+
 export async function scanSeries(seriesId: number): Promise<number> {
   const db = getDb();
   const s = db.select().from(schema.series).where(eq(schema.series.id, seriesId)).get();
@@ -49,6 +81,25 @@ export async function scanSeries(seriesId: number): Promise<number> {
     if (!presentRelPaths.has(known.relativePath)) {
       db.delete(schema.episodeFiles).where(eq(schema.episodeFiles.id, known.id)).run();
     }
+  }
+
+  // Anime title-fallback context: the series' episodes (for matching a file to an
+  // episode by title when its season folder doesn't line up with the flat metadata)
+  // and the set of episodes already linked to a file (never link one twice).
+  const seriesEpisodes = s.isAnime
+    ? db
+        .select({ id: schema.episodes.id, title: schema.episodes.title })
+        .from(schema.episodes)
+        .where(eq(schema.episodes.seriesId, seriesId))
+        .all()
+    : [];
+  const taken = new Set<number>();
+  for (const ep of db
+    .select({ id: schema.episodes.id, episodeFileId: schema.episodes.episodeFileId })
+    .from(schema.episodes)
+    .where(eq(schema.episodes.seriesId, seriesId))
+    .all()) {
+    if (ep.episodeFileId != null) taken.add(ep.id);
   }
 
   let added = 0;
@@ -71,7 +122,17 @@ export async function scanSeries(seriesId: number): Promise<number> {
         )
       )
       .all();
-    if (episodeRows.length === 0) continue;
+
+    let targetEpisodeIds = episodeRows.map((e) => e.id);
+    if (targetEpisodeIds.length === 0) {
+      // No SxxExx match. For anime, try to bridge a TVDB season folder to the flat
+      // TMDB numbering by matching the episode title inside the filename.
+      const byTitle = s.isAnime
+        ? matchEpisodeByTitle(path.basename(file.absPath), seriesEpisodes, taken)
+        : null;
+      if (byTitle === null) continue;
+      targetEpisodeIds = [byTitle];
+    }
 
     const fileRow = db
       .insert(schema.episodeFiles)
@@ -86,11 +147,12 @@ export async function scanSeries(seriesId: number): Promise<number> {
       })
       .returning({ id: schema.episodeFiles.id })
       .get();
-    for (const ep of episodeRows) {
+    for (const id of targetEpisodeIds) {
       db.update(schema.episodes)
         .set({ episodeFileId: fileRow.id })
-        .where(eq(schema.episodes.id, ep.id))
+        .where(eq(schema.episodes.id, id))
         .run();
+      taken.add(id);
     }
     added++;
   }
