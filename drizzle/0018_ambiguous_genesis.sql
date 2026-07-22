@@ -1,0 +1,1 @@
+ALTER TABLE `scan_candidates` ADD `media_kind` text;

@@ -366,12 +366,13 @@ Import an existing on-disk folder into the library at its current path (no move)
 
   | field | type | required | default | notes |
   | --- | --- | --- | --- | --- |
-  | `type` | enum `movie` \| `series` \| `anime` | yes | — | Media kind (`anime` = series with `isAnime`). |
+  | `type` | enum `movie` \| `series` \| `anime` | yes | — | Scan the candidate came from (`anime` = series with `isAnime`). |
+  | `mediaKind` | enum `movie` \| `series` | no | implied by `type` | What the candidate actually is — a series/anime scan can surface a movie (anime films in an anime root); `mediaKind: "movie"` imports it into the movies table. |
   | `path` | string | yes | — | Folder to import (min length 1). |
   | `tmdbId` | int > 0 | yes | — | Matched TMDB id. |
   | `rootFolderId` | int > 0 | yes | — | Target root folder. |
   | `qualityProfileId` | int > 0 | yes | — | Quality profile to assign. |
-  | `videoPath` | string | no | — | Absolute path of the specific movie file to register (movies only). |
+  | `videoPath` | string | no | — | Absolute path of the specific movie file to register (movie imports only). |
   | `monitored` | boolean | no | `true` | Monitor after import. |
 
 - **Response:** `201` — `{ id, mediaType, files }` on a fresh import (movie/series/anime). For a movie already in the library with a `videoPath`, `200` — `{ id, mediaType: "movie", version }` (registers an extra quality version). Errors: `400` — `"Invalid request body"`; `409` — `"Movie is already in the library"` (movie present, no `videoPath`) or when the underlying add reports the title is already present.
@@ -395,7 +396,7 @@ Scan a library root folder for on-disk titles not yet imported, matching each ag
   | `rootFolderId` | int | yes | Must exist (else `400 "Unknown root folder"`). |
   | `qualityProfileId` | int > 0 | no | Stored with the persisted scan; ignored if not a positive int. |
 
-- **Response:** `200` — `{ root: string, candidates: [...], truncated: boolean }`. Errors: `400` — bad `type`, missing `rootFolderId`, or `"Unknown root folder"`; `500`.
+- **Response:** `200` — `{ root: string, candidates: [...], truncated: boolean }`. Each candidate carries `mediaKind` (`movie` \| `series`): a series/anime scan can surface a movie (anime films living in an anime root), which must be imported with that `mediaKind`. Matching: embedded provider ids in folder/file names (`{tmdb-…}`, `[tvdbid-…]`, `{imdb-tt…}` — Sonarr/Radarr/Jellyfin/Plex conventions) resolve deterministically; otherwise TMDB title search with original-title and alternative-title (romaji) fallbacks. Errors: `400` — bad `type`, missing `rootFolderId`, or `"Unknown root folder"`; `500`.
 - **Example:**
   ```bash
   curl -sS "$MEDIABOX_URL/api/v1/library-import/scan?type=movie&rootFolderId=1" -H "x-api-key: $MEDIABOX_API_KEY"
@@ -412,7 +413,7 @@ Reload the not-yet-imported candidates from the last persisted scan of `type` (i
   | --- | --- | --- | --- |
   | `type` | `movie` \| `series` \| `anime` | yes | Else `400`. |
 
-- **Response:** `200` — `{ "candidates": [...] }`. Errors: `400` on bad `type`; `500`.
+- **Response:** `200` — `{ "candidates": [...] }` (each with `mediaKind`, see the scan endpoint). Errors: `400` on bad `type`; `500`.
 - **Example:**
   ```bash
   curl -sS "$MEDIABOX_URL/api/v1/library-import/candidates?type=series" -H "x-api-key: $MEDIABOX_API_KEY"

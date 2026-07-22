@@ -18,6 +18,9 @@ export const dynamic = "force-dynamic";
 
 const importSchema = z.object({
   type: z.enum(["movie", "series", "anime"]),
+  // What the candidate actually is — a series/anime scan can surface a movie
+  // (anime films in an anime root). Defaults to what `type` implies.
+  mediaKind: z.enum(["movie", "series"]).optional(),
   path: z.string().min(1),
   /** Absolute path of the specific movie file to register (movies only). */
   videoPath: z.string().optional(),
@@ -43,8 +46,10 @@ export async function POST(request: NextRequest) {
     return badRequest("Invalid request body");
   }
 
+  const mediaKind = input.mediaKind ?? (input.type === "movie" ? "movie" : "series");
+
   try {
-    if (input.type === "movie") {
+    if (mediaKind === "movie") {
       // Already in the library? Add this file as an extra quality VERSION (e.g. a 4K
       // next to a 1080p) instead of rejecting — same-quality files are skipped.
       const existingId = getMovieIdByTmdb(input.tmdbId);

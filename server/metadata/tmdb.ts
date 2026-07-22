@@ -66,6 +66,7 @@ export interface TmdbSearchResult<T> {
 export interface TmdbTvSummary {
   id: number;
   name: string;
+  original_name?: string;
   first_air_date?: string;
   overview?: string;
   poster_path?: string | null;
@@ -77,6 +78,7 @@ export interface TmdbTvSummary {
 export interface TmdbMovieSummary {
   id: number;
   title: string;
+  original_title?: string;
   release_date?: string;
   overview?: string;
   poster_path?: string | null;
@@ -138,6 +140,22 @@ export const getMovie = (tmdbId: number) =>
 
 export const findByTvdbId = (tvdbId: number) =>
   tmdb<{ tv_results: TmdbTvSummary[] }>(`/find/${tvdbId}`, { external_source: "tvdb_id" });
+
+export const findByImdbId = (imdbId: string) =>
+  tmdb<{ movie_results: TmdbMovieSummary[]; tv_results: TmdbTvSummary[] }>(`/find/${imdbId}`, {
+    external_source: "imdb_id",
+  });
+
+export const getTvById = (tmdbId: number) => tmdb<TmdbTvSummary>(`/tv/${tmdbId}`);
+
+export const getMovieById = (tmdbId: number) => tmdb<TmdbMovieSummary>(`/movie/${tmdbId}`);
+
+/** Every regional/alternative title of a TV show (e.g. romaji names for anime). */
+export const getTvAlternativeTitles = (tmdbId: number) =>
+  tmdb<{ results?: { title: string }[] }>(`/tv/${tmdbId}/alternative_titles`);
+
+export const getMovieAlternativeTitles = (tmdbId: number) =>
+  tmdb<{ titles?: { title: string }[] }>(`/movie/${tmdbId}/alternative_titles`);
 
 export function posterUrl(path: string | null | undefined, size = "w342"): string | null {
   return path ? `${TMDB_IMAGE_BASE}/${size}${path}` : null;

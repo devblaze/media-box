@@ -658,6 +658,9 @@ export const scanCandidates = sqliteTable(
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     type: text("type", { enum: ["movie", "series", "anime"] }).notNull(),
+    // What the candidate actually IS. A series/anime scan can surface a movie
+    // (anime films living in an anime root); null = implied by `type` (legacy rows).
+    mediaKind: text("media_kind", { enum: ["movie", "series"] }),
     rootFolderId: integer("root_folder_id"),
     qualityProfileId: integer("quality_profile_id"),
     path: text("path").notNull(),

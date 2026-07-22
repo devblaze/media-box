@@ -239,7 +239,9 @@ export default function LibraryImportPage() {
       <Callout tone="info" title="How this works">
         media-box scans the library folder you choose for titles that are not yet in your library,
         matches each against TMDB, imports the confident matches, and asks you to identify anything
-        it is unsure about. Files stay exactly where they are.
+        it is unsure about. Files stay exactly where they are. Coming from Sonarr or Radarr with the
+        apps still running? Settings → Migrate imports straight from their APIs with exact IDs — no
+        guessing.
       </Callout>
 
       {/* Controls */}
@@ -373,6 +375,7 @@ export default function LibraryImportPage() {
                           <img
                             src={target.poster}
                             alt=""
+                            loading="lazy"
                             className="h-12 w-8 shrink-0 rounded object-cover"
                           />
                         ) : (
@@ -388,7 +391,12 @@ export default function LibraryImportPage() {
                           <div className="truncate font-mono text-xs text-zinc-500">{c.name}</div>
                         </div>
                       </div>
-                      <Badge tone="success">Match</Badge>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        {c.mediaKind === "movie" && type !== "movie" && (
+                          <Badge tone="neutral">Movie</Badge>
+                        )}
+                        <Badge tone="success">Match</Badge>
+                      </div>
                     </div>
                   );
                 })}

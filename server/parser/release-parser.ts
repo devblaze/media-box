@@ -101,6 +101,36 @@ export function parseReleaseGroup(name: string): string | undefined {
   return undefined;
 }
 
+// ---------- embedded external ids ----------
+
+export interface ExternalIds {
+  tmdbId?: number;
+  tvdbId?: number;
+  imdbId?: string;
+}
+
+// Sonarr/Radarr/Jellyfin/Plex folder conventions embed provider ids in the name:
+// "Title (2010) {tmdb-27205}", "Title [tvdbid-267440]", "Title {imdb-tt1375666}".
+const EXTERNAL_ID_RE = /[[{]\s*(tmdb|tvdb|imdb)(?:id)?[-=\s]+(tt\d+|\d+)\s*[\]}]/gi;
+
+/** Extract provider ids embedded in a release/folder name. */
+export function parseExternalIds(name: string): ExternalIds {
+  const ids: ExternalIds = {};
+  for (const m of name.matchAll(EXTERNAL_ID_RE)) {
+    const provider = m[1].toLowerCase();
+    const value = m[2];
+    if (provider === "imdb" && value.startsWith("tt")) ids.imdbId = value;
+    else if (provider === "tmdb" && !value.startsWith("tt")) ids.tmdbId = parseInt(value, 10);
+    else if (provider === "tvdb" && !value.startsWith("tt")) ids.tvdbId = parseInt(value, 10);
+  }
+  return ids;
+}
+
+/** Remove embedded id tags so they never pollute the parsed title. */
+export function stripExternalIds(name: string): string {
+  return name.replace(EXTERNAL_ID_RE, " ").replace(/\s{2,}/g, " ").trim();
+}
+
 // ---------- series / numbering ----------
 
 interface NumberingMatch {
@@ -169,7 +199,7 @@ const YEAR_RE = /[(. _[-](19\d{2}|20\d{2})[). _\]-]/;
 
 export function parseTitle(name: string): ParsedRelease {
   const originalTitle = name;
-  const withoutExt = name.replace(/\.(mkv|mp4|avi|m4v|ts)$/i, "");
+  const withoutExt = stripExternalIds(name.replace(/\.(mkv|mp4|avi|m4v|ts)$/i, ""));
   const quality = parseQuality(withoutExt);
   const releaseGroup = parseReleaseGroup(withoutExt);
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/cn";
 
@@ -39,12 +39,17 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     [remove]
   );
 
-  const api: ToastApi = {
-    toast,
-    success: (m) => toast(m, "success"),
-    error: (m) => toast(m, "error"),
-    info: (m) => toast(m, "info"),
-  };
+  // Stable identity: consumers put this in hook deps, so a fresh object every
+  // render would re-trigger their effects.
+  const api = useMemo<ToastApi>(
+    () => ({
+      toast,
+      success: (m) => toast(m, "success"),
+      error: (m) => toast(m, "error"),
+      info: (m) => toast(m, "info"),
+    }),
+    [toast]
+  );
 
   return (
     <ToastContext.Provider value={api}>

@@ -54,6 +54,11 @@ export function CandidateRow({
   // Matched rows hide the picker behind a "Change" toggle; unsure rows show it up front.
   const [showPicker, setShowPicker] = useState(candidate.status === "unsure");
 
+  // A series/anime scan can surface a movie (anime films in an anime root);
+  // search and import must then follow the candidate's actual kind, not the scan type.
+  const isMovie = candidate.mediaKind === "movie";
+  const lookupType: ImportType = isMovie ? "movie" : type;
+
   // Search box: prefilled with the parsed title, only queried once the admin edits it.
   const [search, setSearch] = useState(candidate.parsedTitle);
   const [touched, setTouched] = useState(false);
@@ -72,7 +77,7 @@ export function CandidateRow({
     const id = setTimeout(async () => {
       try {
         const res = await apiFetch<LookupResult[]>(
-          `/lookup?type=${type}&q=${encodeURIComponent(q)}`
+          `/lookup?type=${lookupType}&q=${encodeURIComponent(q)}`
         );
         setResults(res);
       } catch {
@@ -82,7 +87,7 @@ export function CandidateRow({
       }
     }, 400);
     return () => clearTimeout(id);
-  }, [search, touched, type]);
+  }, [search, touched, lookupType]);
 
   async function doImport() {
     if (!target || imported || importing) return;
@@ -94,9 +99,10 @@ export function CandidateRow({
           method: "POST",
           body: JSON.stringify({
             type,
+            mediaKind: candidate.mediaKind,
             path: candidate.path,
             // Register the exact file for movie imports (many can share a folder).
-            videoPath: type === "movie" ? candidate.videoPath || undefined : undefined,
+            videoPath: isMovie ? candidate.videoPath || undefined : undefined,
             tmdbId: target.tmdbId,
             rootFolderId,
             qualityProfileId,
@@ -139,11 +145,14 @@ export function CandidateRow({
             {candidate.videoFileCount} video file{candidate.videoFileCount === 1 ? "" : "s"}
           </div>
         </div>
-        {matched ? (
-          <Badge tone="success">Match</Badge>
-        ) : (
-          <Badge tone="warning">Needs review</Badge>
-        )}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {isMovie && type !== "movie" && <Badge tone="neutral">Movie</Badge>}
+          {matched ? (
+            <Badge tone="success">Match</Badge>
+          ) : (
+            <Badge tone="warning">Needs review</Badge>
+          )}
+        </div>
       </div>
 
       <div className="mt-3 flex items-center justify-between gap-4">
@@ -154,6 +163,7 @@ export function CandidateRow({
               <img
                 src={target.poster}
                 alt=""
+                loading="lazy"
                 className="h-14 w-[38px] shrink-0 rounded object-cover"
               />
             ) : (
@@ -261,7 +271,12 @@ function PosterRow({
           >
             {it.poster ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={it.poster} alt="" className="aspect-[2/3] w-full rounded object-cover" />
+              <img
+                src={it.poster}
+                alt=""
+                loading="lazy"
+                className="aspect-[2/3] w-full rounded object-cover"
+              />
             ) : (
               <div className="aspect-[2/3] w-full rounded bg-zinc-800" />
             )}

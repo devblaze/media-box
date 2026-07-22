@@ -2,8 +2,22 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { and, eq } from "drizzle-orm";
 import { getDb, schema, type Db } from "@/server/db";
-import { parseTitle } from "@/server/parser/release-parser";
-import { searchMovie, searchTv, posterUrl, isAnimeMeta } from "@/server/metadata/tmdb";
+import { parseTitle, parseExternalIds } from "@/server/parser/release-parser";
+import {
+  searchMovie,
+  searchTv,
+  posterUrl,
+  isAnimeMeta,
+  findByTvdbId,
+  findByImdbId,
+  getTvById,
+  getMovieById,
+  getTvAlternativeTitles,
+  getMovieAlternativeTitles,
+  type TmdbTvSummary,
+  type TmdbMovieSummary,
+} from "@/server/metadata/tmdb";
+import { normalizeTitle } from "@/server/library/naming-utils";
 import { aiEnabled } from "@/server/ai/llm";
 import { aiResolveCandidate } from "@/server/ai/media-match";
 import { recordLog } from "@/server/logging/logger";
@@ -11,9 +25,14 @@ import { walkVideoFiles } from "./disk-scanner";
 
 export type ImportType = "movie" | "series" | "anime";
 
+/** What a candidate actually is — a series/anime scan can surface anime FILMS. */
+export type MediaKind = "movie" | "series";
+
 export interface ImportSuggestion {
   tmdbId: number;
   title: string;
+  /** TMDB original-language title (e.g. Japanese script), for matching only. */
+  originalTitle?: string | null;
   year: number | null;
   poster: string | null;
   overview: string;
@@ -29,6 +48,8 @@ export interface ImportCandidate {
   videoPath: string;
   /** Display name (video file basename for movies, folder name for series/anime). */
   name: string;
+  /** What this candidate is; a series/anime scan can yield "movie" for anime films. */
+  mediaKind: MediaKind;
   parsedTitle: string;
   parsedYear: number | null;
   videoFileCount: number;
@@ -83,6 +104,17 @@ function stripTrailingYear(title: string, yearHint: number | null): { title: str
 }
 
 /**
+ * Title equality for matching: robust normalization (apostrophes, "&", case,
+ * punctuation) against both the localized title and the original-language title,
+ * so "Frieren Beyond Journeys End" hits "Frieren: Beyond Journey's End".
+ */
+function titleMatches(s: ImportSuggestion, query: string): boolean {
+  const q = normalizeTitle(query);
+  if (normalizeTitle(s.title) === q) return true;
+  return s.originalTitle != null && normalizeTitle(s.originalTitle) === q;
+}
+
+/**
  * Rank suggestions so the entry matching the parsed title AND year comes first —
  * not just TMDB's top popularity hit. Critical when several releases share a name
  * (e.g. "Babygirl" 2013/2018/2022/2023/2024): the year from the filename is the
@@ -90,7 +122,7 @@ function stripTrailingYear(title: string, yearHint: number | null): { title: str
  */
 function suggestionScore(s: ImportSuggestion, query: string, yearHint: number | null): number {
   let score = 0;
-  if (normalize(s.title) === normalize(query)) score += 2;
+  if (titleMatches(s, query)) score += 2;
   if (yearHint != null && s.year != null) {
     const diff = Math.abs(yearHint - s.year);
     if (diff === 0) score += 4; // exact year → the strongest disambiguator
@@ -110,6 +142,28 @@ function rankSuggestions(
     .map((x) => x.s);
 }
 
+function tvToSuggestion(r: TmdbTvSummary): ImportSuggestion {
+  return {
+    tmdbId: r.id,
+    title: r.name,
+    originalTitle: r.original_name ?? null,
+    year: r.first_air_date ? Number(r.first_air_date.slice(0, 4)) || null : null,
+    poster: posterUrl(r.poster_path),
+    overview: r.overview ?? "",
+  };
+}
+
+function movieToSuggestion(r: TmdbMovieSummary): ImportSuggestion {
+  return {
+    tmdbId: r.id,
+    title: r.title,
+    originalTitle: r.original_title ?? null,
+    year: r.release_date ? Number(r.release_date.slice(0, 4)) || null : null,
+    poster: posterUrl(r.poster_path),
+    overview: r.overview ?? "",
+  };
+}
+
 async function suggestFor(
   type: ImportType,
   query: string,
@@ -121,13 +175,7 @@ async function suggestFor(
       // Search broad (no year filter — that would exclude an off-by-one year);
       // the yearHint is applied in the ranking below with a ±1 tolerance.
       const res = await searchMovie(query);
-      raw = res.results.map((r) => ({
-        tmdbId: r.id,
-        title: r.title,
-        year: r.release_date ? Number(r.release_date.slice(0, 4)) || null : null,
-        poster: posterUrl(r.poster_path),
-        overview: r.overview ?? "",
-      }));
+      raw = res.results.map(movieToSuggestion);
     } else {
       // Series and anime both resolve against TMDB TV. For anime, keep only real
       // anime (Japanese-language Animation) so non-anime TV stops outranking the
@@ -140,13 +188,7 @@ async function suggestFor(
         const anime = results.filter((r) => isAnimeMeta(r.genre_ids, r.original_language));
         if (anime.length > 0) results = anime;
       }
-      raw = results.map((r) => ({
-        tmdbId: r.id,
-        title: r.name,
-        year: r.first_air_date ? Number(r.first_air_date.slice(0, 4)) || null : null,
-        poster: posterUrl(r.poster_path),
-        overview: r.overview ?? "",
-      }));
+      raw = results.map(tvToSuggestion);
     }
     // Rank the FULL result set by title + year before trimming, so a matching-year
     // release that TMDB ranked low on popularity still surfaces (and is picked).
@@ -154,6 +196,41 @@ async function suggestFor(
   } catch {
     return [];
   }
+}
+
+/**
+ * Resolve a candidate deterministically from provider ids embedded in its folder
+ * or file name ({tmdb-…}, [tvdbid-…], {imdb-tt…} — Radarr/Sonarr/Jellyfin/Plex
+ * conventions). An id hit is authoritative: no fuzzy matching needed. Returns
+ * null when there are no ids or TMDB can't resolve them (bad id, network error).
+ */
+async function resolveByExternalIds(
+  kind: MediaKind,
+  name: string
+): Promise<ImportSuggestion | null> {
+  const ids = parseExternalIds(name);
+  try {
+    if (kind === "movie") {
+      if (ids.tmdbId) return movieToSuggestion(await getMovieById(ids.tmdbId));
+      if (ids.imdbId) {
+        const found = await findByImdbId(ids.imdbId);
+        if (found.movie_results[0]) return movieToSuggestion(found.movie_results[0]);
+      }
+    } else {
+      if (ids.tvdbId) {
+        const found = await findByTvdbId(ids.tvdbId);
+        if (found.tv_results[0]) return tvToSuggestion(found.tv_results[0]);
+      }
+      if (ids.tmdbId) return tvToSuggestion(await getTvById(ids.tmdbId));
+      if (ids.imdbId) {
+        const found = await findByImdbId(ids.imdbId);
+        if (found.tv_results[0]) return tvToSuggestion(found.tv_results[0]);
+      }
+    }
+  } catch {
+    // fall through to fuzzy matching
+  }
+  return null;
 }
 
 /** Decide whether the top suggestion is a confident match for the parsed title/year. */
@@ -164,7 +241,7 @@ function classify(
 ): { status: "matched" | "unsure"; suggestedTmdbId: number | null } {
   if (suggestions.length === 0) return { status: "unsure", suggestedTmdbId: null };
   const top = suggestions[0];
-  const titleMatch = normalize(top.title) === normalize(query);
+  const titleMatch = titleMatches(top, query);
   const yearMatch = yearHint != null && top.year != null && Math.abs(yearHint - top.year) <= 1;
   // Confident when the title matches and either the year agrees or there was no year to check,
   // or there is exactly one plausible result with a matching title.
@@ -172,6 +249,39 @@ function classify(
     return { status: "matched", suggestedTmdbId: top.tmdbId };
   }
   return { status: "unsure", suggestedTmdbId: null };
+}
+
+/**
+ * Second-chance pass for an "unsure" candidate whose top suggestion may still be
+ * right under another name: compare the query against the suggestion's TMDB
+ * alternative titles (romaji anime names — "Shingeki no Kyojin" for "Attack on
+ * Titan" — regional titles, transliterations). One extra TMDB call per checked
+ * suggestion; a hit with an agreeing (or absent) year promotes to matched.
+ */
+async function promoteViaAltTitles(
+  kind: MediaKind,
+  suggestions: ImportSuggestion[],
+  query: string,
+  yearHint: number | null
+): Promise<{ status: "matched"; suggestedTmdbId: number } | null> {
+  const q = normalizeTitle(query);
+  if (!q) return null;
+  for (const s of suggestions.slice(0, 2)) {
+    const yearOk = yearHint == null || s.year == null || Math.abs(yearHint - s.year) <= 1;
+    if (!yearOk) continue;
+    try {
+      const alts =
+        kind === "movie"
+          ? ((await getMovieAlternativeTitles(s.tmdbId)).titles ?? [])
+          : ((await getTvAlternativeTitles(s.tmdbId)).results ?? []);
+      if (alts.some((a) => normalizeTitle(a.title) === q)) {
+        return { status: "matched", suggestedTmdbId: s.tmdbId };
+      }
+    } catch {
+      // TMDB hiccup → leave the candidate unsure
+    }
+  }
+  return null;
 }
 
 // AI-assisted matching (optional; see Settings → General → AI assistant). Hard
@@ -348,11 +458,37 @@ async function scanMoviesByFile(db: Db, root: string): Promise<ScanResult> {
   const aiBudget = newAiBudget();
   const candidates: ImportCandidate[] = [];
   for (const agg of limited) {
+    const videoPath = agg.best.absPath;
+
+    // Deterministic first: Radarr/Jellyfin embed the id in the folder or file
+    // name ({tmdb-…}, {imdb-tt…}) — an id hit needs no fuzzy matching at all.
+    const idSuggestion =
+      (await resolveByExternalIds("movie", path.basename(path.dirname(videoPath)))) ??
+      (await resolveByExternalIds("movie", path.basename(videoPath)));
+    if (idSuggestion) {
+      candidates.push({
+        path: path.dirname(videoPath),
+        videoPath,
+        name: path.basename(videoPath),
+        mediaKind: "movie",
+        parsedTitle: agg.title,
+        parsedYear: agg.year,
+        videoFileCount: agg.count,
+        status: "matched",
+        suggestedTmdbId: idSuggestion.tmdbId,
+        suggestions: [idSuggestion],
+      });
+      continue;
+    }
+
     let suggestions = (await suggestFor("movie", agg.title, agg.year)).filter(
       (s) => !existingTmdb.has(s.tmdbId)
     );
     let { status, suggestedTmdbId } = classify(suggestions, agg.title, agg.year);
-    const videoPath = agg.best.absPath;
+    if (status === "unsure") {
+      const promoted = await promoteViaAltTitles("movie", suggestions, agg.title, agg.year);
+      if (promoted) ({ status, suggestedTmdbId } = promoted);
+    }
     if (status === "unsure") {
       const refined = await aiRefineCandidate(
         "movie",
@@ -369,6 +505,7 @@ async function scanMoviesByFile(db: Db, root: string): Promise<ScanResult> {
       path: path.dirname(videoPath), // loose file → its category folder; dedicated folder → that folder
       videoPath,
       name: path.basename(videoPath),
+      mediaKind: "movie",
       parsedTitle: agg.title,
       parsedYear: agg.year,
       videoFileCount: agg.count,
@@ -433,11 +570,76 @@ async function scanFolders(db: Db, type: ImportType, root: string): Promise<Scan
     let yearHint = parsed.year ?? null;
     ({ title: query, year: yearHint } = stripTrailingYear(query, yearHint));
 
+    // Anime/series roots routinely hold FILMS too (an /anime library with
+    // "Spirited Away (2001)" next to the shows). A folder with at most a few
+    // videos, none episode-numbered, is movie-shaped — route it to movie
+    // matching instead of forcing it through TMDB TV as a bogus series.
+    const movieShaped =
+      videos.length <= 3 &&
+      parsed.seasons.length === 0 &&
+      videos.every((v) => !parseTitle(path.basename(v.absPath)).isTv);
+    const largestVideo = videos.reduce((a, b) => (b.size > a.size ? b : a));
+
+    // Deterministic first: Sonarr/Radarr/Jellyfin embed provider ids in folder
+    // names. Try the id namespace the folder shape suggests before the other,
+    // since a bare {tmdb-…} is ambiguous between the movie and TV id spaces.
+    let idKind: MediaKind | null = null;
+    let idSuggestion: ImportSuggestion | null = null;
+    for (const kind of (movieShaped ? ["movie", "series"] : ["series", "movie"]) as MediaKind[]) {
+      idSuggestion = await resolveByExternalIds(kind, d.name);
+      if (idSuggestion) {
+        idKind = kind;
+        break;
+      }
+    }
+    if (idSuggestion && idKind) {
+      candidates.push({
+        path: d.path,
+        videoPath: idKind === "movie" ? largestVideo.absPath : "",
+        name: d.name,
+        mediaKind: idKind,
+        parsedTitle: query,
+        parsedYear: yearHint,
+        videoFileCount: videos.length,
+        status: "matched",
+        suggestedTmdbId: idSuggestion.tmdbId,
+        suggestions: [idSuggestion],
+      });
+      continue;
+    }
+
+    let mediaKind: MediaKind = "series";
+    let videoPath = "";
     let suggestions = (await suggestFor(type, query, yearHint)).filter(
       (s) => !existingTmdb.has(s.tmdbId)
     );
     let { status, suggestedTmdbId } = classify(suggestions, query, yearHint);
     if (status === "unsure") {
+      const promoted = await promoteViaAltTitles("series", suggestions, query, yearHint);
+      if (promoted) ({ status, suggestedTmdbId } = promoted);
+    }
+    if (status === "unsure" && movieShaped) {
+      // No confident series match — see if it's actually a film.
+      const movieSuggestions = await suggestFor("movie", query, yearHint);
+      let movieResult = classify(movieSuggestions, query, yearHint);
+      if (movieResult.status === "unsure") {
+        const promoted = await promoteViaAltTitles("movie", movieSuggestions, query, yearHint);
+        if (promoted) movieResult = promoted;
+      }
+      if (movieResult.status === "matched") {
+        mediaKind = "movie";
+        videoPath = largestVideo.absPath;
+        suggestions = movieSuggestions;
+        ({ status, suggestedTmdbId } = movieResult);
+      } else if (suggestions.length === 0 && movieSuggestions.length > 0) {
+        // Nothing plausible on the TV side at all — surface the movie options
+        // so the admin picks from real candidates instead of an empty list.
+        mediaKind = "movie";
+        videoPath = largestVideo.absPath;
+        suggestions = movieSuggestions;
+      }
+    }
+    if (status === "unsure" && mediaKind === "series") {
       const refined = await aiRefineCandidate(
         type,
         d.name,
@@ -452,8 +654,9 @@ async function scanFolders(db: Db, type: ImportType, root: string): Promise<Scan
 
     candidates.push({
       path: d.path,
-      videoPath: "",
+      videoPath,
       name: d.name,
+      mediaKind,
       parsedTitle: query,
       parsedYear: yearHint,
       videoFileCount: videos.length,
@@ -505,6 +708,7 @@ export function persistScanCandidates(
     .values(
       candidates.map((c) => ({
         type,
+        mediaKind: c.mediaKind,
         rootFolderId,
         qualityProfileId,
         path: c.path,
@@ -548,6 +752,8 @@ export function loadScanCandidates(type: ImportType): StoredCandidate[] {
     path: r.path,
     videoPath: r.videoPath ?? "",
     name: r.name,
+    // Legacy rows predate the column: the scan type implied the kind.
+    mediaKind: r.mediaKind ?? (r.type === "movie" ? "movie" : "series"),
     parsedTitle: r.parsedTitle,
     parsedYear: r.parsedYear,
     // videoFileCount is not persisted; every candidate had at least one file.

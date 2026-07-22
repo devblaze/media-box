@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { parseQuality, parseReleaseGroup, parseTitle } from "./release-parser";
+import {
+  parseExternalIds,
+  parseQuality,
+  parseReleaseGroup,
+  parseTitle,
+  stripExternalIds,
+} from "./release-parser";
 
 interface TvCase {
   name: string;
@@ -119,5 +125,36 @@ describe("parseReleaseGroup", () => {
     ["Show.S01E01.HDTV-1080p", undefined],
   ])("%s -> %s", (name, expected) => {
     expect(parseReleaseGroup(name)).toBe(expected);
+  });
+});
+
+describe("parseExternalIds", () => {
+  it.each([
+    ["Inception (2010) {tmdb-27205}", { tmdbId: 27205 }],
+    ["Inception (2010) [tmdbid-27205]", { tmdbId: 27205 }],
+    ["Attack on Titan (2013) [tvdbid-267440]", { tvdbId: 267440 }],
+    ["Attack on Titan {tvdb-267440}", { tvdbId: 267440 }],
+    ["Inception (2010) {imdb-tt1375666}", { imdbId: "tt1375666" }],
+    ["Movie [imdbid-tt1234567]", { imdbId: "tt1234567" }],
+    ["Show (2020) {tmdb-1} {imdb-tt2}", { tmdbId: 1, imdbId: "tt2" }],
+    ["Plain Title (2020)", {}],
+  ])("%s -> %o", (name, expected) => {
+    expect(parseExternalIds(name)).toEqual(expected);
+  });
+});
+
+describe("stripExternalIds", () => {
+  it("removes id tags and collapses whitespace", () => {
+    expect(stripExternalIds("Inception (2010) {tmdb-27205}")).toBe("Inception (2010)");
+    expect(stripExternalIds("Show [tvdbid-1] (2020)")).toBe("Show (2020)");
+  });
+
+  it("keeps id tags out of parsed titles", () => {
+    const parsed = parseTitle("Inception (2010) {tmdb-27205}");
+    expect(parsed.title).toBe("Inception");
+    expect(parsed.year).toBe(2010);
+    const tv = parseTitle("Attack on Titan [tvdbid-267440] S01E01 1080p WEB-DL");
+    expect(tv.title).toBe("Attack on Titan");
+    expect(tv.episodes).toEqual([1]);
   });
 });

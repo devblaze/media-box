@@ -363,7 +363,9 @@ export async function executeMigration(payload: MigrationPayload): Promise<strin
             tvdbId: src.tvdbId,
             path: rewritePath(src.path, decisions.pathRewrites),
             rootFolderId,
-            isAnime,
+            // Sonarr marks anime itself (seriesType), so honour that even when
+            // the destination root isn't the anime type.
+            isAnime: isAnime || src.seriesType === "anime",
             qualityProfileId: profileIdMap.get(src.qualityProfileId) ?? 1,
             monitored: src.monitored,
             seasonFolder: src.seasonFolder,

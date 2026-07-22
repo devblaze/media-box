@@ -83,6 +83,7 @@ export interface SonarrSeries {
   qualityProfileId: number;
   monitored: boolean;
   seasonFolder: boolean;
+  seriesType?: "standard" | "anime" | "daily";
   seasons: { seasonNumber: number; monitored: boolean }[];
 }
 

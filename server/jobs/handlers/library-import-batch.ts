@@ -48,7 +48,11 @@ export async function libraryImportBatchHandler(payload: unknown): Promise<strin
         throw new Error("Scan is missing a root folder or quality profile — rescan and retry");
       }
 
-      if (type === "movie") {
+      // A series/anime scan can surface a movie (anime films in an anime root);
+      // legacy rows have no mediaKind and fall back to what the type implies.
+      const mediaKind = row.mediaKind ?? (type === "movie" ? "movie" : "series");
+
+      if (mediaKind === "movie") {
         // Already in the library? Attach this file as an extra quality version
         // (skips same-quality dupes) rather than failing.
         const existingId = getMovieIdByTmdb(row.suggestedTmdbId);
