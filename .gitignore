@@ -47,6 +47,10 @@ next-env.d.ts
 .idea/
 .vscode/
 
+# local agent/CI leftovers (repo is hosted on GitHub; Gitea workflow kept for reference)
+.codex/
+.gitea/
+
 # graphify analysis output
 /graphify-out/
 
