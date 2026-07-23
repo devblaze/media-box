@@ -72,6 +72,9 @@ export const appSettingsSchema = z.object({
   radarrApiKey: z.string().default(""),
   bazarrUrl: z.string().default(""),
   bazarrApiKey: z.string().default(""),
+  // Jellyfin server base URL (admin-configured). Users link their own Jellyfin
+  // accounts from /account; empty = the whole integration is inert.
+  jellyfinUrl: z.string().default(""),
 }).transform((s) => {
   // Reconcile the 3-state `fileOperationsMode` with the legacy boolean:
   //   - A legacy database has `fileOperationsEnabled=false` with no `fileOperationsMode`

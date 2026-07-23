@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { apiFetch, useApi } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { timeAgo } from "@/lib/types";
 import {
   DEFAULT_SUBTITLE_STYLE,
   loadSubtitleStyle,
@@ -12,6 +13,7 @@ import {
   type SubtitleStyle,
 } from "@/lib/subtitle-style";
 import {
+  Badge,
   Button,
   Callout,
   Card,
@@ -22,6 +24,7 @@ import {
   Input,
   Select,
   Switch,
+  useConfirm,
   useToast,
 } from "@/components/ui";
 
@@ -34,9 +37,25 @@ interface Account {
   seenStreamingHighlight: boolean;
 }
 
+interface JellyfinStatus {
+  configured: boolean;
+  linked: boolean;
+  jellyfinUsername: string | null;
+  lastSyncAt: string | null;
+  lastSyncError: string | null;
+}
+
+interface JellyfinSyncResult {
+  moviesSynced: number;
+  episodesSynced: number;
+  seriesMatched: number;
+  skipped: number;
+}
+
 export default function AccountPage() {
   const { data, mutate } = useApi<Account>("/account");
   const toast = useToast();
+  const confirm = useConfirm();
 
   // Change password
   const [currentPassword, setCurrentPassword] = useState("");
@@ -48,6 +67,14 @@ export default function AccountPage() {
   // Pushover
   const [pushoverUserKey, setPushoverUserKey] = useState("");
   const [savingKey, setSavingKey] = useState(false);
+
+  // Jellyfin
+  const { data: jellyfin, mutate: mutateJellyfin } = useApi<JellyfinStatus>("/jellyfin");
+  const [jfUsername, setJfUsername] = useState("");
+  const [jfPassword, setJfPassword] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
 
   // Share streaming activity (watch-together)
   const [savingShare, setSavingShare] = useState(false);
@@ -126,6 +153,68 @@ export default function AccountPage() {
       toast.error(err instanceof Error ? err.message : "Failed to save");
     } finally {
       setSavingShare(false);
+    }
+  }
+
+  async function connectJellyfin() {
+    setConnecting(true);
+    try {
+      const result = await apiFetch<{
+        linked: boolean;
+        jellyfinUsername: string;
+        sync: JellyfinSyncResult | null;
+        syncError: string | null;
+      }>("/jellyfin/login", {
+        method: "POST",
+        body: JSON.stringify({ username: jfUsername, password: jfPassword }),
+      });
+      setJfPassword("");
+      await mutateJellyfin();
+      toast.success(
+        result.sync
+          ? `Connected as ${result.jellyfinUsername} — synced ${result.sync.moviesSynced} movies and ${result.sync.episodesSynced} episodes`
+          : `Connected as ${result.jellyfinUsername}`
+      );
+      if (result.syncError) toast.info(`First sync didn't finish: ${result.syncError}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to connect to Jellyfin");
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  async function syncJellyfin() {
+    setSyncing(true);
+    try {
+      const sync = await apiFetch<JellyfinSyncResult>("/jellyfin/sync", { method: "POST" });
+      await mutateJellyfin();
+      toast.success(`Synced ${sync.moviesSynced} movies and ${sync.episodesSynced} episodes`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Sync failed");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  async function disconnectJellyfin() {
+    if (
+      !(await confirm({
+        message:
+          "Disconnect your Jellyfin account? Your watch progress stops syncing — you can reconnect at any time.",
+        confirmLabel: "Disconnect",
+        danger: true,
+      }))
+    )
+      return;
+    setDisconnecting(true);
+    try {
+      await apiFetch("/jellyfin", { method: "DELETE" });
+      await mutateJellyfin();
+      toast.success("Jellyfin disconnected");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to disconnect");
+    } finally {
+      setDisconnecting(false);
     }
   }
 
@@ -213,6 +302,97 @@ export default function AccountPage() {
             <Button onClick={savePushover} loading={savingKey} disabled={savingKey || !data}>
               {savingKey ? "Saving…" : "Save"}
             </Button>
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Jellyfin</CardTitle>
+          </CardHeader>
+          <CardBody className="space-y-4">
+            {jellyfin && !jellyfin.configured && (
+              <p className="text-sm text-zinc-400">
+                No Jellyfin server has been configured. Ask an admin to set it under
+                Settings → Jellyfin.
+              </p>
+            )}
+
+            {jellyfin?.configured && !jellyfin.linked && (
+              <>
+                <p className="text-sm text-zinc-400">
+                  Link your Jellyfin account to bring your watch progress — Continue Watching
+                  and Next Up — into media-box.
+                </p>
+                <Field label="Jellyfin username" htmlFor="jellyfin-username">
+                  <Input
+                    id="jellyfin-username"
+                    autoComplete="off"
+                    value={jfUsername}
+                    onChange={(e) => setJfUsername(e.target.value)}
+                  />
+                </Field>
+                <Field
+                  label="Jellyfin password"
+                  htmlFor="jellyfin-password"
+                  description="Sent to your Jellyfin server once to sign in — media-box never stores it."
+                >
+                  <Input
+                    id="jellyfin-password"
+                    type="password"
+                    autoComplete="off"
+                    value={jfPassword}
+                    onChange={(e) => setJfPassword(e.target.value)}
+                  />
+                </Field>
+                <Button
+                  onClick={connectJellyfin}
+                  loading={connecting}
+                  disabled={connecting || !jfUsername}
+                >
+                  {connecting ? "Connecting…" : "Connect"}
+                </Button>
+              </>
+            )}
+
+            {jellyfin?.linked && (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone="success">Connected as {jellyfin.jellyfinUsername}</Badge>
+                  <span className="text-xs text-zinc-500">
+                    Last synced{" "}
+                    {jellyfin.lastSyncAt ? timeAgo(Date.parse(jellyfin.lastSyncAt)) : "never"}
+                  </span>
+                </div>
+                {jellyfin.lastSyncError && (
+                  <Callout tone="warning" title="Last sync failed">
+                    {jellyfin.lastSyncError}
+                  </Callout>
+                )}
+                <p className="text-sm text-zinc-400">
+                  Your Jellyfin watch progress syncs into media-box automatically every 30
+                  minutes.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="secondary"
+                    onClick={syncJellyfin}
+                    loading={syncing}
+                    disabled={syncing || disconnecting}
+                  >
+                    {syncing ? "Syncing…" : "Sync now"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="text-red-400 hover:text-red-300"
+                    onClick={disconnectJellyfin}
+                    loading={disconnecting}
+                    disabled={syncing || disconnecting}
+                  >
+                    Disconnect
+                  </Button>
+                </div>
+              </>
+            )}
           </CardBody>
         </Card>
 

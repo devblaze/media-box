@@ -518,6 +518,32 @@ export const sessions = sqliteTable("sessions", {
   expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
 });
 
+// ---------- Jellyfin account links ----------
+//
+// Each media-box user can link their own Jellyfin account (the server URL is a
+// global setting). We keep their Jellyfin access token so the periodic sync can
+// pull Continue Watching / Next Up into watch_progress without re-prompting.
+
+export const jellyfinLinks = sqliteTable(
+  "jellyfin_links",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    jellyfinUserId: text("jellyfin_user_id").notNull(),
+    jellyfinUsername: text("jellyfin_username").notNull(),
+    accessToken: text("access_token").notNull(),
+    // Per-link device id sent in the MediaBrowser auth header; Jellyfin scopes
+    // the token to it, so it must stay stable for the token's lifetime.
+    deviceId: text("device_id").notNull(),
+    lastSyncAt: integer("last_sync_at", { mode: "timestamp" }),
+    lastSyncError: text("last_sync_error"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [uniqueIndex("jellyfin_links_user_unique").on(t.userId)]
+);
+
 export const requests = sqliteTable(
   "requests",
   {

@@ -50,6 +50,7 @@ Update app-wide settings (admin). Only the fields below are accepted; unknown ke
   | `ollamaModel` | string | `llama3.1` | Ollama model name (`ollama` provider). |
   | `openrouterApiKey` | string | `""` | OpenRouter API key (`openrouter` provider). |
   | `openrouterModel` | string | `openai/gpt-4o-mini` | OpenRouter model id (`openrouter` provider). |
+  | `jellyfinUrl` | string | `""` | Jellyfin server base URL — enables the per-user watch-state sync (users link accounts via `/jellyfin/login`). Empty = integration off. |
 
   Not settable here (read-only via GET): `apiKey`, `kioskToken`, and the remembered migration credentials `sonarrUrl` / `sonarrApiKey` / `radarrUrl` / `radarrApiKey` / `bazarrUrl` / `bazarrApiKey` (those are written by the migration routes).
 
@@ -623,4 +624,74 @@ Connect to Bazarr and import its subtitle configuration (languages + provider) i
   ```bash
   curl -sS -X POST "$MEDIABOX_URL/api/v1/migrate/bazarr" -H "x-api-key: $MEDIABOX_API_KEY" \
     -H 'content-type: application/json' -d '{"url":"http://bazarr:6767","apiKey":"KEY"}'
+  ```
+
+## `GET /api/v1/jellyfin`
+
+The signed-in user's Jellyfin link status. `configured` reflects the global server URL (setting `jellyfinUrl`, set by an admin); the rest is the caller's own account link (`runtime = "nodejs"`).
+
+- **Auth:** session (any signed-in user; API-key/kiosk pseudo-users get `401`)
+- **Response:** `200` — `{ configured: boolean, linked: boolean, jellyfinUsername: string|null, lastSyncAt: string|null, lastSyncError: string|null }`.
+- **Example:**
+  ```bash
+  curl -sS "$MEDIABOX_URL/api/v1/jellyfin" -H "cookie: mediabox_session=$SESSION"
+  ```
+
+## `POST /api/v1/jellyfin/login`
+
+Link the signed-in user to their own Jellyfin account: exchanges the credentials for an access token via `/Users/AuthenticateByName` (the password is forwarded to Jellyfin, never stored) and runs the first watch-state sync inline. A failed first sync does not undo the link (`runtime = "nodejs"`).
+
+- **Auth:** session (any signed-in user)
+- **Request body:**
+
+  | field | type | required | notes |
+  | --- | --- | --- | --- |
+  | `username` | string | yes | The user's Jellyfin username (min length 1). |
+  | `password` | string | yes | Their Jellyfin password (may be empty for passwordless accounts). |
+
+- **Response:** `201` — `{ linked: true, jellyfinUsername, sync: { moviesSynced, episodesSynced, seriesMatched, skipped } | null, syncError: string|null }`. Errors: `400` — invalid body, no server configured, wrong credentials, or unreachable server (message says which).
+- **Example:**
+  ```bash
+  curl -sS -X POST "$MEDIABOX_URL/api/v1/jellyfin/login" -H "cookie: mediabox_session=$SESSION" \
+    -H 'content-type: application/json' -d '{"username":"nick","password":"secret"}'
+  ```
+
+## `POST /api/v1/jellyfin/sync`
+
+Sync the signed-in user's Jellyfin watch state now: Continue Watching + Next Up are mirrored into `watch_progress` (movies by TMDB/IMDb id; for each active series the full per-episode watch state, matched by TMDB → TVDB → IMDb id, then season/episode). Local rows that are at least as recent as Jellyfin's `LastPlayedDate` are never overwritten. Also runs for every linked user via the `JellyfinSync` scheduled task (every 30 min); each successful sync emits the targeted SSE event `jellyfin.synced` (`runtime = "nodejs"`).
+
+- **Auth:** session (any signed-in user)
+- **Response:** `200` — `{ moviesSynced, episodesSynced, seriesMatched, skipped }` (`skipped` = resume/next-up titles not in the media-box library). Errors: `400` — no account linked; `502` — Jellyfin unreachable or token rejected.
+- **Example:**
+  ```bash
+  curl -sS -X POST "$MEDIABOX_URL/api/v1/jellyfin/sync" -H "cookie: mediabox_session=$SESSION"
+  ```
+
+## `DELETE /api/v1/jellyfin`
+
+Unlink the signed-in user's Jellyfin account. Revokes the token on the server best-effort (`/Sessions/Logout`), then deletes the link (`runtime = "nodejs"`).
+
+- **Auth:** session (any signed-in user)
+- **Response:** `200` — `{ linked: false }`.
+- **Example:**
+  ```bash
+  curl -sS -X DELETE "$MEDIABOX_URL/api/v1/jellyfin" -H "cookie: mediabox_session=$SESSION"
+  ```
+
+## `POST /api/v1/jellyfin/test`
+
+Admin "Test" for the Jellyfin server URL — calls the public `/System/Info/Public` endpoint (no Jellyfin credentials needed) (`runtime = "nodejs"`).
+
+- **Auth:** admin
+- **Request body:**
+
+  | field | type | required | notes |
+  | --- | --- | --- | --- |
+  | `url` | string | yes | Jellyfin base URL, e.g. `http://192.168.1.10:8096`. |
+
+- **Response:** `200` — `{ ok: true, serverName, version }` or `{ ok: false, message }` (always HTTP 200; look at `ok`). Errors: `400` on a bad body.
+- **Example:**
+  ```bash
+  curl -sS -X POST "$MEDIABOX_URL/api/v1/jellyfin/test" -H "x-api-key: $MEDIABOX_API_KEY" \
+    -H 'content-type: application/json' -d '{"url":"http://jellyfin:8096"}'
   ```

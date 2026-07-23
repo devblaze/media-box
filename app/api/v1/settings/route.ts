@@ -43,6 +43,7 @@ const patchSchema = z.object({
   ollamaModel: z.string().optional(),
   openrouterApiKey: z.string().optional(),
   openrouterModel: z.string().optional(),
+  jellyfinUrl: z.string().optional(),
 });
 
 export async function PUT(request: NextRequest) {

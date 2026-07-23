@@ -47,6 +47,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDef[] = [
   { name: "DiskScan", intervalMinutes: 720 },
   { name: "Housekeeping", intervalMinutes: 1440 },
   { name: "ChannelScheduler", intervalMinutes: 1 },
+  { name: "JellyfinSync", intervalMinutes: 30 },
 ];
 
 const MONITOR_COMMANDS = new Set(["QueueMonitor"]);

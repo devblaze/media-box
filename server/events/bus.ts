@@ -27,6 +27,8 @@ export type AppEvent =
   | { type: "fileChange.pending" }
   | { type: "fileChange.updated" }
   | { type: "health.changed" }
+  // A user's Jellyfin watch-state sync finished (targeted: refresh their rows).
+  | { type: "jellyfin.synced"; targetUserId: number }
   // Watch-together (targeted to a single user's connections):
   | { type: "watch.peerJoined"; targetUserId: number; joinerUsername: string }
   | { type: "watch.peerLeft"; targetUserId: number; joinerUsername: string }

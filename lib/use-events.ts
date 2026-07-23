@@ -21,6 +21,8 @@ const INVALIDATIONS: Record<string, string[]> = {
   // Held file changes (Ask mode) — refresh the approvals list on new/decided items.
   "fileChange.pending": ["/file-changes"],
   "fileChange.updated": ["/file-changes"],
+  // Jellyfin watch-state sync landed for this user — refresh progress-driven rows.
+  "jellyfin.synced": ["/watch-progress/continue", "/watch-progress/recent", "/jellyfin"],
 };
 
 // One shared EventSource for the whole app. Long-lived SSE GETs count against

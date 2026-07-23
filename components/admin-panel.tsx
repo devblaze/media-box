@@ -28,6 +28,7 @@ const NAV: { label: string; href: string; permission?: PermissionKey }[] = [
   { label: "Download Clients", href: "/settings/download-clients", permission: "downloadClients.manage" },
   { label: "Library Import", href: "/settings/library-import", permission: "libraryImport.access" },
   { label: "Organizer", href: "/settings/organizer", permission: "organizer.access" },
+  { label: "Jellyfin", href: "/settings/jellyfin" },
   { label: "Migrate", href: "/settings/migrate" },
   { label: "General", href: "/settings/general" },
   { label: "Failures", href: "/settings/failures" },

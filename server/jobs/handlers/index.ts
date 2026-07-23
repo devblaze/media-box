@@ -22,6 +22,10 @@ registerHandler("WantedSearch", wantedSearchHandler);
 registerHandler("SubtitleSearch", subtitleSearchHandler);
 registerHandler("QueueMonitor", queueMonitorHandler, "monitor");
 registerHandler("LibraryImportBatch", libraryImportBatchHandler);
+registerHandler("JellyfinSync", async () => {
+  const { syncAllUsers } = await import("@/server/jellyfin/jellyfin-sync");
+  return syncAllUsers();
+});
 registerHandler("ChannelScheduler", channelSchedulerHandler);
 registerHandler("FetchTorboxFiles", async (payload) => {
   return fetchTorboxHandler(payload);
