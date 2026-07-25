@@ -1,4 +1,4 @@
-import { desc, lte } from "drizzle-orm";
+import { count, desc, eq, lte } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 
 /**
@@ -79,6 +79,28 @@ export function recordLog(
   } catch {
     // Logging must never throw.
   }
+}
+
+export interface LogPage {
+  entries: (typeof schema.logEntries.$inferSelect)[];
+  /** Total rows matching the level filter — drives the pager's page count. */
+  total: number;
+}
+
+/** One page of log entries, newest first, with the filtered total for paging. */
+export function listLogs(opts: { level?: Level; limit: number; offset: number }): LogPage {
+  const db = getDb();
+  const where = opts.level ? eq(schema.logEntries.level, opts.level) : undefined;
+  const total = db.select({ n: count() }).from(schema.logEntries).where(where).get()?.n ?? 0;
+  const entries = db
+    .select()
+    .from(schema.logEntries)
+    .where(where)
+    .orderBy(desc(schema.logEntries.id))
+    .limit(opts.limit)
+    .offset(opts.offset)
+    .all();
+  return { entries, total };
 }
 
 /** Format console arguments into a message string + optional context payload. */

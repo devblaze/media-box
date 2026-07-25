@@ -14,10 +14,17 @@ import {
   HowTo,
   Input,
   Select,
+  Switch,
   useToast,
 } from "@/components/ui";
 
 type HwAccel = "none" | "vaapi" | "qsv" | "nvenc";
+
+interface OpenRouterModel {
+  id: string;
+  name: string;
+  free: boolean;
+}
 type AiProvider = "none" | "ollama" | "openrouter";
 
 interface AppSettings {
@@ -54,6 +61,12 @@ export default function GeneralSettingsPage() {
   const [ollamaModel, setOllamaModel] = useState("llama3.1");
   const [openrouterApiKey, setOpenrouterApiKey] = useState("");
   const [openrouterModel, setOpenrouterModel] = useState("openai/gpt-4o-mini");
+  const [modelSearch, setModelSearch] = useState("");
+  const [freeModelsOnly, setFreeModelsOnly] = useState(false);
+  // Model catalog for the OpenRouter picker — only fetched while relevant.
+  const { data: modelCatalog, error: modelCatalogError } = useApi<{ models: OpenRouterModel[] }>(
+    aiProvider === "openrouter" ? "/ai/openrouter-models" : null
+  );
   const [testingAi, setTestingAi] = useState(false);
   const [testResult, setTestResult] = useState<null | { ok: boolean; message?: string }>(null);
   const [saving, setSaving] = useState(false);
@@ -340,6 +353,80 @@ export default function GeneralSettingsPage() {
                   placeholder="openai/gpt-4o-mini"
                 />
               </Field>
+
+              {/* Live OpenRouter catalog: search + free-only filter, click to pick. */}
+              <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  <Input
+                    aria-label="Search OpenRouter models"
+                    value={modelSearch}
+                    onChange={(e) => setModelSearch(e.target.value)}
+                    placeholder="Search models…"
+                    className="min-w-40 flex-1"
+                  />
+                  <label className="flex shrink-0 items-center gap-2 text-xs text-zinc-300">
+                    <Switch
+                      checked={freeModelsOnly}
+                      onChange={(checked: boolean) => setFreeModelsOnly(checked)}
+                      aria-label="Show only free models"
+                    />
+                    Free models only
+                  </label>
+                </div>
+                {modelCatalogError ? (
+                  <p className="text-xs text-red-400/90">
+                    Couldn&apos;t load the model list — you can still type a model id above.
+                  </p>
+                ) : !modelCatalog ? (
+                  <p className="text-xs text-zinc-500">Loading models…</p>
+                ) : (
+                  (() => {
+                    const q = modelSearch.trim().toLowerCase();
+                    const filtered = modelCatalog.models.filter(
+                      (m) =>
+                        (!freeModelsOnly || m.free) &&
+                        (q === "" ||
+                          m.id.toLowerCase().includes(q) ||
+                          m.name.toLowerCase().includes(q))
+                    );
+                    return (
+                      <>
+                        <div className="max-h-56 space-y-0.5 overflow-y-auto pr-1">
+                          {filtered.slice(0, 200).map((m) => (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() => setOpenrouterModel(m.id)}
+                              className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs transition-colors ${
+                                m.id === openrouterModel
+                                  ? "bg-amber-500/15 text-amber-300"
+                                  : "text-zinc-300 hover:bg-zinc-800"
+                              }`}
+                            >
+                              <span className="min-w-0">
+                                <span className="block truncate font-mono">{m.id}</span>
+                                <span className="block truncate text-[10px] text-zinc-500">
+                                  {m.name}
+                                </span>
+                              </span>
+                              {m.free && <Badge tone="success">Free</Badge>}
+                            </button>
+                          ))}
+                          {filtered.length === 0 && (
+                            <p className="px-2 py-1 text-xs text-zinc-500">
+                              No models match{freeModelsOnly ? " (free only)" : ""}.
+                            </p>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-zinc-600">
+                          {filtered.length} of {modelCatalog.models.length} models
+                          {filtered.length > 200 ? " — showing the first 200, refine the search" : ""}
+                        </p>
+                      </>
+                    );
+                  })()
+                )}
+              </div>
             </>
           )}
 

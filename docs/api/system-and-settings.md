@@ -111,6 +111,17 @@ Tiny round-trip against the configured AI assistant provider (Ollama or OpenRout
   curl -sS "$MEDIABOX_URL/api/v1/ai/test" -H "x-api-key: $MEDIABOX_API_KEY"
   ```
 
+## `GET /api/v1/ai/openrouter-models`
+
+The OpenRouter model catalog for the Settings → AI assistant model picker. Proxied from OpenRouter's public `/models` endpoint (no OpenRouter API key needed) and cached server-side for an hour; a fetch failure serves the stale cache when one exists (`runtime = "nodejs"`).
+
+- **Auth:** admin
+- **Response:** `200` — `{ models: [{ id, name, free }] }` sorted by `id`; `free` is true when both prompt and completion pricing are `0` (the `:free` variants). Errors: `502` — OpenRouter unreachable and no cache yet.
+- **Example:**
+  ```bash
+  curl -sS "$MEDIABOX_URL/api/v1/ai/openrouter-models" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
 ## `POST /api/v1/ai/diagnose`
 
 Ask the configured AI assistant to diagnose the instance. The server gathers the context itself — app version, key settings as booleans/enums only (secrets are never sent to the model), the last ~40 warn/error log rows, active + failed downloads (top 10, with status messages), and the enabled download clients (name/type) and indexers (name) — and sends it together with the optional question (`runtime = "nodejs"`). Model call timeout: 120s.
@@ -295,12 +306,13 @@ Read the persisted application log, newest first (`runtime = "nodejs"`).
   | param | type | default | notes |
   | --- | --- | --- | --- |
   | `level` | `debug` \| `info` \| `warn` \| `error` | (none) | Exact-level filter; invalid/absent = no filter. |
-  | `limit` | int | `200` | Clamped to 1–1000. |
+  | `limit` | int | `100` | Page size, clamped to 1–1000. |
+  | `offset` | int | `0` | Rows to skip (pagination); clamped to ≥ 0. |
 
-- **Response:** `200` — array of log-entry rows. Errors: `500`.
+- **Response:** `200` — `{ entries: [...], total, limit, offset }` where `entries` are log-entry rows (newest first) and `total` counts every row matching the level filter (drives the pager). *Changed in 0.2.29 — previously a bare array.* Errors: `500`.
 - **Example:**
   ```bash
-  curl -sS "$MEDIABOX_URL/api/v1/logs?level=error&limit=50" -H "x-api-key: $MEDIABOX_API_KEY"
+  curl -sS "$MEDIABOX_URL/api/v1/logs?level=error&limit=50&offset=50" -H "x-api-key: $MEDIABOX_API_KEY"
   ```
 
 ## `DELETE /api/v1/logs`

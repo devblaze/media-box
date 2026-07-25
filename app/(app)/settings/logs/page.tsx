@@ -41,13 +41,26 @@ const LEVEL_TONE: Record<Level, BadgeTone> = {
 const LEVEL_FILTERS = ["all", "error", "warn", "info", "debug"] as const;
 type LevelFilter = (typeof LEVEL_FILTERS)[number];
 
-const LIMIT = 500;
+const PAGE_SIZES = [50, 100, 200] as const;
+
+interface LogPage {
+  entries: LogEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
 
 export default function LogsPage() {
   const [level, setLevel] = useState<LevelFilter>("all");
+  const [pageSize, setPageSize] = useState<number>(100);
+  const [page, setPage] = useState(0);
   const query =
-    level === "all" ? `/logs?limit=${LIMIT}` : `/logs?level=${level}&limit=${LIMIT}`;
-  const { data: logs, mutate, isLoading } = useApi<LogEntry[]>(query);
+    `/logs?limit=${pageSize}&offset=${page * pageSize}` +
+    (level === "all" ? "" : `&level=${level}`);
+  const { data, mutate, isLoading } = useApi<LogPage>(query);
+  const logs = data?.entries;
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const { data: settings } = useApi<{ aiProvider: "none" | "ollama" | "openrouter" }>("/settings");
   const toast = useToast();
   const confirm = useConfirm();
@@ -87,6 +100,7 @@ export default function LogsPage() {
     try {
       await apiFetch("/logs", { method: "DELETE" });
       setExpanded(new Set());
+      setPage(0);
       await mutate();
       toast.success("Logs cleared");
     } catch (err) {
@@ -119,7 +133,11 @@ export default function LogsPage() {
           <Select
             aria-label="Filter by level"
             value={level}
-            onChange={(e) => setLevel(e.target.value as LevelFilter)}
+            onChange={(e) => {
+              setLevel(e.target.value as LevelFilter);
+              setPage(0);
+              setExpanded(new Set());
+            }}
             className="w-full sm:w-32"
           >
             <option value="all">All levels</option>
@@ -127,6 +145,22 @@ export default function LogsPage() {
             <option value="warn">Warn</option>
             <option value="info">Info</option>
             <option value="debug">Debug</option>
+          </Select>
+          <Select
+            aria-label="Entries per page"
+            value={pageSize}
+            onChange={(e) => {
+              setPageSize(Number(e.target.value));
+              setPage(0);
+              setExpanded(new Set());
+            }}
+            className="w-full sm:w-28"
+          >
+            {PAGE_SIZES.map((n) => (
+              <option key={n} value={n}>
+                {n} / page
+              </option>
+            ))}
           </Select>
           {settings && settings.aiProvider !== "none" && (
             <Button variant="secondary" size="sm" onClick={diagnose} loading={diagnosing}>
@@ -142,7 +176,7 @@ export default function LogsPage() {
             className="text-red-400 hover:text-red-300"
             onClick={clearLogs}
             loading={clearing}
-            disabled={clearing || !logs || logs.length === 0}
+            disabled={clearing || total === 0}
           >
             Clear logs
           </Button>
@@ -162,10 +196,20 @@ export default function LogsPage() {
           ))}
         </div>
       ) : !logs || logs.length === 0 ? (
-        <EmptyState
-          title="No log entries"
-          description="Warnings and errors raised by the app will appear here."
-        />
+        page > 0 ? (
+          // Landed past the last page (entries cleared/pruned underneath us).
+          <div className="space-y-3">
+            <EmptyState title="Nothing on this page" description="The log shrank while paging." />
+            <Button variant="secondary" size="sm" onClick={() => setPage(0)}>
+              Back to first page
+            </Button>
+          </div>
+        ) : (
+          <EmptyState
+            title="No log entries"
+            description="Warnings and errors raised by the app will appear here."
+          />
+        )
       ) : (
         <Table>
           <THead>
@@ -223,6 +267,39 @@ export default function LogsPage() {
             })}
           </TBody>
         </Table>
+      )}
+
+      {total > 0 && (
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-xs text-zinc-500">
+            Page {Math.min(page + 1, totalPages)} of {totalPages} · {total} entr
+            {total === 1 ? "y" : "ies"}
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setPage((p) => Math.max(0, p - 1));
+                setExpanded(new Set());
+              }}
+              disabled={page === 0}
+            >
+              ‹ Prev
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setPage((p) => p + 1);
+                setExpanded(new Set());
+              }}
+              disabled={page + 1 >= totalPages}
+            >
+              Next ›
+            </Button>
+          </div>
+        </div>
       )}
 
       <Modal
