@@ -35,7 +35,8 @@ Update app-wide settings (admin). Only the fields below are accepted; unknown ke
   | `transcodeHwAccel` | enum `none` \| `vaapi` \| `qsv` \| `nvenc` | `none` | HLS transcoding hardware-accel path. |
   | `transcodeVaapiDevice` | string | `/dev/dri/renderD128` | VAAPI/QSV render device node. |
   | `maxTranscodeSessions` | number (coerced int, 1–10) | `3` | Concurrent transcode session cap. |
-  | `streamRamCacheMb` | number (coerced int, 0–262144) | `2048` | RAM budget (MiB) for the direct-play read-ahead cache; the prefetcher stays a full budget ahead of playback (budget ≥ file size keeps whole movies in RAM). `0` disables it. |
+  | `streamRamCacheMb` | number (coerced int, 0–262144) | `2048` | RAM budget (MiB) for the direct-play read-ahead cache; the prefetcher stays a full budget ahead of playback (budget ≥ file size keeps whole movies in RAM). `0` disables it. Ignored while `ramUsageMode` is `unlimited`. |
+  | `ramUsageMode` | enum `capped` \| `unlimited` | `capped` | How the stream cache sizes itself: `capped` honours `streamRamCacheMb`; `unlimited` grows on demand into all free system RAM, always keeping a headroom of max(1 GiB, 10% of total). A container memory limit still caps the process. |
   | `maxBacklogGrabsPerRun` | number (coerced int, 0–50) | `3` | Max releases the 24h backlog search grabs per run (`0` = unlimited). |
   | `subtitleLanguages` | string | `""` | Wanted subtitle languages — comma-separated ISO 639-1 codes (e.g. `"en,es"`). |
   | `subtitleProvider` | enum `none` \| `opensubtitles` | `none` | Legacy single-provider selector (superseded by `subtitleProviders`). |
@@ -228,7 +229,7 @@ Basic app/runtime status. No auth guard — returns static process info only.
 
 Server-Sent Events stream (`text/event-stream`). Emits `data: <json>` frames from the app event bus (the UI invalidates SWR caches on receipt), an initial `retry: 5000`, and a `: keep-alive` comment every 25s. Closes on request abort. The handler has no auth guard, but it resolves the connection's user (`getRequestUser`) so it can filter **targeted** events.
 
-**Targeted events.** Most events broadcast to every connection (cache-invalidation only). Watch-together events instead carry a `targetUserId` and are delivered **only** to that user's connections: `{ "type": "watch.peerJoined", "targetUserId": number, "joinerUsername": string }`, `{ "type": "watch.peerLeft", … }`, and `{ "type": "watch.sync", "targetUserId": number, "command": { "kind": "play"|"pause"|"seek"|"title", "positionSeconds"?: number, "target"?: { "type": "movie"|"episode", "id": number } } }`. Untargeted events are unchanged.
+**Targeted events.** Most events broadcast to every connection (cache-invalidation only). Watch-together events instead carry a `targetUserId` and are delivered **only** to that user's connections: `{ "type": "watch.peerJoined", "targetUserId": number, "joinerUsername": string }`, `{ "type": "watch.peerLeft", … }`, and `{ "type": "watch.sync", "targetUserId": number, "command": { "kind": "play"|"pause"|"seek"|"title", "positionSeconds"?: number, "target"?: { "type": "movie"|"episode", "id": number } } }`. Untargeted events are unchanged. `{ "type": "watch.streamsChanged" }` broadcasts when a sharing user **starts** streaming (first watch-progress heartbeat after a ≥90s gap) so every open UI refreshes its Watch Together hosts list/badge live; stream *expiry* (the 90s window lapsing) emits nothing — clients cover it with a slow poll.
 
 - **Auth:** none (unguarded); the resolved user only scopes targeted-event delivery.
 - **Response:** `200` — an event stream; headers `Content-Type: text/event-stream`, `Cache-Control: no-cache, no-transform`, `Connection: keep-alive`.

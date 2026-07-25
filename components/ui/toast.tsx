@@ -64,8 +64,11 @@ function ToastViewport({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id:
   useEffect(() => setMounted(true), []);
   if (!mounted) return null;
 
+  // z-[100]: must clear the player modal overlay (z-[60]) and its pills
+  // (z-[70]) — with equal z-index the later-mounted modal covers toasts, so a
+  // host watching fullscreen would never see "X joined your stream".
   return createPortal(
-    <div className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
+    <div className="pointer-events-none fixed bottom-4 right-4 z-[100] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
       {toasts.map((t) => (
         <div
           key={t.id}

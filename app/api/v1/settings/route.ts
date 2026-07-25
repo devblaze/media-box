@@ -29,6 +29,7 @@ const patchSchema = z.object({
   transcodeVaapiDevice: z.string().optional(),
   maxTranscodeSessions: z.coerce.number().int().min(1).max(10).optional(),
   streamRamCacheMb: z.coerce.number().int().min(0).max(262144).optional(),
+  ramUsageMode: z.enum(["capped", "unlimited"]).optional(),
   maxBacklogGrabsPerRun: z.coerce.number().int().min(0).max(50).optional(),
   subtitleLanguages: z.string().optional(),
   subtitleProvider: z.enum(["none", "opensubtitles"]).optional(),

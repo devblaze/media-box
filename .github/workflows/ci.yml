@@ -1,0 +1,39 @@
+# Test + typecheck on every push and PR. The docker-publish workflow runs its
+# own copy of this job and only builds the image when it passes.
+#
+# ESLint is deliberately NOT part of CI yet: the repo carries a handful of
+# pre-existing react-hooks/set-state-in-effect findings that would fail every
+# run. Add `yarn lint` here once those are cleaned up.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      # tsc needs the generated Next route types (PageProps/RouteContext).
+      - name: Generate Next types
+        run: npx next typegen
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Tests
+        run: yarn test

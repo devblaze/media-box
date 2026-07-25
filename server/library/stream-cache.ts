@@ -1,4 +1,5 @@
 import { open } from "node:fs/promises";
+import os from "node:os";
 
 /**
  * In-RAM read-ahead cache for direct-play streaming.
@@ -16,6 +17,26 @@ import { open } from "node:fs/promises";
  */
 
 const DEFAULT_CHUNK_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Budget for the "unlimited" RAM mode: everything the system has free, minus a
+ * safety headroom (the larger of 1 GiB or 10% of total RAM) so the OS and the
+ * rest of media-box never get squeezed. Bytes the cache already holds count as
+ * available to it — they'd be freed by its own eviction, not by the OS.
+ * Pure so tests can feed synthetic numbers; callers use {@link unlimitedBudgetBytes}.
+ */
+export function computeUnlimitedBudget(
+  freeBytes: number,
+  totalBytes: number,
+  heldBytes: number
+): number {
+  const headroom = Math.max(1024 * 1024 * 1024, Math.floor(totalBytes * 0.1));
+  return Math.max(0, freeBytes + heldBytes - headroom);
+}
+
+export function unlimitedBudgetBytes(heldBytes: number): number {
+  return computeUnlimitedBudget(os.freemem(), os.totalmem(), heldBytes);
+}
 
 /** Identity of one on-disk file version. Build via `fileIdentity()`. */
 export interface CachedFile {

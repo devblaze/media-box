@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getRequestUser } from "@/server/auth/auth-service";
 import { upsertProgress, getProgress } from "@/server/playback/watch-progress-service";
+import { isUserStreaming, userSharesStreaming } from "@/server/users/user-activity-service";
+import { emitEvent } from "@/server/events/bus";
 import { ok, badRequest, serverError } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -36,6 +38,9 @@ export async function PUT(request: NextRequest) {
   try {
     const body = putSchema.parse(await request.json());
     if (!body.movieId && !body.episodeId) return badRequest("movieId or episodeId is required");
+    // Detect the heartbeat that STARTS a streaming window (before the write —
+    // afterwards the user always looks like they're streaming).
+    const wasStreaming = isUserStreaming(user.id);
     upsertProgress(user.id, {
       movieId: body.movieId ?? null,
       episodeId: body.episodeId ?? null,
@@ -43,6 +48,9 @@ export async function PUT(request: NextRequest) {
       positionSeconds: Math.floor(body.positionSeconds),
       durationSeconds: Math.floor(body.durationSeconds),
     });
+    if (!wasStreaming && userSharesStreaming(user.id)) {
+      emitEvent({ type: "watch.streamsChanged" });
+    }
     return ok({ saved: true });
   } catch (err) {
     return serverError(err);

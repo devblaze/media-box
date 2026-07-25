@@ -29,6 +29,9 @@ export type AppEvent =
   | { type: "health.changed" }
   // A user's Jellyfin watch-state sync finished (targeted: refresh their rows).
   | { type: "jellyfin.synced"; targetUserId: number }
+  // A sharing user started streaming — the joinable-hosts list changed
+  // (broadcast so every open UI refreshes its Watch Together list/badge).
+  | { type: "watch.streamsChanged" }
   // Watch-together (targeted to a single user's connections):
   | { type: "watch.peerJoined"; targetUserId: number; joinerUsername: string }
   | { type: "watch.peerLeft"; targetUserId: number; joinerUsername: string }

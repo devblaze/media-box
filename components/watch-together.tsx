@@ -58,10 +58,14 @@ export function WatchTogetherButton() {
   const [joining, setJoining] = useState<number | null>(null);
   const [session, setSession] = useState<JoinerSession | null>(null);
 
-  // Only poll the hosts list while the panel is open.
-  const { data: hosts, isLoading } = useApi<Host[]>(open ? "/watch-together/hosts" : null, {
-    refreshInterval: open ? 10_000 : 0,
+  // Always keep the hosts list warm so the badge shows a live count. A
+  // `watch.streamsChanged` SSE event revalidates it the moment a sharing user
+  // starts streaming; the slow background poll only covers streams EXPIRING
+  // (the 90s heartbeat window lapsing emits nothing). Faster while open.
+  const { data: hosts, isLoading } = useApi<Host[]>("/watch-together/hosts", {
+    refreshInterval: open ? 10_000 : 60_000,
   });
+  const hostCount = hosts?.length ?? 0;
 
   const join = useCallback(
     async (host: Host) => {
@@ -104,12 +108,20 @@ export function WatchTogetherButton() {
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}
-          aria-label="Watch together"
+          aria-label={`Watch together (${hostCount} streaming)`}
           aria-expanded={open}
           title="Watch together — join someone's stream"
-          className="inline-flex size-9 items-center justify-center rounded-md text-zinc-200 transition-colors hover:bg-white/10"
+          className="relative inline-flex size-9 items-center justify-center rounded-md text-zinc-200 transition-colors hover:bg-white/10"
         >
           <PeopleIcon />
+          {/* Live count of joinable streams; accent when someone's on. */}
+          <span
+            className={`absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold leading-none ${
+              hostCount > 0 ? "bg-emerald-500 text-black" : "bg-zinc-700 text-zinc-300"
+            }`}
+          >
+            {hostCount}
+          </span>
         </button>
         {open && (
           <>

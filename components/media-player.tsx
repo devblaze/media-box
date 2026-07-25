@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { apiFetch, useApi, ApiError } from "@/lib/api";
+import { resumeStartSeconds } from "@/lib/resume";
 import { useEvents } from "@/lib/use-events";
 import { Badge, Button, Callout, Spinner } from "@/components/ui";
 import { PlayOnTvButton } from "@/components/play-on-tv-button";
@@ -352,12 +353,27 @@ const MIN_PROGRESS_SECONDS = 10;
 function useWatchProgress(
   videoRef: React.RefObject<HTMLVideoElement | null>,
   target: PlaybackTarget,
-  disabled = false
+  disabled = false,
+  /**
+   * Media-time of the video element's 0:00. A transcode started at `-ss N` has
+   * a shifted timeline, so saves add N and the client-side resume seek is
+   * skipped (the stream already begins at the resume point). `null` = the
+   * offset isn't known yet — stay detached until the owner resolves it.
+   */
+  offsetSeconds: number | null = 0,
+  /**
+   * Real duration of the MEDIA when the caller knows it. An event-HLS
+   * playlist's `video.duration` only spans what ffmpeg has encoded so far —
+   * saving that would understate durations and could falsely trip the
+   * 90%-watched mark on offset streams.
+   */
+  knownDurationSeconds = 0
 ) {
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || disabled) return;
+    if (!video || disabled || offsetSeconds == null) return;
 
+    const offset = offsetSeconds;
     const key = target.type === "movie" ? "movieId" : "episodeId";
     let disposed = false;
     let resumed = false;
@@ -365,12 +381,16 @@ function useWatchProgress(
 
     const save = () => {
       const cur = video.currentTime;
-      const positionSeconds = Math.floor(cur);
-      // Guard 0/NaN, and don't store a resume point until a bit has actually been
-      // watched — so briefly opening an episode never shows up in Continue Watching.
-      if (!Number.isFinite(cur) || positionSeconds < MIN_PROGRESS_SECONDS) return;
+      if (!Number.isFinite(cur)) return;
+      const positionSeconds = Math.floor(offset + cur);
+      // Don't store a resume point until a bit has actually been watched — so
+      // briefly opening an episode never shows up in Continue Watching.
+      if (positionSeconds < MIN_PROGRESS_SECONDS) return;
       const dur = video.duration;
-      const durationSeconds = Math.floor(Number.isFinite(dur) && dur > 0 ? dur : 0);
+      const durationSeconds =
+        knownDurationSeconds > 0
+          ? knownDurationSeconds
+          : Math.floor(Number.isFinite(dur) && dur > 0 ? dur + offset : 0);
       lastSave = Date.now();
       void apiFetch("/watch-progress", {
         method: "PUT",
@@ -379,7 +399,7 @@ function useWatchProgress(
     };
 
     const onLoadedMetadata = () => {
-      if (resumed) return; // resume at most once per mount
+      if (resumed || offset > 0) return; // offset streams already start at the resume point
       resumed = true;
       void apiFetch<WatchProgress | null>(`/watch-progress?${key}=${target.id}`)
         .then((p) => {
@@ -414,7 +434,7 @@ function useWatchProgress(
       video.removeEventListener("pause", save);
       save(); // final flush on unmount / mode switch / close
     };
-  }, [videoRef, target.type, target.id, disabled]);
+  }, [videoRef, target.type, target.id, disabled, offsetSeconds, knownDurationSeconds]);
 }
 
 /** Seconds to jump on the ← / → arrow keys. */
@@ -842,15 +862,17 @@ export function VideoPlayerModal({
   useEvents(onWatchEvent);
 
   // JOINER: seek to the host's position at join time (best-effort, once).
+  // Direct play only — in transcode mode the host position goes to the server
+  // as `startSec` instead (an event playlist can't seek to unencoded time).
   const joinerSeeded = useRef(false);
   useEffect(() => {
-    if (joinerSeeded.current || sync?.role !== "joiner") return;
+    if (joinerSeeded.current || sync?.role !== "joiner" || mode !== "direct") return;
     const start = sync.startPositionSeconds;
     if (start == null || start <= 0) return;
     joinerSeeded.current = true;
     seekNonce.current += 1;
     setSeekReq({ t: start, n: seekNonce.current });
-  }, [sync]);
+  }, [sync, mode]);
 
   // Fetch skip-intro / skip-recap segments (from chapter markers) for the title.
   useEffect(() => {
@@ -1243,6 +1265,7 @@ export function VideoPlayerModal({
           audioTrack={selectedAudio}
           onVideoEl={registerVideo}
           disableProgress={isJoiner}
+          initialStartSec={isJoiner ? (sync?.startPositionSeconds ?? 0) : undefined}
         />
       )}
 
@@ -2028,6 +2051,7 @@ function TranscodePlayer({
   audioTrack,
   onVideoEl,
   disableProgress,
+  initialStartSec,
 }: {
   target: PlaybackTarget;
   fileId: number | null;
@@ -2041,14 +2065,23 @@ function TranscodePlayer({
   audioTrack?: number | null;
   onVideoEl?: (el: HTMLVideoElement | null) => void;
   disableProgress?: boolean;
+  /** Media-time to start the transcode at (watch-together joiners). Undefined = resume from saved progress. */
+  initialStartSec?: number;
 }) {
   const { type, id } = target;
   const videoRef = useRef<HTMLVideoElement>(null);
   const subtitleSinkRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<"starting" | "playing" | "error">("starting");
   const [error, setError] = useState<string | null>(null);
+  // Media-time of the stream's 0:00. null until known — an HLS event playlist
+  // can't seek to unencoded time, so resume must happen server-side via
+  // `startSec` (ffmpeg -ss), never by seeking the <video> after the fact.
+  const [baseOffset, setBaseOffset] = useState<number | null>(
+    initialStartSec != null ? Math.max(0, Math.floor(initialStartSec)) : disableProgress ? 0 : null
+  );
+  const [knownDuration, setKnownDuration] = useState(0);
 
-  useWatchProgress(videoRef, target, disableProgress);
+  useWatchProgress(videoRef, target, disableProgress, baseOffset, knownDuration);
   useStyledSubtitles(videoRef, tracks, selectedSub, subtitleOffset, subtitleSinkRef);
   useSeekRequest(videoRef, seekReq);
   useRegisterVideo(videoRef, onVideoEl);
@@ -2060,6 +2093,22 @@ function TranscodePlayer({
 
     async function start() {
       try {
+        // Resolve where to start BEFORE spawning ffmpeg: joiners get the host's
+        // position; otherwise resume from this user's saved progress.
+        let startSec = initialStartSec != null ? Math.max(0, Math.floor(initialStartSec)) : 0;
+        if (initialStartSec == null && !disableProgress) {
+          const key = type === "movie" ? "movieId" : "episodeId";
+          try {
+            const p = await apiFetch<WatchProgress | null>(`/watch-progress?${key}=${id}`);
+            startSec = resumeStartSeconds(p);
+            if (!cancelled && p && p.durationSeconds > 0) setKnownDuration(p.durationSeconds);
+          } catch {
+            /* no saved progress → start from the top */
+          }
+        }
+        if (cancelled) return;
+        setBaseOffset(startSec);
+
         const res = await apiFetch<{ sessionId: string; url: string }>("/transcode", {
           method: "POST",
           body: JSON.stringify({
@@ -2067,6 +2116,7 @@ function TranscodePlayer({
             id,
             ...(fileId != null ? { fileId } : {}),
             ...(audioTrack != null ? { audioTrack } : {}),
+            ...(startSec > 0 ? { startSec } : {}),
           }),
         });
         sessionId = res.sessionId; // capture before any early return so cleanup can DELETE it
@@ -2150,7 +2200,7 @@ function TranscodePlayer({
         );
       }
     };
-  }, [type, id, fileId, audioTrack]);
+  }, [type, id, fileId, audioTrack, initialStartSec, disableProgress]);
 
   return (
     <>

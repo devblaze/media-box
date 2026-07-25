@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { StreamCache, fileIdentity } from "./stream-cache";
+import { StreamCache, computeUnlimitedBudget, fileIdentity } from "./stream-cache";
 
 const CHUNK = 1024; // tiny chunks so tests cross boundaries cheaply
 
@@ -132,5 +132,27 @@ describe("prefetch", () => {
       await new Promise((r) => setTimeout(r, 10));
     }
     expect(cache.stats().chunkCount).toBe(1); // only the final chunk exists past that offset
+  });
+});
+
+describe("computeUnlimitedBudget", () => {
+  const GiB = 1024 * 1024 * 1024;
+
+  it("grants free memory minus the 1 GiB headroom on small boxes", () => {
+    expect(computeUnlimitedBudget(4 * GiB, 8 * GiB, 0)).toBe(3 * GiB);
+  });
+
+  it("uses a 10% headroom on big boxes", () => {
+    // 64 GiB total -> headroom 6.4 GiB (> 1 GiB floor), floored to whole bytes.
+    expect(computeUnlimitedBudget(32 * GiB, 64 * GiB, 0)).toBe(32 * GiB - Math.floor(6.4 * GiB));
+  });
+
+  it("counts bytes the cache already holds as available to it", () => {
+    // Nearly all RAM used, but 3 GiB of it is ours — eviction can reclaim it.
+    expect(computeUnlimitedBudget(0.5 * GiB, 8 * GiB, 3 * GiB)).toBe(2.5 * GiB);
+  });
+
+  it("never goes negative under memory pressure", () => {
+    expect(computeUnlimitedBudget(0, 8 * GiB, 0)).toBe(0);
   });
 });

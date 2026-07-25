@@ -41,6 +41,10 @@ export const appSettingsSchema = z.object({
   // a full budget ahead of playback, so a budget larger than the file keeps the
   // whole movie in RAM — set generously on HDD-array (Unraid) setups. 0 = off.
   streamRamCacheMb: z.coerce.number().int().min(0).max(262144).default(2048),
+  // How the stream cache sizes itself: "capped" honours streamRamCacheMb;
+  // "unlimited" grows on demand into whatever RAM the system has free (a safety
+  // headroom is always kept). A container memory limit still caps the process.
+  ramUsageMode: z.enum(["capped", "unlimited"]).default("capped"),
   // Max releases the 24h backlog search grabs per run (slow backfill; 0 = unlimited).
   maxBacklogGrabsPerRun: z.coerce.number().int().min(0).max(50).default(3),
   // Subtitles (Bazarr-style). Wanted languages = comma-separated ISO 639-1 codes ("en,es").

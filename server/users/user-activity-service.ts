@@ -201,6 +201,34 @@ export function listUsersWithActivity(now = Date.now()): UserActivity[] {
   });
 }
 
+/**
+ * Whether the user counts as "streaming now" by the same heartbeat window the
+ * activity views use (latest progress row unfinished and touched < 90s ago).
+ * Checked BEFORE a progress write, it detects that a write STARTS a stream —
+ * the signal behind the `watch.streamsChanged` live-update event.
+ */
+export function isUserStreaming(userId: number, now = Date.now()): boolean {
+  const latest = getDb()
+    .select({ updatedAt: schema.watchProgress.updatedAt, watched: schema.watchProgress.watched })
+    .from(schema.watchProgress)
+    .where(eq(schema.watchProgress.userId, userId))
+    .orderBy(desc(schema.watchProgress.updatedAt))
+    .limit(1)
+    .get();
+  return !!latest && !latest.watched && now - latest.updatedAt.getTime() < STREAM_WINDOW_MS;
+}
+
+/** The `shareStreamingActivity` opt-in for one user. */
+export function userSharesStreaming(userId: number): boolean {
+  return (
+    getDb()
+      .select({ share: schema.users.shareStreamingActivity })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId))
+      .get()?.share ?? false
+  );
+}
+
 export interface ActiveStream {
   userId: number;
   username: string;

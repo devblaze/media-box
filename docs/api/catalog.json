@@ -835,13 +835,13 @@
       "method": "GET",
       "path": "/api/v1/watch-progress",
       "auth": "session",
-      "summary": ""
+      "summary": "Detect the heartbeat that STARTS a streaming window (before the write —"
     },
     {
       "method": "PUT",
       "path": "/api/v1/watch-progress",
       "auth": "session",
-      "summary": ""
+      "summary": "Detect the heartbeat that STARTS a streaming window (before the write —"
     },
     {
       "method": "GET",
