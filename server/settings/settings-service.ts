@@ -37,6 +37,10 @@ export const appSettingsSchema = z.object({
   // GPU — used to choose the transcode card when the host has more than one.
   transcodeVaapiDevice: z.string().default("/dev/dri/renderD128"),
   maxTranscodeSessions: z.coerce.number().int().min(1).max(10).default(3),
+  // RAM budget (MiB) for the direct-play read-ahead cache. The prefetcher stays
+  // a full budget ahead of playback, so a budget larger than the file keeps the
+  // whole movie in RAM — set generously on HDD-array (Unraid) setups. 0 = off.
+  streamRamCacheMb: z.coerce.number().int().min(0).max(262144).default(2048),
   // Max releases the 24h backlog search grabs per run (slow backfill; 0 = unlimited).
   maxBacklogGrabsPerRun: z.coerce.number().int().min(0).max(50).default(3),
   // Subtitles (Bazarr-style). Wanted languages = comma-separated ISO 639-1 codes ("en,es").

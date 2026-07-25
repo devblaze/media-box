@@ -2,6 +2,15 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { getSettings } from "@/server/settings/settings-service";
+import { fileIdentity, getStreamCache, type CachedFile } from "./stream-cache";
+
+/**
+ * Fallback chunk size when the RAM cache is disabled. Node's 64 KiB default
+ * means thousands of tiny reads against an HDD array; 4 MiB keeps the drive
+ * streaming sequentially.
+ */
+const FALLBACK_HIGH_WATER_MARK = 4 * 1024 * 1024;
 
 /** Extension -> Content-Type for the video formats we serve. */
 const CONTENT_TYPES: Record<string, string> = {
@@ -21,6 +30,18 @@ function toWebStream(nodeStream: Readable): ReadableStream {
   // Node's fs read stream -> Web ReadableStream so it never buffers the whole
   // file in memory. The two ReadableStream declarations differ only nominally.
   return Readable.toWeb(nodeStream) as unknown as ReadableStream;
+}
+
+/**
+ * Body for bytes [start, end]: served through the RAM read-ahead cache when the
+ * `streamRamCacheMb` setting allows, else a plain (large-chunk) file stream.
+ */
+function bodyFor(file: CachedFile, start: number, end: number): ReadableStream {
+  const budgetBytes = getSettings().streamRamCacheMb * 1024 * 1024;
+  if (budgetBytes > 0) return getStreamCache().body(file, start, end, budgetBytes);
+  return toWebStream(
+    createReadStream(file.absPath, { start, end, highWaterMark: FALLBACK_HIGH_WATER_MARK })
+  );
 }
 
 function unsatisfiable(size: number): Response {
@@ -49,10 +70,12 @@ export async function streamFile(
   method: "GET" | "HEAD"
 ): Promise<Response> {
   let size: number;
+  let file: CachedFile;
   try {
     const s = await stat(absPath);
     if (!s.isFile()) return new Response("Not Found", { status: 404 });
     size = s.size;
+    file = fileIdentity(absPath, s.size, s.mtimeMs);
   } catch {
     return new Response("Not Found", { status: 404 });
   }
@@ -62,7 +85,7 @@ export async function streamFile(
 
   // --- No Range: full 200 response ---
   if (!rangeHeader) {
-    const body = method === "HEAD" ? null : toWebStream(createReadStream(absPath));
+    const body = method === "HEAD" || size === 0 ? null : bodyFor(file, 0, size - 1);
     return new Response(body, {
       status: 200,
       headers: {
@@ -108,7 +131,7 @@ export async function streamFile(
   }
 
   const chunkSize = end - start + 1;
-  const body = method === "HEAD" ? null : toWebStream(createReadStream(absPath, { start, end }));
+  const body = method === "HEAD" ? null : bodyFor(file, start, end);
   return new Response(body, {
     status: 206,
     headers: {

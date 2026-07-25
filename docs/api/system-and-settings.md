@@ -35,6 +35,7 @@ Update app-wide settings (admin). Only the fields below are accepted; unknown ke
   | `transcodeHwAccel` | enum `none` \| `vaapi` \| `qsv` \| `nvenc` | `none` | HLS transcoding hardware-accel path. |
   | `transcodeVaapiDevice` | string | `/dev/dri/renderD128` | VAAPI/QSV render device node. |
   | `maxTranscodeSessions` | number (coerced int, 1–10) | `3` | Concurrent transcode session cap. |
+  | `streamRamCacheMb` | number (coerced int, 0–262144) | `2048` | RAM budget (MiB) for the direct-play read-ahead cache; the prefetcher stays a full budget ahead of playback (budget ≥ file size keeps whole movies in RAM). `0` disables it. |
   | `maxBacklogGrabsPerRun` | number (coerced int, 0–50) | `3` | Max releases the 24h backlog search grabs per run (`0` = unlimited). |
   | `subtitleLanguages` | string | `""` | Wanted subtitle languages — comma-separated ISO 639-1 codes (e.g. `"en,es"`). |
   | `subtitleProvider` | enum `none` \| `opensubtitles` | `none` | Legacy single-provider selector (superseded by `subtitleProviders`). |

@@ -28,6 +28,7 @@ interface AppSettings {
   transcodeHwAccel: HwAccel;
   transcodeVaapiDevice: string;
   maxTranscodeSessions: number;
+  streamRamCacheMb: number;
   pushoverAppToken: string;
   aiProvider: AiProvider;
   ollamaUrl: string;
@@ -44,6 +45,7 @@ export default function GeneralSettingsPage() {
   const [transcodeHwAccel, setTranscodeHwAccel] = useState<HwAccel>("none");
   const [transcodeVaapiDevice, setTranscodeVaapiDevice] = useState("/dev/dri/renderD128");
   const [maxTranscodeSessions, setMaxTranscodeSessions] = useState(3);
+  const [streamRamCacheMb, setStreamRamCacheMb] = useState(2048);
   const [pushoverAppToken, setPushoverAppToken] = useState("");
   const [aiProvider, setAiProvider] = useState<AiProvider>("none");
   const [ollamaUrl, setOllamaUrl] = useState("http://localhost:11434");
@@ -68,6 +70,7 @@ export default function GeneralSettingsPage() {
       setTranscodeHwAccel(data.transcodeHwAccel);
       setTranscodeVaapiDevice(data.transcodeVaapiDevice);
       setMaxTranscodeSessions(data.maxTranscodeSessions);
+      setStreamRamCacheMb(data.streamRamCacheMb);
       setPushoverAppToken(data.pushoverAppToken);
       setAiProvider(data.aiProvider);
       setOllamaUrl(data.ollamaUrl);
@@ -140,6 +143,7 @@ export default function GeneralSettingsPage() {
           transcodeHwAccel,
           transcodeVaapiDevice,
           maxTranscodeSessions,
+          streamRamCacheMb,
           pushoverAppToken,
           aiProvider,
           ollamaUrl,
@@ -433,6 +437,22 @@ export default function GeneralSettingsPage() {
               max={10}
               value={maxTranscodeSessions}
               onChange={(e) => setMaxTranscodeSessions(Number(e.target.value))}
+            />
+          </Field>
+
+          <Field
+            label="Direct-play RAM cache (MiB)"
+            htmlFor="stream-ram-cache"
+            description="Read-ahead buffer for direct play. On HDD arrays (Unraid) the prefetcher stays a full budget ahead of playback — set it larger than a typical movie to keep whole files in RAM. 0 disables it."
+          >
+            <Input
+              id="stream-ram-cache"
+              type="number"
+              min={0}
+              max={262144}
+              step={512}
+              value={streamRamCacheMb}
+              onChange={(e) => setStreamRamCacheMb(Number(e.target.value))}
             />
           </Field>
 

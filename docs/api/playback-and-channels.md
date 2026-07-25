@@ -141,6 +141,7 @@ Direct-play a movie's video file with byte-range (seek) support. Exports both `G
 - **Path params:** `id` — movie id.
 - **Query params:** `file` — optional numeric movie-file id (selects a specific file when a movie has more than one).
 - **Response:** binary video stream, `Content-Type` inferred from file extension (mp4/mkv/webm/…). No `Range` header → `200` full body with `Content-Length` + `Accept-Ranges: bytes`; `Range: bytes=start-end` → `206` partial with `Content-Range`; invalid/unsatisfiable range → `416`. `HEAD` returns the same status/headers with no body. Errors: `401` (plain), `404` `Not Found` (plain) if the media or file is missing.
+- **Buffering:** bytes are served through an in-RAM read-ahead cache (setting `streamRamCacheMb`, default 2048 MiB; `0` disables): a background prefetcher stays a full budget ahead of the newest read position, so slow storage (HDD arrays / Unraid FUSE) is masked and a budget larger than the file keeps the whole movie in RAM. Cache entries are keyed by path+size+mtime, so replaced files never serve stale bytes.
 - **Example:**
   ```bash
   curl -sS -r 0-1048575 "$MEDIABOX_URL/api/v1/stream/movie/12?file=34" \
