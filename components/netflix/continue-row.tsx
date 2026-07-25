@@ -1,9 +1,16 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { apiFetch } from "@/lib/api";
+import { useToast } from "@/components/ui";
 import { VideoPlayerModal } from "@/components/media-player";
 // Type-only import: the service is a server module, erased from the client bundle.
 import type { ContinueItem } from "@/server/playback/watch-progress-service";
+
+/** Stable identity for a card (also the selection key in edit mode). */
+function itemKey(item: ContinueItem): string {
+  return `${item.kind}-${item.movieId ?? ""}-${item.episodeId ?? ""}`;
+}
 
 /**
  * A titled, horizontally-scrollable row of resume cards (Continue Watching /
@@ -12,10 +19,26 @@ import type { ContinueItem } from "@/server/playback/watch-progress-service";
  * but each landscape card shows the item's backdrop, title, an optional episode
  * subtitle, and a progress bar, and clicking it opens the player.
  *
+ * With `onChanged` set the row gains an Edit mode: cards become multi-selectable
+ * and the selection can be marked watched in bulk (dropping it off the row).
+ *
  * `items` undefined (still loading) or empty → the row renders nothing.
  */
-export function ContinueRow({ title, items }: { title: string; items: ContinueItem[] | undefined }) {
+export function ContinueRow({
+  title,
+  items,
+  onChanged,
+}: {
+  title: string;
+  items: ContinueItem[] | undefined;
+  /** Called after items were marked watched; owner revalidates the list. */
+  onChanged?: () => void;
+}) {
   const trackRef = useRef<HTMLDivElement>(null);
+  const toast = useToast();
+  const [editing, setEditing] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [saving, setSaving] = useState(false);
 
   function page(dir: -1 | 1) {
     const el = trackRef.current;
@@ -25,9 +48,88 @@ export function ContinueRow({ title, items }: { title: string; items: ContinueIt
   // Nothing to resume → skip the whole row.
   if (!items || items.length === 0) return null;
 
+  function stopEditing() {
+    setEditing(false);
+    setSelected(new Set());
+  }
+
+  function toggle(key: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  async function markWatched(targets: ContinueItem[]) {
+    if (targets.length === 0) return;
+    setSaving(true);
+    try {
+      await apiFetch("/watch-progress/watched", {
+        method: "POST",
+        body: JSON.stringify({
+          watched: true,
+          items: targets.map((t) =>
+            t.kind === "movie" ? { movieId: t.movieId } : { episodeId: t.episodeId }
+          ),
+        }),
+      });
+      toast.success(`Marked ${targets.length} as watched`);
+      stopEditing();
+      onChanged?.();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not mark as watched");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const allKeys = items.map(itemKey);
+  const selectedItems = items.filter((i) => selected.has(itemKey(i)));
+
   return (
     <section className="group/row relative">
-      <h2 className="px-4 text-lg font-semibold text-zinc-200 md:px-12">{title}</h2>
+      <div className="flex items-center gap-3 px-4 md:px-12">
+        <h2 className="text-lg font-semibold text-zinc-200">{title}</h2>
+        {onChanged &&
+          (editing ? (
+            <div className="flex items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() =>
+                  setSelected(selected.size === allKeys.length ? new Set() : new Set(allKeys))
+                }
+                className="rounded-md border border-zinc-700 px-2 py-1 text-zinc-300 transition-colors hover:bg-zinc-800"
+              >
+                {selected.size === allKeys.length ? "Select none" : "Select all"}
+              </button>
+              <button
+                type="button"
+                disabled={selected.size === 0 || saving}
+                onClick={() => void markWatched(selectedItems)}
+                className="rounded-md border border-emerald-700/60 px-2 py-1 text-emerald-400 transition-colors hover:bg-emerald-950/50 disabled:cursor-default disabled:opacity-40"
+              >
+                {saving ? "Marking…" : `Mark watched (${selected.size})`}
+              </button>
+              <button
+                type="button"
+                onClick={stopEditing}
+                className="rounded-md px-2 py-1 text-zinc-400 transition-colors hover:text-zinc-200"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="rounded-md px-2 py-1 text-xs text-zinc-500 opacity-0 transition-opacity hover:text-zinc-200 focus-visible:opacity-100 group-hover/row:opacity-100"
+            >
+              Edit
+            </button>
+          ))}
+      </div>
 
       <div className="relative">
         <button
@@ -49,11 +151,14 @@ export function ContinueRow({ title, items }: { title: string; items: ContinueIt
             // progress (bumping updatedAt), and a window-focus refetch of this
             // list would then change the key, remount the card, and drop
             // `playing` — closing the player whenever you switch windows.
-            <div
-              key={`${item.kind}-${item.movieId ?? ""}-${item.episodeId ?? ""}`}
-              className="w-[240px] shrink-0"
-            >
-              <ContinueCard item={item} />
+            <div key={itemKey(item)} className="w-[240px] shrink-0">
+              <ContinueCard
+                item={item}
+                editing={editing}
+                selected={selected.has(itemKey(item))}
+                onToggle={() => toggle(itemKey(item))}
+                onMarkWatched={onChanged ? () => void markWatched([item]) : undefined}
+              />
             </div>
           ))}
         </div>
@@ -76,8 +181,21 @@ export function ContinueRow({ title, items }: { title: string; items: ContinueIt
  * dims with a centred play glyph, and — when the item has playback progress —
  * shows a red progress bar pinned to the bottom edge. Clicking opens the player
  * for the underlying movie or episode; the modal state is kept local to the card.
+ * In edit mode the card toggles selection instead of playing.
  */
-function ContinueCard({ item }: { item: ContinueItem }) {
+function ContinueCard({
+  item,
+  editing,
+  selected,
+  onToggle,
+  onMarkWatched,
+}: {
+  item: ContinueItem;
+  editing: boolean;
+  selected: boolean;
+  onToggle: () => void;
+  onMarkWatched?: () => void;
+}) {
   const [playing, setPlaying] = useState(false);
 
   const image = item.backdrop ?? item.poster;
@@ -91,10 +209,12 @@ function ContinueCard({ item }: { item: ContinueItem }) {
       <div className="absolute inset-0 origin-center rounded-md transition-transform duration-300 ease-out group-hover:z-30 group-hover:scale-[1.3] group-focus-within:z-30 group-focus-within:scale-[1.3]">
         <button
           type="button"
-          onClick={() => setPlaying(true)}
-          disabled={targetId == null}
-          aria-label={`Play ${item.title}`}
-          className="relative block h-full w-full overflow-hidden rounded-md bg-zinc-900 text-left shadow-lg transition-shadow group-hover:shadow-2xl disabled:cursor-default"
+          onClick={() => (editing ? onToggle() : setPlaying(true))}
+          disabled={!editing && targetId == null}
+          aria-label={editing ? `Select ${item.title}` : `Play ${item.title}`}
+          className={`relative block h-full w-full overflow-hidden rounded-md bg-zinc-900 text-left shadow-lg transition-shadow group-hover:shadow-2xl disabled:cursor-default ${
+            editing && selected ? "ring-2 ring-emerald-500" : ""
+          }`}
         >
           {image ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -105,12 +225,26 @@ function ContinueCard({ item }: { item: ContinueItem }) {
             </div>
           )}
 
-          {/* Hover play affordance */}
-          <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-300 group-hover:bg-black/30 group-hover:opacity-100 group-focus-within:bg-black/30 group-focus-within:opacity-100">
-            <span className="flex size-10 items-center justify-center rounded-full bg-white/90 text-lg text-black shadow-lg">
-              ▶
-            </span>
-          </div>
+          {/* Hover affordance: play glyph normally, checkbox in edit mode. */}
+          {editing ? (
+            <div className="absolute inset-0 bg-black/30">
+              <span
+                className={`absolute left-2 top-2 flex size-6 items-center justify-center rounded-full border text-sm shadow-lg ${
+                  selected
+                    ? "border-emerald-400 bg-emerald-500 text-black"
+                    : "border-white/70 bg-black/50 text-transparent"
+                }`}
+              >
+                ✓
+              </span>
+            </div>
+          ) : (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-300 group-hover:bg-black/30 group-hover:opacity-100 group-focus-within:bg-black/30 group-focus-within:opacity-100">
+              <span className="flex size-10 items-center justify-center rounded-full bg-white/90 text-lg text-black shadow-lg">
+                ▶
+              </span>
+            </div>
+          )}
 
           {/* Name + optional episode subtitle band */}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent px-2 pb-3 pt-8">
@@ -132,6 +266,19 @@ function ContinueCard({ item }: { item: ContinueItem }) {
             </div>
           )}
         </button>
+
+        {/* Quick "mark watched" on hover (outside edit mode). */}
+        {!editing && onMarkWatched && (
+          <button
+            type="button"
+            onClick={onMarkWatched}
+            aria-label={`Mark ${item.title} watched`}
+            title="Mark watched"
+            className="absolute right-1.5 top-1.5 z-10 flex size-7 items-center justify-center rounded-full bg-black/60 text-sm text-white opacity-0 shadow-lg transition-opacity hover:bg-emerald-600 focus-visible:opacity-100 group-hover:opacity-100"
+          >
+            ✓
+          </button>
+        )}
       </div>
 
       {playing && targetId != null && (

@@ -66,7 +66,9 @@ function JellyfinPromptBanner() {
 /** Home browse: trending hero over Continue Watching, "Because you watched…", and the core rows. */
 export default function DiscoverPage() {
   // Fetch failures leave the data undefined, so each row simply renders nothing.
-  const { data: continueItems } = useApi<ContinueItem[]>("/watch-progress/continue");
+  const { data: continueItems, mutate: mutateContinue } = useApi<ContinueItem[]>(
+    "/watch-progress/continue"
+  );
   const { data: recommendations } = useApi<RecommendationGroup[]>("/discover/recommendations");
 
   return (
@@ -75,7 +77,11 @@ export default function DiscoverPage() {
       leadingRows={
         <>
           <JellyfinPromptBanner />
-          <ContinueRow title="Continue Watching" items={continueItems} />
+          <ContinueRow
+            title="Continue Watching"
+            items={continueItems}
+            onChanged={() => void mutateContinue()}
+          />
           {recommendations?.map((group) => (
             <NetflixRow
               key={`${group.basedOn.mediaType}-${group.basedOn.tmdbId}`}

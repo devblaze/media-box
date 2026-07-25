@@ -476,18 +476,18 @@ Recently finished (watched) movies and episodes for the current user, newest fir
 
 ## `POST /api/v1/watch-progress/watched`
 
-Mark a movie, episode, or whole series watched/unwatched for the current user.
+Mark watched/unwatched for the current user — one movie, episode, or whole series, or many at once (the Continue Watching multi-select uses the bulk form).
 
-- **Auth:** Any authenticated (`getRequestUser`); `401` otherwise. An API-key principal returns `200 { watched: false }` without writing.
+- **Auth:** Any authenticated (`getRequestUser`); `401` otherwise. An API-key principal returns `200 { watched: false, count: 0 }` without writing.
 - **Request body:** JSON
-  - `movieId` / `episodeId` / `seriesId` — positive integers, coerced, optional (one of the three required).
-  - `watched` — boolean (required).
-- **Response:** `200` — `{ "watched": <boolean echoed> }`. Errors: `400` `movieId, episodeId, or seriesId is required`, `500`.
+  - Single form: `movieId` / `episodeId` / `seriesId` — positive integers, coerced, optional (one of the three required); `watched` — boolean (required).
+  - Bulk form: `items` — array (max 500) of `{movieId? | episodeId? | seriesId?}` targets (each needs one id); `watched` — boolean applied to all.
+- **Response:** `200` — `{ "watched": <boolean echoed>, "count": <targets written> }`. Errors: `400` `Each item needs a movieId, episodeId, or seriesId`, `500`.
 - **Example:**
   ```bash
   curl -sS -X POST "$MEDIABOX_URL/api/v1/watch-progress/watched" \
     -H "x-api-key: $MEDIABOX_API_KEY" -H "content-type: application/json" \
-    -d '{"seriesId":7,"watched":true}'
+    -d '{"items":[{"movieId":12},{"episodeId":88}],"watched":true}'
   ```
 
 ---

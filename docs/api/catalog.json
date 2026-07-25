@@ -859,7 +859,7 @@
       "method": "POST",
       "path": "/api/v1/watch-progress/watched",
       "auth": "session",
-      "summary": "Mark a movie, episode, or whole series watched / unwatched for the current user."
+      "summary": "Bulk form: mark many targets at once (e.g. Continue Watching multi-select)."
     },
     {
       "method": "GET",
