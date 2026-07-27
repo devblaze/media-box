@@ -22,6 +22,10 @@
 
 ---
 
+<p align="center">
+  <img src="docs/screenshots/01-home.jpg" alt="media-box home — Netflix-style discover with Continue Watching" width="900" />
+</p>
+
 ## What it does
 
 - **Two libraries, one app** — movies and series, metadata via TMDB.
@@ -41,6 +45,15 @@
   Torznab indexers, qBittorrent clients).
 
 Built on **Next.js 16** (a single process: UI + `/api/v1` + an in-process job scheduler) with **SQLite/Drizzle**.
+
+## Screenshots
+
+| | |
+| --- | --- |
+| ![Movie library](docs/screenshots/02-movies.jpg) <p align="center"><sub>Movie library</sub></p> | ![Add from TMDB](docs/screenshots/05-add-search.jpg) <p align="center"><sub>Add anything from TMDB</sub></p> |
+| ![Series management](docs/screenshots/04-series-detail.jpg) <p align="center"><sub>Series management — seasons, monitoring, search</sub></p> | ![Movie management](docs/screenshots/03-movie-detail.jpg) <p align="center"><sub>Movie management with cast &amp; file state</sub></p> |
+
+More in [`docs/screenshots/`](docs/screenshots/) — Library Import, admin settings (transcoding, RAM cache, AI assistant).
 
 ---
 
