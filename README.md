@@ -59,7 +59,17 @@ More in [`docs/screenshots/`](docs/screenshots/) — Library Import, admin setti
 
 ## Install on Unraid (Docker template)
 
-> media-box ships an Unraid Docker template at
+> **Easiest:** media-box is available in Unraid **Community Applications** — open the **Apps** tab
+> and search for *media-box*. (The CA-registered copy of the template lives in
+> [`devblaze/torbox-client/templates/`](https://github.com/devblaze/torbox-client/tree/main/templates),
+> the maintainer template repo — keep it in sync with [`unraid/media-box.xml`](unraid/media-box.xml).)
+>
+> ⚠️ **Use with caution on existing media libraries.** media-box manages files — it can move, rename,
+> upgrade and delete media it imports. Pointing it at a library that Sonarr/Radarr or your media server
+> already manage? Start with **Settings → Media Management → File operations** set to **Read-only** or
+> **Ask**, and switch to **Allow** once you trust what it does.
+>
+> The manual route below still works: media-box ships an Unraid Docker template at
 > [`unraid/media-box.xml`](unraid/media-box.xml). The container image is published to the
 > **GitHub Container Registry** (`ghcr.io/devblaze/media-box`).
 
