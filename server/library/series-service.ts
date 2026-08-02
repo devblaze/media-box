@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { getTv, getTvSeason } from "@/server/metadata/tmdb";
 import { mapSeries } from "@/server/metadata/tmdb-map";
+import { airDateToUtc } from "@/server/metadata/air-time";
 import { renderSeriesFolder } from "./naming";
 import { removeMedia } from "./filesystem";
 import { assertFileOperationsEnabled } from "./media-guard";
@@ -137,6 +138,14 @@ export async function syncSeasonsAndEpisodes(
   seasonSummaries: { season_number: number }[]
 ) {
   const db = getDb();
+  // Origin country places each episode's air time in the right zone (see air-time.ts);
+  // the series row was already upserted with it before this runs.
+  const originCountry =
+    db
+      .select({ originCountry: schema.series.originCountry })
+      .from(schema.series)
+      .where(eq(schema.series.id, seriesId))
+      .get()?.originCountry ?? null;
   for (const s of seasonSummaries) {
     const seasonNumber = s.season_number;
     const existingSeason = db
@@ -156,7 +165,7 @@ export async function syncSeasonsAndEpisodes(
         tmdbEpisodeId: ep.id,
         title: ep.name ?? null,
         overview: ep.overview ?? null,
-        airDateUtc: ep.air_date ? new Date(`${ep.air_date}T00:00:00Z`) : null,
+        airDateUtc: airDateToUtc(ep.air_date, originCountry),
         runtime: ep.runtime ?? null,
       };
       const existing = db

@@ -1,0 +1,1 @@
+ALTER TABLE `series` ADD `origin_country` text;

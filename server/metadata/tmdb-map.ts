@@ -38,6 +38,8 @@ export function mapSeries(details: TmdbTvDetails) {
     overview: details.overview ?? null,
     status: mapSeriesStatus(details.status),
     network: details.networks[0]?.name ?? null,
+    // Prefer the show's origin country; fall back to the primary network's country.
+    originCountry: details.origin_country?.[0] ?? details.networks[0]?.origin_country ?? null,
     runtime: details.episode_run_time[0] ?? null,
     posterPath: details.poster_path ?? null,
     backdropPath: details.backdrop_path ?? null,

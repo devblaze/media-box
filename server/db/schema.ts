@@ -24,6 +24,9 @@ export const series = sqliteTable(
       .notNull()
       .default("continuing"),
     network: text("network"),
+    // ISO-3166-1 country code of the show's origin — used to place its broadcast
+    // air time in the right time zone (TMDB only gives a date, not a time/zone).
+    originCountry: text("origin_country"),
     runtime: integer("runtime"),
     posterPath: text("poster_path"),
     backdropPath: text("backdrop_path"),

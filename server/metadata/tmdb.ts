@@ -94,7 +94,9 @@ export function isAnimeMeta(genreIds?: number[], originalLanguage?: string): boo
 
 export interface TmdbTvDetails extends TmdbTvSummary {
   status: string;
-  networks: { name: string }[];
+  networks: { name: string; origin_country?: string }[];
+  /** ISO-3166-1 country codes the show originates from (used to place its air time). */
+  origin_country?: string[];
   episode_run_time: number[];
   number_of_seasons: number;
   seasons: { season_number: number; episode_count: number }[];
