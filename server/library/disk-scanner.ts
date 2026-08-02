@@ -88,7 +88,12 @@ export async function scanSeries(seriesId: number): Promise<number> {
   // and the set of episodes already linked to a file (never link one twice).
   const seriesEpisodes = s.isAnime
     ? db
-        .select({ id: schema.episodes.id, title: schema.episodes.title })
+        .select({
+          id: schema.episodes.id,
+          title: schema.episodes.title,
+          seasonNumber: schema.episodes.seasonNumber,
+          episodeNumber: schema.episodes.episodeNumber,
+        })
         .from(schema.episodes)
         .where(eq(schema.episodes.seriesId, seriesId))
         .all()
@@ -102,7 +107,24 @@ export async function scanSeries(seriesId: number): Promise<number> {
     if (ep.episodeFileId != null) taken.add(ep.id);
   }
 
-  let added = 0;
+  // Lookups for the anime offset gap-fill pass below: a flat episode by id, and by
+  // its (season, episode) coordinate. Empty (and unused) for non-anime series.
+  const episodeById = new Map(seriesEpisodes.map((e) => [e.id, e] as const));
+  const episodeBySeasonEp = new Map(
+    seriesEpisodes.map((e) => [`${e.seasonNumber}:${e.episodeNumber}`, e] as const)
+  );
+
+  // Pass 1 — parse each new file and match it by SxxExx, then (for anime) by title.
+  // Insertion is deferred to pass 3 so the offset pass can fill the gaps title
+  // matching left behind before anything is written.
+  type Pending = {
+    file: { absPath: string; size: number };
+    relativePath: string;
+    parsed: ReturnType<typeof parseTitle>;
+    episodeNumbers: number[];
+    matchedIds: number[] | null; // null = still unmatched after pass 1
+  };
+  const pending: Pending[] = [];
   for (const file of files) {
     const relativePath = path.relative(s.path, file.absPath);
     if (knownByPath.has(relativePath)) continue;
@@ -123,36 +145,75 @@ export async function scanSeries(seriesId: number): Promise<number> {
       )
       .all();
 
-    let targetEpisodeIds = episodeRows.map((e) => e.id);
-    if (targetEpisodeIds.length === 0) {
+    let matchedIds: number[] | null = episodeRows.map((e) => e.id);
+    if (matchedIds.length === 0) {
       // No SxxExx match. For anime, try to bridge a TVDB season folder to the flat
       // TMDB numbering by matching the episode title inside the filename.
       const byTitle = s.isAnime
         ? matchEpisodeByTitle(path.basename(file.absPath), seriesEpisodes, taken)
         : null;
-      if (byTitle === null) continue;
-      targetEpisodeIds = [byTitle];
+      matchedIds = byTitle === null ? null : [byTitle];
     }
+    if (matchedIds) for (const id of matchedIds) taken.add(id);
+    pending.push({ file, relativePath, parsed, episodeNumbers: parsed.episodes, matchedIds });
+  }
 
+  // Pass 2 (anime only) — offset gap-fill. Within one TVDB season folder the SxxExx
+  // numbering sits at a constant offset from the flat TMDB numbering; once a couple
+  // of files in that folder matched by title we know that offset and can place the
+  // short-titled episodes (e.g. "Rem") that title matching alone can't anchor. Only
+  // single-episode files derive/consume an offset, and a folder whose title matches
+  // disagree on the offset is left untouched — a missing link beats a wrong one.
+  if (s.isAnime) {
+    const folderOffset = new Map<string, { offset: number; flatSeason: number } | null>();
+    for (const p of pending) {
+      if (!p.matchedIds || p.matchedIds.length !== 1 || p.episodeNumbers.length !== 1) continue;
+      const flat = episodeById.get(p.matchedIds[0]);
+      if (!flat) continue;
+      const sample = {
+        offset: flat.episodeNumber - p.episodeNumbers[0],
+        flatSeason: flat.seasonNumber,
+      };
+      const folderKey = path.dirname(p.relativePath);
+      const seen = folderOffset.get(folderKey);
+      if (seen === undefined) folderOffset.set(folderKey, sample);
+      else if (seen && (seen.offset !== sample.offset || seen.flatSeason !== sample.flatSeason)) {
+        folderOffset.set(folderKey, null); // conflicting evidence → don't trust this folder
+      }
+    }
+    for (const p of pending) {
+      if (p.matchedIds || p.episodeNumbers.length !== 1) continue;
+      const off = folderOffset.get(path.dirname(p.relativePath));
+      if (!off) continue;
+      const target = episodeBySeasonEp.get(`${off.flatSeason}:${p.episodeNumbers[0] + off.offset}`);
+      if (!target || taken.has(target.id)) continue;
+      p.matchedIds = [target.id];
+      taken.add(target.id);
+    }
+  }
+
+  // Pass 3 — persist every file that found at least one episode.
+  let added = 0;
+  for (const p of pending) {
+    if (!p.matchedIds || p.matchedIds.length === 0) continue;
     const fileRow = db
       .insert(schema.episodeFiles)
       .values({
         seriesId,
-        relativePath,
-        size: file.size,
-        quality: parsed.quality,
-        releaseGroup: parsed.releaseGroup ?? null,
-        sceneName: path.basename(file.absPath, path.extname(file.absPath)),
+        relativePath: p.relativePath,
+        size: p.file.size,
+        quality: p.parsed.quality,
+        releaseGroup: p.parsed.releaseGroup ?? null,
+        sceneName: path.basename(p.file.absPath, path.extname(p.file.absPath)),
         dateAdded: new Date(),
       })
       .returning({ id: schema.episodeFiles.id })
       .get();
-    for (const id of targetEpisodeIds) {
+    for (const id of p.matchedIds) {
       db.update(schema.episodes)
         .set({ episodeFileId: fileRow.id })
         .where(eq(schema.episodes.id, id))
         .run();
-      taken.add(id);
     }
     added++;
   }
