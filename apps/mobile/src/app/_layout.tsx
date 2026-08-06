@@ -2,6 +2,8 @@ import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, type ReactNode } from "react";
+import { StyleSheet } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { ConfigProvider, useConfig } from "@/lib/config";
 import { theme } from "@/lib/theme";
 
@@ -20,17 +22,19 @@ function Gate({ children }: { children: ReactNode }) {
 
 export default function RootLayout() {
   return (
-    <ConfigProvider>
-      <Gate>
-        <StatusBar style="light" />
-        <Stack
-          screenOptions={{
-            headerShown: false,
-            contentStyle: { backgroundColor: theme.bg },
-            animation: "fade",
-          }}
-        />
-      </Gate>
-    </ConfigProvider>
+    <GestureHandlerRootView style={StyleSheet.absoluteFill}>
+      <ConfigProvider>
+        <Gate>
+          <StatusBar style="light" />
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              contentStyle: { backgroundColor: theme.bg },
+              animation: "fade",
+            }}
+          />
+        </Gate>
+      </ConfigProvider>
+    </GestureHandlerRootView>
   );
 }

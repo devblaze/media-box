@@ -1,15 +1,57 @@
 import { Image } from "expo-image";
-import { useEffect, useState } from "react";
-import { ActivityIndicator, FlatList, StyleSheet, Text, View } from "react-native";
-import { discover, type DiscoverItem } from "@/lib/api";
+import { useRouter } from "expo-router";
+import { useEffect, useRef, useState } from "react";
+import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { discover, getSeriesResume, type DiscoverItem } from "@/lib/api";
 import { theme } from "@/lib/theme";
 
 const CARD_W = 120;
 const CARD_H = 180; // 2:3 poster
 
 function PosterCard({ item }: { item: DiscoverItem }) {
+  const router = useRouter();
+  const busyRef = useRef(false);
+
+  async function open() {
+    if (busyRef.current) return;
+    if (item.status !== "available" || item.mediaId == null) {
+      Alert.alert(item.title, "Not in your library yet — add it from the media-box web app.");
+      return;
+    }
+    if (item.mediaType === "movie") {
+      router.push({
+        pathname: "/player",
+        params: { type: "movie", id: String(item.mediaId), title: item.title },
+      });
+      return;
+    }
+    // Series: ask the server which episode Play should open (continue
+    // watching, or the first available one).
+    busyRef.current = true;
+    try {
+      const resume = await getSeriesResume(item.mediaId);
+      if (!resume.episode) {
+        Alert.alert(item.title, "No playable episode yet.");
+        return;
+      }
+      const ep = resume.episode;
+      router.push({
+        pathname: "/player",
+        params: {
+          type: "episode",
+          id: String(ep.id),
+          title: `${item.title} · S${ep.seasonNumber}E${ep.episodeNumber}`,
+        },
+      });
+    } catch {
+      Alert.alert(item.title, "Could not start playback. Is the server reachable?");
+    } finally {
+      busyRef.current = false;
+    }
+  }
+
   return (
-    <View style={styles.card}>
+    <Pressable style={styles.card} onPress={open}>
       {item.poster ? (
         <Image
           source={{ uri: item.poster }}
@@ -32,7 +74,7 @@ function PosterCard({ item }: { item: DiscoverItem }) {
       <Text style={styles.cardTitle} numberOfLines={1}>
         {item.title}
       </Text>
-    </View>
+    </Pressable>
   );
 }
 

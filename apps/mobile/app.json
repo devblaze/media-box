@@ -3,7 +3,7 @@
     "name": "Media Box",
     "slug": "media-box",
     "version": "1.0.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "mediabox",
     "userInterfaceStyle": "dark",
@@ -42,7 +42,11 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
-      ]
+      ],
+      "expo-font",
+      "expo-image",
+      "expo-status-bar",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": false,

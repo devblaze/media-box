@@ -97,6 +97,35 @@ export interface DiscoverItem {
   mediaId: number | null;
 }
 
+export interface SeriesResumeEp {
+  id: number;
+  seasonNumber: number;
+  episodeNumber: number;
+  title: string | null;
+}
+
+export interface SeriesResume {
+  hasStarted: boolean;
+  action: "resume" | "start" | "start-from-available" | "unavailable";
+  episode: SeriesResumeEp | null;
+  resumeSeconds: number;
+  firstAvailable: SeriesResumeEp | null;
+  missingBefore: { seasonNumber: number; episodeNumber: number }[];
+}
+
+export interface WatchProgress {
+  positionSeconds: number;
+  durationSeconds: number;
+  watched: boolean;
+}
+
+export interface TranscodeSession {
+  sessionId: string;
+  url: string;
+}
+
+export type PlayableType = "movie" | "episode";
+
 // ---- Endpoints ----
 
 /** Unauthenticated health probe — used by onboarding to validate an address. */
@@ -115,3 +144,56 @@ export const discover = (category: string) =>
   request<DiscoverItem[]>(`/discover?category=${encodeURIComponent(category)}`, {
     method: "GET",
   });
+
+/** Fresh profile for the signed-in user (drawer header). */
+export const me = () => request<SessionUser>("/auth/me", { method: "GET" });
+
+/**
+ * The shared cast token. Native video players don't reliably send the fetch
+ * cookie store, so streams are fetched with the server's tokenized `?key=`
+ * URLs — the same mechanism Chromecast/AirPlay receivers use.
+ */
+export const getCastToken = () => request<{ token: string }>("/cast", { method: "GET" });
+
+/** What the Play button should do for a series: continue, start, or nothing. */
+export const getSeriesResume = (seriesId: number) =>
+  request<SeriesResume>(`/series/${seriesId}/resume`, { method: "GET" });
+
+export const getWatchProgress = (type: PlayableType, id: number) =>
+  request<WatchProgress | null>(
+    `/watch-progress?${type === "movie" ? "movieId" : "episodeId"}=${id}`,
+    { method: "GET" }
+  );
+
+export const saveWatchProgress = (
+  type: PlayableType,
+  id: number,
+  positionSeconds: number,
+  durationSeconds: number
+) =>
+  request<{ saved: boolean }>("/watch-progress", {
+    method: "PUT",
+    body: JSON.stringify({
+      [type === "movie" ? "movieId" : "episodeId"]: id,
+      positionSeconds,
+      durationSeconds,
+    }),
+  });
+
+/** Start an HLS transcode session (fallback when a file can't direct-play). */
+export const startTranscode = (type: PlayableType, id: number, startSec = 0) =>
+  request<TranscodeSession>("/transcode", {
+    method: "POST",
+    body: JSON.stringify({ type, id, startSec }),
+  });
+
+export const stopTranscode = (sessionId: string) =>
+  request<unknown>(`/transcode/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+
+/** Tokenized direct-play URL for the native player. */
+export const streamUrl = (type: PlayableType, id: number, castToken: string) =>
+  `${baseUrl}/api/v1/stream/${type}/${id}?key=${encodeURIComponent(castToken)}`;
+
+/** Tokenized playlist URL for a transcode session (`url` from POST /transcode). */
+export const transcodePlaylistUrl = (playlistPath: string, castToken: string) =>
+  `${baseUrl}${playlistPath}?key=${encodeURIComponent(castToken)}`;

@@ -15,4 +15,5 @@ export const storage = {
 export const KEYS = {
   serverUrl: "mediabox.serverUrl",
   user: "mediabox.user",
+  menuHintSeen: "mediabox.menuHintSeen",
 } as const;
