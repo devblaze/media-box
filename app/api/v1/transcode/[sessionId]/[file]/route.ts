@@ -4,7 +4,12 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { getRequestUser } from "@/server/auth/auth-service";
-import { getSession, touch } from "@/server/transcode/session-manager";
+import {
+  getSession,
+  touch,
+  ensureSegment,
+  buildVodPlaylist,
+} from "@/server/transcode/session-manager";
 
 // Cast/AirPlay receivers are web apps fetching cross-origin with no cookie, so
 // media responses need permissive CORS.
@@ -49,8 +54,28 @@ export async function GET(request: NextRequest, ctx: Ctx): Promise<Response> {
   const abs = path.join(session.dir, file);
   const isPlaylist = file === "index.m3u8";
 
+  // A cast device fetches the playlist with `?key=`; the (relative) segment URIs
+  // wouldn't carry it, so rewrite each to preserve the token.
+  const key = request.nextUrl.searchParams.get("key");
+  const withKey = (text: string) =>
+    key
+      ? text.replace(/^(seg\d{5}\.ts)$/gm, (seg) => `${seg}?key=${encodeURIComponent(key)}`)
+      : text;
+
   if (isPlaylist) {
-    // At the very start ffmpeg may not have flushed the playlist yet — wait briefly.
+    // Seekable VOD playlist — the whole runtime listed up front, segments produced
+    // on demand. If the runtime couldn't be probed, fall back to ffmpeg's growing
+    // event playlist.
+    if (session.segmentCount > 0) {
+      return new Response(withKey(buildVodPlaylist(session)), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/vnd.apple.mpegurl",
+          "Cache-Control": "no-cache",
+          ...CORS,
+        },
+      });
+    }
     const deadline = Date.now() + PLAYLIST_WAIT_MS;
     while (!(await exists(abs))) {
       if (Date.now() >= deadline || session.status === "error") {
@@ -58,26 +83,22 @@ export async function GET(request: NextRequest, ctx: Ctx): Promise<Response> {
       }
       await sleep(POLL_INTERVAL_MS);
     }
-  } else if (!(await exists(abs))) {
-    // Segment not produced yet — hls.js will retry.
-    return new Response("Not Found", { status: 404 });
+    return new Response(withKey(await readFile(abs, "utf8")), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/vnd.apple.mpegurl",
+        "Cache-Control": "no-cache",
+        ...CORS,
+      },
+    });
   }
 
-  if (isPlaylist) {
-    // A cast device fetches the playlist with `?key=`; the segment URIs inside are
-    // relative and wouldn't carry it, so rewrite each to preserve the token.
-    let text = await readFile(abs, "utf8");
-    const key = request.nextUrl.searchParams.get("key");
-    if (key) {
-      text = text.replace(
-        /^(seg\d{5}\.ts)$/gm,
-        (seg) => `${seg}?key=${encodeURIComponent(key)}`
-      );
-    }
-    return new Response(text, {
-      status: 200,
-      headers: { "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-cache", ...CORS },
-    });
+  // Segment: make sure it's transcoded (waiting, or restarting ffmpeg at the seek
+  // target), then stream it.
+  const segMatch = /^seg(\d{5})\.ts$/.exec(file);
+  if (segMatch) {
+    const ready = await ensureSegment(session, Number(segMatch[1]));
+    if (!ready) return new Response("Segment unavailable", { status: 503 });
   }
 
   return new Response(toWebStream(createReadStream(abs)), {

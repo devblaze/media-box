@@ -5,7 +5,7 @@ import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { CONFIG_DIR } from "@/server/config/paths";
 import { getSettings } from "@/server/settings/settings-service";
-import { probeAudioTracks } from "@/server/library/media-info";
+import { probeAudioTracks, probeMediaInfo } from "@/server/library/media-info";
 import { recordLog } from "@/server/logging/logger";
 
 const execFileAsync = promisify(execFile);
@@ -18,6 +18,16 @@ const IDLE_TTL_MS = 90_000;
 const TERMINAL_TTL_MS = 30_000;
 const STDERR_KEEP = 4_000; // cap captured stderr so a chatty run can't grow unbounded
 
+// ---- seekable (VOD) transcode ----
+/** Seconds per HLS segment (kept in lock-step with force_key_frames / hls_time). */
+const SEG_DUR = 4;
+/** A requested segment this many past the produced frontier is treated as a
+ *  forward seek → ffmpeg is restarted there instead of waiting the encode out. */
+const AHEAD_SEGMENTS = 12;
+/** How long a segment request waits for its file before giving up. */
+const SEGMENT_WAIT_MS = 20_000;
+const SEGMENT_POLL_MS = 120;
+
 export type TranscodeStatus = "starting" | "running" | "done" | "error";
 
 export interface Session {
@@ -29,6 +39,15 @@ export interface Session {
   /** ms epoch (Date.now()) of last playlist/segment access — drives the reaper. */
   lastAccess: number;
   error?: string;
+  // ---- seekable (VOD) transcode ----
+  /** ffprobe-measured runtime (seconds). 0 when unknown. */
+  durationSec: number;
+  /** Total segment count = ceil(durationSec / SEG_DUR). 0 when duration unknown. */
+  segmentCount: number;
+  /** Resolved 0-based audio-stream index the encoder maps. */
+  audioTrack: number | null;
+  /** Segment index the CURRENT ffmpeg run started at (its `-start_number`). */
+  encoderStart: number;
 }
 
 export interface StartOpts {
@@ -155,16 +174,18 @@ function videoArgs(mode: HwAccel): string[] {
   }
 }
 
-/** Build the full ffmpeg argv for an HLS (mpegts, event) transcode. */
+/** Build the full ffmpeg argv for a seekable HLS (mpegts) transcode that begins at
+ *  `startSegment` (segment index) and numbers its segments by absolute position. */
 export function buildFfmpegArgs(
   absPath: string,
   dir: string,
   mode: HwAccel,
   vaapiDevice: string,
-  startSec?: number,
+  startSegment: number,
   audioTrack?: number
 ): string[] {
-  const seek = startSec && startSec > 0 ? ["-ss", String(startSec)] : [];
+  const startSec = Math.max(0, startSegment) * SEG_DUR;
+  const seek = startSec > 0 ? ["-ss", String(startSec)] : [];
   const audioIndex = Number.isInteger(audioTrack) && audioTrack! >= 0 ? audioTrack! : 0;
   return [
     "-hide_banner",
@@ -174,16 +195,19 @@ export function buildFfmpegArgs(
     ...seek,
     "-i",
     absPath,
+    // Preserve SOURCE timestamps so segments produced by different runs (after a
+    // seek restart) share one absolute timeline — a coherent, seekable VOD.
+    "-copyts",
     "-map",
     "0:v:0",
     "-map",
     `0:a:${audioIndex}?`,
     ...videoArgs(mode),
-    // Force a keyframe exactly at every HLS segment boundary (every 4s). Without
-    // this, segments can only split on the encoder's natural GOP, producing
-    // over-long/irregular segments → slow startup and mid-playback buffering.
+    // Force a keyframe at every 4 s segment boundary. Timestamps are absolute
+    // (`-copyts`), so the expression is anchored at this run's start offset —
+    // otherwise every early frame would be forced to a keyframe after a seek.
     "-force_key_frames",
-    "expr:gte(t,n_forced*4)",
+    `expr:gte(t,${startSec}+n_forced*4)`,
     "-c:a",
     "aac",
     "-ac",
@@ -206,6 +230,11 @@ export function buildFfmpegArgs(
     "4",
     "-hls_playlist_type",
     "event",
+    // Number segments by ABSOLUTE position: seg{i} is always the film's
+    // [i*4, (i+1)*4) window, whichever run produced it. This is what makes a
+    // restart-on-seek transparent to the (VOD) playlist.
+    "-start_number",
+    String(Math.max(0, startSegment)),
     // temp_file: write each segment to a temp name and rename when complete, so
     // a client can never read a half-written .ts (truncated segments decode as
     // corrupted smears and stall playback).
@@ -368,6 +397,155 @@ export async function testTranscode(
  * @throws {CapReachedError}   the concurrency cap is already reached
  * @throws {FfmpegMissingError} ffmpeg is not installed
  */
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const segName = (i: number) => `seg${String(i).padStart(5, "0")}.ts`;
+
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    return (await fs.promises.stat(p)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Highest segment index currently on disk for a session, or -1 if none. */
+function producedFrontier(session: Session): number {
+  let max = -1;
+  try {
+    for (const name of fs.readdirSync(session.dir)) {
+      const m = /^seg(\d{5})\.ts$/.exec(name);
+      if (m) {
+        const n = Number(m[1]);
+        if (n > max) max = n;
+      }
+    }
+  } catch {
+    // dir may not exist yet
+  }
+  return max;
+}
+
+/**
+ * (Re)spawn the ffmpeg encoder for a session starting at `startSegment`, wiring the
+ * stderr/exit handlers. Guards every callback on `session.proc === proc` so the
+ * kill of a superseded run (on a seek restart) can't flip the session to error.
+ */
+function spawnEncoder(session: Session, startSegment: number): void {
+  const settings = getSettings();
+  const args = buildFfmpegArgs(
+    session.absPath,
+    session.dir,
+    settings.transcodeHwAccel,
+    settings.transcodeVaapiDevice,
+    startSegment,
+    session.audioTrack ?? undefined
+  );
+
+  const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+  session.proc = proc;
+  session.encoderStart = startSegment;
+  session.status = "running";
+
+  let stderrTail = "";
+  proc.stderr?.on("data", (chunk: Buffer) => {
+    stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_KEEP);
+  });
+
+  proc.on("error", (err) => {
+    if (session.proc !== proc) return; // superseded by a restart
+    session.status = "error";
+    session.error = err instanceof Error ? err.message : String(err);
+  });
+
+  proc.on("exit", (code) => {
+    if (session.proc !== proc) return; // superseded by a restart — ignore its exit
+    if (session.status === "error") return;
+    if (code === 0) {
+      session.status = "done";
+    } else {
+      session.status = "error";
+      session.error = stderrTail.trim() || `ffmpeg exited with code ${code ?? "unknown"}`;
+      recordLog("error", `Transcode of '${path.basename(session.absPath)}' failed`, {
+        source: "transcode",
+        context: { code, stderr: session.error.slice(0, 2_000), args: args.join(" ") },
+      });
+    }
+  });
+}
+
+/** Kill the current run, drop its segments, and restart ffmpeg at `startSegment`.
+ *  Clearing the dir keeps {@link producedFrontier} reflecting ONLY the new run, so
+ *  the wait/restart decision stays unambiguous (a re-transcode on a backward seek
+ *  is cheap next to getting that decision wrong). */
+function restartEncoderAt(session: Session, startSegment: number): void {
+  const old = session.proc;
+  session.proc = null;
+  try {
+    old?.kill("SIGKILL");
+  } catch {
+    // already gone
+  }
+  try {
+    for (const name of fs.readdirSync(session.dir)) {
+      if (/^seg\d{5}\.ts$/.test(name) || name === "index.m3u8") {
+        fs.rmSync(path.join(session.dir, name), { force: true });
+      }
+    }
+  } catch {
+    // best-effort
+  }
+  spawnEncoder(session, startSegment);
+}
+
+/**
+ * Ensure segment `segIndex` exists (transcoded), then resolve true. If the current
+ * encoder is producing toward it, wait; if it's a seek away from the encoder's
+ * frontier (far ahead, or before its start), restart ffmpeg there. Resolves false
+ * if the segment can't be produced before the deadline (or the encoder errored).
+ */
+export async function ensureSegment(session: Session, segIndex: number): Promise<boolean> {
+  const file = path.join(session.dir, segName(segIndex));
+  if (await fileExists(file)) return true;
+
+  const frontier = producedFrontier(session);
+  const effFrontier = Math.max(frontier, session.encoderStart - 1);
+  const running = session.status === "running" || session.status === "starting";
+  // The current run will reach segIndex "soon" only if it's ahead of (or at) the
+  // encoder's start AND within a small window of the produced frontier.
+  const reachesSoon =
+    running && segIndex >= session.encoderStart && segIndex - effFrontier <= AHEAD_SEGMENTS;
+  if (!reachesSoon) restartEncoderAt(session, segIndex);
+
+  const deadline = Date.now() + SEGMENT_WAIT_MS;
+  while (!(await fileExists(file))) {
+    if (session.status === "error" || Date.now() >= deadline) return false;
+    await sleep(SEGMENT_POLL_MS);
+  }
+  return true;
+}
+
+/** The VOD playlist: every segment of the WHOLE runtime listed up front, so the
+ *  player's native scrubber knows the full length and can request any segment
+ *  (produced on demand). `?key=` is appended to segment URIs by the route. */
+export function buildVodPlaylist(session: Session): string {
+  const n = session.segmentCount;
+  const lines = [
+    "#EXTM3U",
+    "#EXT-X-VERSION:3",
+    `#EXT-X-TARGETDURATION:${SEG_DUR}`,
+    "#EXT-X-MEDIA-SEQUENCE:0",
+    "#EXT-X-PLAYLIST-TYPE:VOD",
+    "#EXT-X-INDEPENDENT-SEGMENTS",
+  ];
+  for (let i = 0; i < n; i++) {
+    const segLen = i === n - 1 ? Math.max(0.1, session.durationSec - i * SEG_DUR) : SEG_DUR;
+    lines.push(`#EXTINF:${segLen.toFixed(3)},`);
+    lines.push(segName(i));
+  }
+  lines.push("#EXT-X-ENDLIST");
+  return lines.join("\n") + "\n";
+}
+
 export async function startSession(absPath: string, opts: StartOpts = {}): Promise<Session> {
   const settings = getSettings();
   const cap = settings.maxTranscodeSessions;
@@ -380,15 +558,22 @@ export async function startSession(absPath: string, opts: StartOpts = {}): Promi
   // No explicit track chosen → transcode the file's DEFAULT audio track (what a
   // browser would play in direct play), not blindly the first one. On dual-audio
   // files whose default is the second stream, `0:a:0` played the wrong language.
-  let audioTrack = opts.audioTrack;
+  let audioTrack = opts.audioTrack ?? null;
   if (audioTrack == null) {
     const tracks = await probeAudioTracks(absPath).catch(() => []);
     const def = tracks.find((t) => t.isDefault);
     if (def) audioTrack = def.index;
   }
 
+  // Probe the runtime so the playlist advertises the WHOLE film up front (the seek
+  // bar range) even though only part is ever encoded at once.
+  const info = await probeMediaInfo(absPath).catch(() => null);
+  const durationSec = info?.durationSec && info.durationSec > 0 ? info.durationSec : 0;
+
   const id = crypto.randomBytes(12).toString("hex");
   const dir = path.join(TRANSCODE_ROOT, id);
+  const startSegment =
+    opts.startSec && opts.startSec > 0 ? Math.floor(opts.startSec / SEG_DUR) : 0;
 
   const session: Session = {
     id,
@@ -397,53 +582,16 @@ export async function startSession(absPath: string, opts: StartOpts = {}): Promi
     proc: null,
     status: "starting",
     lastAccess: Date.now(),
+    durationSec,
+    segmentCount: durationSec > 0 ? Math.ceil(durationSec / SEG_DUR) : 0,
+    audioTrack,
+    encoderStart: startSegment,
   };
   sessions().set(id, session);
 
   try {
     fs.mkdirSync(dir, { recursive: true });
-
-    const args = buildFfmpegArgs(
-      absPath,
-      dir,
-      settings.transcodeHwAccel,
-      settings.transcodeVaapiDevice,
-      opts.startSec,
-      audioTrack
-    );
-
-    const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
-    session.proc = proc;
-    session.status = "running";
-
-    let stderrTail = "";
-    proc.stderr?.on("data", (chunk: Buffer) => {
-      stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_KEEP);
-    });
-
-    // A spawn failure (e.g. binary vanished after detection) must never crash the
-    // process — surface it on the session instead.
-    proc.on("error", (err) => {
-      session.status = "error";
-      session.error = err instanceof Error ? err.message : String(err);
-    });
-
-    proc.on("exit", (code) => {
-      if (session.status === "error") return; // already flagged by 'error'
-      if (code === 0) {
-        session.status = "done";
-      } else {
-        session.status = "error";
-        session.error = stderrTail.trim() || `ffmpeg exited with code ${code ?? "unknown"}`;
-        // Surface the failure in Settings → Logs — otherwise a broken transcode
-        // is invisible (the player just shows a generic error / never plays).
-        recordLog("error", `Transcode of '${path.basename(absPath)}' failed`, {
-          source: "transcode",
-          context: { code, stderr: session.error.slice(0, 2_000), args: args.join(" ") },
-        });
-      }
-    });
-
+    spawnEncoder(session, startSegment);
     return session;
   } catch (err) {
     // mkdir / spawn threw synchronously — clean up and re-throw a typed error.
