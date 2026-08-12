@@ -17,7 +17,20 @@ import {
   useToast,
 } from "@/components/ui";
 
-type IndexerType = "torznab" | "builtin";
+type IndexerType = "torznab" | "builtin" | "cardigann";
+
+interface CatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  language: string;
+  links: string[];
+  supported: boolean;
+  unsupportedReason?: string;
+  categories: number[];
+  supportsTv: boolean;
+  supportsMovies: boolean;
+}
 
 interface Indexer {
   id: number;
@@ -62,6 +75,7 @@ export default function IndexersPage() {
   const [editing, setEditing] = useState<Partial<Indexer> | null>(null);
   const [picking, setPicking] = useState(false);
   const [migrating, setMigrating] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResults, setTestResults] = useState<
     Record<number, { ok: boolean; message: string; latencyMs: number }>
@@ -105,7 +119,10 @@ export default function IndexersPage() {
               Migrate from Jackett
             </Button>
           )}
-          <Button onClick={() => setPicking(true)}>Add built-in</Button>
+          <Button onClick={() => setBrowsing(true)}>Browse indexers</Button>
+          <Button variant="secondary" onClick={() => setPicking(true)}>
+            Add built-in
+          </Button>
           <Button variant="secondary" onClick={() => setEditing({ ...EMPTY })}>
             Add Torznab
           </Button>
@@ -175,7 +192,9 @@ export default function IndexersPage() {
                 <div className="mt-0.5 truncate font-mono text-xs text-zinc-500">
                   {ix.type === "builtin"
                     ? `Built-in · ${builtins?.find((b) => b.key === ix.definition)?.site ?? ix.definition}`
-                    : ix.url}
+                    : ix.type === "cardigann"
+                      ? `Native · ${ix.definition}${ix.url ? ` · ${ix.url}` : ""}`
+                      : ix.url}
                 </div>
                 {testResults[ix.id] && !testResults[ix.id].ok && (
                   <div className="mt-0.5 truncate text-xs text-red-400">
@@ -185,6 +204,7 @@ export default function IndexersPage() {
               </div>
               <div className="flex shrink-0 gap-1.5">
                 {ix.type === "builtin" && <Badge tone="success">Built-in</Badge>}
+                {ix.type === "cardigann" && <Badge tone="success">Native</Badge>}
                 {ix.supportsTv && <Badge tone="info">TV</Badge>}
                 {ix.supportsMovies && <Badge tone="accent">Movies</Badge>}
                 {ix.enableRss && <Badge tone="neutral">RSS</Badge>}
@@ -201,6 +221,16 @@ export default function IndexersPage() {
           onClose={() => setPicking(false)}
           onAdded={async () => {
             setPicking(false);
+            await mutate();
+          }}
+        />
+      )}
+
+      {browsing && (
+        <CatalogPicker
+          existing={list}
+          onClose={() => setBrowsing(false)}
+          onAdded={async () => {
             await mutate();
           }}
         />
@@ -232,6 +262,141 @@ export default function IndexersPage() {
         />
       )}
     </div>
+  );
+}
+
+/**
+ * The full public-tracker catalog: Jackett/Prowlarr YAML definitions that
+ * media-box runs natively (no Jackett needed). Definitions that use features
+ * the engine doesn't implement yet are listed too, greyed out with the reason,
+ * so it's clear what's available vs. what still needs a Torznab feed.
+ */
+function CatalogPicker({
+  existing,
+  onClose,
+  onAdded,
+}: {
+  existing: Indexer[];
+  onClose: () => void;
+  onAdded: () => Promise<void>;
+}) {
+  const toast = useToast();
+  const { data: entries, error } = useApi<{ entries: CatalogEntry[] }>("/indexers/catalog");
+  const [filter, setFilter] = useState("");
+  const [adding, setAdding] = useState<string | null>(null);
+  const [added, setAdded] = useState<Set<string>>(
+    new Set(existing.filter((i) => i.type === "cardigann").map((i) => i.definition ?? ""))
+  );
+
+  const all = entries?.entries ?? [];
+  const needle = filter.trim().toLowerCase();
+  const visible = needle
+    ? all.filter(
+        (e) => e.name.toLowerCase().includes(needle) || e.description.toLowerCase().includes(needle)
+      )
+    : all;
+  const supportedCount = all.filter((e) => e.supported).length;
+
+  async function add(entry: CatalogEntry) {
+    setAdding(entry.id);
+    try {
+      await apiFetch("/indexers", {
+        method: "POST",
+        body: JSON.stringify({ type: "cardigann", definition: entry.id, name: entry.name }),
+      });
+      toast.success(`Added ${entry.name}`);
+      setAdded((prev) => new Set(prev).add(entry.id));
+      await onAdded();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to add");
+    } finally {
+      setAdding(null);
+    }
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Browse indexers"
+      size="lg"
+      footer={
+        <Button variant="ghost" onClick={onClose}>
+          Close
+        </Button>
+      }
+    >
+      <p className="mb-3 text-sm text-zinc-400">
+        Public trackers media-box can search <strong>directly</strong>, using the same indexer
+        definitions Jackett/Prowlarr use — no Jackett required. Definitions are fetched from the
+        Prowlarr catalog and cached.
+      </p>
+
+      {error && (
+        <Callout tone="danger">
+          Could not load the catalog — the server may not have reached the definition repository.
+        </Callout>
+      )}
+
+      {!entries && !error && (
+        <p className="text-sm text-zinc-500">Loading the catalog… (the first load fetches it)</p>
+      )}
+
+      {entries && (
+        <>
+          <div className="mb-3 flex items-center gap-2">
+            <Input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Search trackers…"
+            />
+            <span className="shrink-0 text-xs text-zinc-500">
+              {supportedCount} available
+            </span>
+          </div>
+
+          <div className="space-y-2">
+            {visible.map((entry) => {
+              const isAdded = added.has(entry.id);
+              return (
+                <div
+                  key={entry.id}
+                  className={`flex items-center justify-between gap-3 rounded-md border border-zinc-800 bg-zinc-900/50 px-4 py-3 ${
+                    entry.supported ? "" : "opacity-60"
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 font-medium">
+                      {entry.name}
+                      {entry.supportsTv && <Badge tone="info">TV</Badge>}
+                      {entry.supportsMovies && <Badge tone="accent">Movies</Badge>}
+                      {!entry.supported && <Badge tone="warning">Needs Jackett</Badge>}
+                    </div>
+                    <div className="mt-0.5 text-xs text-zinc-500">
+                      {entry.supported
+                        ? entry.description || entry.links[0]
+                        : `Not supported natively yet — ${entry.unsupportedReason}. Add it as a Torznab feed instead.`}
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant={isAdded ? "ghost" : "primary"}
+                    disabled={isAdded || !entry.supported || adding !== null}
+                    loading={adding === entry.id}
+                    onClick={() => add(entry)}
+                  >
+                    {isAdded ? "Added" : "Add"}
+                  </Button>
+                </div>
+              );
+            })}
+            {visible.length === 0 && (
+              <p className="text-sm text-zinc-500">No trackers match that search.</p>
+            )}
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }
 
@@ -470,8 +635,12 @@ function IndexerDialog({
   const toast = useToast();
   const confirm = useConfirm();
   const isNew = initial.id === undefined;
-  const isBuiltin = initial.type === "builtin";
-  const source = isBuiltin ? builtins.find((b) => b.key === initial.definition) : undefined;
+  const isCardigann = initial.type === "cardigann";
+  // Built-ins and native (Cardigann) indexers both need no URL/API key — they
+  // share the "no Torznab fields, no URL required" shape of this dialog.
+  const isBuiltin = initial.type === "builtin" || isCardigann;
+  const source =
+    initial.type === "builtin" ? builtins.find((b) => b.key === initial.definition) : undefined;
   const [form, setForm] = useState({
     name: initial.name ?? "",
     url: initial.url ?? "",
@@ -493,9 +662,11 @@ function IndexerDialog({
   async function test() {
     setPending("test");
     try {
-      const body = isBuiltin
-        ? { type: "builtin", definition: initial.definition }
-        : { type: "torznab", url: form.url, apiKey: form.apiKey || null };
+      const body = isCardigann
+        ? { type: "cardigann", definition: initial.definition, url: form.url || null }
+        : isBuiltin
+          ? { type: "builtin", definition: initial.definition }
+          : { type: "torznab", url: form.url, apiKey: form.apiKey || null };
       const res = await apiFetch<{ ok: boolean; message?: string }>("/indexers/test", {
         method: "POST",
         body: JSON.stringify(body),
@@ -515,8 +686,10 @@ function IndexerDialog({
       const body = isBuiltin
         ? {
             name: form.name,
-            type: "builtin",
+            type: isCardigann ? "cardigann" : "builtin",
             definition: initial.definition,
+            // Cardigann keeps `url` as an optional base-URL override (mirrors).
+            ...(isCardigann ? { url: form.url } : {}),
             minimumSeeders: form.minimumSeeders,
             priority: form.priority,
             enableRss: form.enableRss,
@@ -599,6 +772,27 @@ function IndexerDialog({
         <Field label="Name" htmlFor="ix-name" required>
           <Input id="ix-name" value={form.name} onChange={(e) => set("name", e.target.value)} />
         </Field>
+
+        {isCardigann && (
+          <>
+            <Callout tone="info">
+              Native indexer — media-box searches <strong>{initial.definition}</strong> directly
+              using its Jackett/Prowlarr definition. No account or API key needed.
+            </Callout>
+            <Field
+              label="Site URL (optional)"
+              htmlFor="ix-baseurl"
+              description="Only needed if the tracker moved domain — leave blank to use the definition's default."
+            >
+              <Input
+                id="ix-baseurl"
+                value={form.url}
+                onChange={(e) => set("url", e.target.value)}
+                placeholder="https://example-mirror.to/"
+              />
+            </Field>
+          </>
+        )}
 
         {!isBuiltin && (
           <>

@@ -101,6 +101,30 @@ as `200 { ok: false }`, not an error status.
 
 - **Response:** `200` — on success `{ ok: true, message, latencyMs, caps? }` (torznab includes `caps = { tvSearchAvailable, movieSearchAvailable, categories: [{ id, name }] }`); on failure `{ ok: false, message, latencyMs }`.
 
+## `GET /api/v1/indexers/catalog`
+
+The public-tracker catalog: Jackett/Prowlarr YAML indexer definitions that
+media-box can run **natively** (no Jackett). Definitions are fetched from the
+Prowlarr/Indexers repository at runtime and cached under `$CONFIG_DIR/cardigann-defs`
+for 24 h (a stale cache is served if the fetch fails). The first call is slow
+(it fetches the whole set); later calls read the cache.
+
+Entries the engine can't run yet are still listed with `supported: false` and an
+`unsupportedReason` (e.g. XML/JSON response parsing, POST search, login required),
+so the UI can grey them out rather than hide them.
+
+- **Auth:** admin, or permission `indexers.manage`
+- **Query params:** `q` — case-insensitive substring over name/description; `supported=true` — only runnable definitions.
+- **Response:** `200` — `{ entries: [{ id, name, description, language, links, supported, unsupportedReason?, categories, supportsTv, supportsMovies }] }`
+
+Add one with `POST /api/v1/indexers` using `type: "cardigann"` and
+`definition: <id>`; `url` is an optional base-URL override for when a tracker
+changes domain.
+
+```bash
+curl -H "x-api-key: $KEY" "http://localhost:7878/api/v1/indexers/catalog?supported=true&q=torrent"
+```
+
 ## `POST /api/v1/indexers/test-all`
 
 Probe every configured indexer concurrently (the Settings → Indexers "Test all"

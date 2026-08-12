@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getDb, schema } from "@/server/db";
 import { getCaps } from "@/server/indexers/torznab";
 import { getBuiltin } from "@/server/indexers/builtin/registry";
+import { listCatalog } from "@/server/indexers/cardigann";
 import { badRequest, ok, serverError } from "@/lib/http";
 import { requirePermission } from "@/server/auth/guards";
 
@@ -20,8 +21,9 @@ export async function GET(request: NextRequest) {
 
 export const indexerSchema = z.object({
   name: z.string().min(1),
-  // "torznab" (external Prowlarr/Jackett) or "builtin" (ships inside media-box).
-  type: z.enum(["torznab", "builtin"]).optional(),
+  // "torznab" (external Prowlarr/Jackett), "builtin" (ships inside media-box),
+  // or "cardigann" (a Jackett/Prowlarr YAML definition run natively).
+  type: z.enum(["torznab", "builtin", "cardigann"]).optional(),
   // Required for torznab; validated in POST (kept loose here so PUT can patch it).
   url: z.string().optional(),
   apiKey: z.string().nullable().optional(),
@@ -65,6 +67,46 @@ export async function POST(request: NextRequest) {
           categories: input.categories ?? def.categories,
           supportsTv: def.supportsTv,
           supportsMovies: def.supportsMovies,
+          enableRss: input.enableRss,
+          enableAutomaticSearch: input.enableAutomaticSearch,
+          enableInteractiveSearch: input.enableInteractiveSearch,
+          minimumSeeders: input.minimumSeeders,
+          priority: input.priority,
+          enabled: input.enabled,
+        })
+        .returning()
+        .get();
+      return ok(row, { status: 201 });
+    }
+
+    // Cardigann: a YAML definition from the Prowlarr/Indexers catalog, run
+    // natively. `url` is an optional base-URL override (trackers move domains).
+    if (input.type === "cardigann") {
+      if (!input.definition) return badRequest("A definition id is required");
+      const entry = (await listCatalog()).find((e) => e.id === input.definition);
+      if (!entry) return badRequest(`Unknown indexer definition '${input.definition}'`);
+      if (!entry.supported) {
+        return badRequest(
+          `${entry.name} can't run natively yet — ${entry.unsupportedReason ?? "unsupported definition"}`
+        );
+      }
+      const existing = db
+        .select()
+        .from(schema.indexers)
+        .where(and(eq(schema.indexers.type, "cardigann"), eq(schema.indexers.definition, entry.id)))
+        .get();
+      if (existing) return badRequest(`${entry.name} is already added`);
+      const row = db
+        .insert(schema.indexers)
+        .values({
+          name: input.name || entry.name,
+          type: "cardigann",
+          definition: entry.id,
+          url: input.url ?? "",
+          apiKey: null,
+          categories: input.categories ?? entry.categories,
+          supportsTv: entry.supportsTv,
+          supportsMovies: entry.supportsMovies,
           enableRss: input.enableRss,
           enableAutomaticSearch: input.enableAutomaticSearch,
           enableInteractiveSearch: input.enableInteractiveSearch,

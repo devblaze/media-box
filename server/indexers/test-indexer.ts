@@ -1,5 +1,6 @@
 import { getCaps, type TorznabCaps } from "./torznab";
 import { getBuiltin } from "./builtin/registry";
+import { testCardigann } from "./cardigann";
 
 /** The indexer fields a reachability test needs — a subset of the `indexers` row. */
 export interface IndexerTestRef {
@@ -39,6 +40,12 @@ export async function testIndexer(ref: IndexerTestRef): Promise<IndexerTestResul
     } catch (err) {
       return done({ ok: false, message: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  if (ref.type === "cardigann") {
+    if (!ref.definition) return done({ ok: false, message: "No definition id configured" });
+    const res = await testCardigann(ref.definition, ref.url || null);
+    return done(res);
   }
 
   // Torznab.
