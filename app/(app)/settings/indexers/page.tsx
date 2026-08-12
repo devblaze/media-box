@@ -6,6 +6,7 @@ import {
   Badge,
   Button,
   Callout,
+  Checkbox,
   EmptyState,
   Field,
   HowTo,
@@ -57,16 +58,53 @@ const EMPTY: Partial<Indexer> = {
 export default function IndexersPage() {
   const { data: indexers, mutate } = useApi<Indexer[]>("/indexers");
   const { data: builtins } = useApi<Builtin[]>("/indexers/builtins");
+  const toast = useToast();
   const [editing, setEditing] = useState<Partial<Indexer> | null>(null);
   const [picking, setPicking] = useState(false);
+  const [migrating, setMigrating] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResults, setTestResults] = useState<
+    Record<number, { ok: boolean; message: string; latencyMs: number }>
+  >({});
 
   const list = indexers ?? [];
+  const hasTorznab = list.some((i) => i.type === "torznab");
+
+  async function testAll() {
+    setTesting(true);
+    try {
+      const { results } = await apiFetch<{
+        results: { id: number; ok: boolean; message: string; latencyMs: number }[];
+      }>("/indexers/test-all", { method: "POST" });
+      const map: Record<number, { ok: boolean; message: string; latencyMs: number }> = {};
+      for (const r of results) map[r.id] = { ok: r.ok, message: r.message, latencyMs: r.latencyMs };
+      setTestResults(map);
+      const up = results.filter((r) => r.ok).length;
+      const msg = `${up} of ${results.length} indexers reachable`;
+      if (up === results.length) toast.success(msg);
+      else toast.info(msg);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Test failed");
+    } finally {
+      setTesting(false);
+    }
+  }
 
   return (
     <div className="max-w-3xl space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Indexers</h1>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
+          {list.length > 0 && (
+            <Button variant="outline" onClick={testAll} loading={testing}>
+              Test all
+            </Button>
+          )}
+          {hasTorznab && (
+            <Button variant="outline" onClick={() => setMigrating(true)}>
+              Migrate from Jackett
+            </Button>
+          )}
           <Button onClick={() => setPicking(true)}>Add built-in</Button>
           <Button variant="secondary" onClick={() => setEditing({ ...EMPTY })}>
             Add Torznab
@@ -127,12 +165,23 @@ export default function IndexersPage() {
                 <div className="flex items-center gap-2 font-medium">
                   {ix.name}
                   {!ix.enabled && <Badge tone="neutral">Disabled</Badge>}
+                  {testResults[ix.id] &&
+                    (testResults[ix.id].ok ? (
+                      <Badge tone="success">✓ {testResults[ix.id].latencyMs} ms</Badge>
+                    ) : (
+                      <Badge tone="danger">✗ unreachable</Badge>
+                    ))}
                 </div>
                 <div className="mt-0.5 truncate font-mono text-xs text-zinc-500">
                   {ix.type === "builtin"
                     ? `Built-in · ${builtins?.find((b) => b.key === ix.definition)?.site ?? ix.definition}`
                     : ix.url}
                 </div>
+                {testResults[ix.id] && !testResults[ix.id].ok && (
+                  <div className="mt-0.5 truncate text-xs text-red-400">
+                    {testResults[ix.id].message}
+                  </div>
+                )}
               </div>
               <div className="flex shrink-0 gap-1.5">
                 {ix.type === "builtin" && <Badge tone="success">Built-in</Badge>}
@@ -157,6 +206,16 @@ export default function IndexersPage() {
         />
       )}
 
+      {migrating && (
+        <MigratePanel
+          onClose={() => setMigrating(false)}
+          onMigrated={async () => {
+            setMigrating(false);
+            await mutate();
+          }}
+        />
+      )}
+
       {editing && (
         <IndexerDialog
           initial={editing}
@@ -173,6 +232,142 @@ export default function IndexersPage() {
         />
       )}
     </div>
+  );
+}
+
+interface MigratePreview {
+  migratable: { id: number; name: string; url: string; builtinKey: string; builtinName: string }[];
+  unmatched: { id: number; name: string; url: string }[];
+}
+
+/**
+ * Replace Jackett/Torznab indexers with their native built-in equivalents.
+ * Preview (what matches) → pick → apply; unmatched feeds are listed so it's
+ * clear they stay on Jackett until a native scraper exists for them.
+ */
+function MigratePanel({
+  onClose,
+  onMigrated,
+}: {
+  onClose: () => void;
+  onMigrated: () => Promise<void>;
+}) {
+  const toast = useToast();
+  const { data: preview } = useApi<MigratePreview>("/indexers/migrate");
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [seeded, setSeeded] = useState(false);
+  const [applying, setApplying] = useState(false);
+
+  // Pre-select every migratable feed once the preview arrives.
+  if (preview && !seeded) {
+    setSelected(new Set(preview.migratable.map((m) => m.id)));
+    setSeeded(true);
+  }
+
+  function toggle(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function apply() {
+    setApplying(true);
+    try {
+      const { migrated } = await apiFetch<{ migrated: number }>("/indexers/migrate", {
+        method: "POST",
+        body: JSON.stringify({ ids: [...selected] }),
+      });
+      toast.success(
+        `Migrated ${migrated} indexer${migrated === 1 ? "" : "s"} to built-in — no Jackett needed for ${migrated === 1 ? "it" : "them"}.`
+      );
+      await onMigrated();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Migration failed");
+      setApplying(false);
+    }
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Migrate from Jackett"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            onClick={apply}
+            disabled={applying || selected.size === 0}
+            loading={applying}
+          >
+            Migrate {selected.size > 0 ? `${selected.size} indexer${selected.size === 1 ? "" : "s"}` : ""}
+          </Button>
+        </>
+      }
+    >
+      {!preview ? (
+        <p className="text-sm text-zinc-500">Checking your Torznab indexers…</p>
+      ) : (
+        <div className="space-y-4">
+          {preview.migratable.length === 0 ? (
+            <Callout tone="info">
+              None of your Torznab indexers match a built-in source yet. As more built-ins are
+              added, they&apos;ll show up here.
+            </Callout>
+          ) : (
+            <div>
+              <p className="mb-2 text-sm text-zinc-400">
+                These Jackett/Torznab feeds have a native equivalent. Migrating switches them to the
+                built-in scraper — same searches, <strong>no Jackett dependency</strong>. Settings
+                (priority, seeders, toggles) are kept.
+              </p>
+              <div className="space-y-2">
+                {preview.migratable.map((m) => (
+                  <label
+                    key={m.id}
+                    className="flex cursor-pointer items-center gap-3 rounded-md border border-zinc-800 bg-zinc-900/50 px-4 py-3"
+                  >
+                    <Checkbox
+                      checked={selected.has(m.id)}
+                      onChange={() => toggle(m.id)}
+                      aria-label={`Migrate ${m.name}`}
+                    />
+                    <div className="min-w-0">
+                      <div className="font-medium">
+                        {m.name} <span className="text-zinc-500">→</span>{" "}
+                        <span className="text-amber-400">{m.builtinName}</span>{" "}
+                        <Badge tone="success">Built-in</Badge>
+                      </div>
+                      <div className="mt-0.5 truncate font-mono text-xs text-zinc-500">{m.url}</div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {preview.unmatched.length > 0 && (
+            <div>
+              <p className="mb-2 text-sm text-zinc-400">
+                No native equivalent yet — these keep working through Jackett/Prowlarr:
+              </p>
+              <ul className="space-y-1">
+                {preview.unmatched.map((u) => (
+                  <li key={u.id} className="truncate text-xs text-zinc-500">
+                    • {u.name}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }
 

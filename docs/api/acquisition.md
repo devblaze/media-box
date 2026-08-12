@@ -99,7 +99,51 @@ as `200 { ok: false }`, not an error status.
   | apiKey | string \| null | no | null | torznab only |
   | definition | string \| null | for builtin | — | registry key when `type` is builtin |
 
-- **Response:** `200` — on success `{ ok: true, message, caps? }` (torznab includes `caps = { tvSearchAvailable, movieSearchAvailable, categories: [{ id, name }] }`); on failure `{ ok: false, message }`.
+- **Response:** `200` — on success `{ ok: true, message, latencyMs, caps? }` (torznab includes `caps = { tvSearchAvailable, movieSearchAvailable, categories: [{ id, name }] }`); on failure `{ ok: false, message, latencyMs }`.
+
+## `POST /api/v1/indexers/test-all`
+
+Probe every configured indexer concurrently (the Settings → Indexers "Test all"
+button). Per-indexer failures never fail the batch.
+
+- **Auth:** admin, or permission `indexers.manage`
+- **Request body:** none
+- **Response:** `200` — `{ results: [{ id, name, enabled, ok, message, latencyMs }] }`
+
+```bash
+curl -X POST -H "x-api-key: $KEY" http://localhost:7878/api/v1/indexers/test-all
+```
+
+## `GET /api/v1/indexers/migrate`
+
+Preview which Torznab (Jackett/Prowlarr) indexers can be replaced by a native
+built-in scraper. Matching is by name / Jackett URL slug / host against the
+built-in registry's aliases.
+
+- **Auth:** admin, or permission `indexers.manage`
+- **Response:** `200` — `{ migratable: [{ id, name, url, builtinKey, builtinName }], unmatched: [{ id, name, url }] }`
+
+## `POST /api/v1/indexers/migrate`
+
+Apply the migration for the given indexer ids: each matched Torznab row is
+switched in place to its built-in equivalent (`type = "builtin"`, `url` cleared,
+`apiKey` dropped, `categories`/support flags from the registry). If the built-in
+is already configured, the redundant Torznab row is deleted instead. Settings
+like priority, minimum seeders and the enable toggles are preserved.
+
+- **Auth:** admin, or permission `indexers.manage`
+- **Request body:**
+
+  | field | type | required | notes |
+  | --- | --- | --- | --- |
+  | ids | number[] | yes | indexer ids from the migrate preview |
+
+- **Response:** `200` — `{ migrated: <count> }`
+
+```bash
+curl -X POST -H "x-api-key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"ids":[3,5]}' http://localhost:7878/api/v1/indexers/migrate
+```
 
 ---
 
