@@ -4,6 +4,7 @@ import {
   ActivityIndicator,
   type GestureResponderEvent,
   PanResponder,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -291,7 +292,10 @@ export default function Player() {
             contentFit="contain"
             nativeControls={false}
             allowsPictureInPicture
-            startsPictureInPictureAutomatically
+            // Auto-PiP on backgrounding is an iOS behaviour; on Android it needs
+            // activity-level config that Expo Go doesn't provide, so don't ask
+            // for it there.
+            startsPictureInPictureAutomatically={Platform.OS === "ios"}
           />
           {/* Tap anywhere to toggle the controls. */}
           <Pressable
