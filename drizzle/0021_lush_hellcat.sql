@@ -1,0 +1,1 @@
+ALTER TABLE `quality_profiles` ADD `indexer_ids` text;

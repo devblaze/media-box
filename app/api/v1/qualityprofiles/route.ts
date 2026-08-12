@@ -26,6 +26,8 @@ const profileSchema = z.object({
     .default([]),
   requiredTerms: z.array(z.string().min(1)).default([]),
   ignoredTerms: z.array(z.string().min(1)).default([]),
+  // Restrict searches using this profile to these indexers. null/empty = all.
+  indexerIds: z.array(z.number().int()).nullable().default(null),
 });
 
 export async function POST(request: NextRequest) {

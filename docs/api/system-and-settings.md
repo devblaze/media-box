@@ -167,6 +167,7 @@ Create a quality profile.
   | `preferredTerms` | array of `{ term: string, score: int }` | no | `[]` | Scored release-title preferences. |
   | `requiredTerms` | array of string | no | `[]` | Release title must contain all. |
   | `ignoredTerms` | array of string | no | `[]` | Release title must contain none. |
+  | `indexerIds` | array of int \| null | no | `null` | Restrict searches using this profile to these indexers. `null` or empty = every enabled indexer. |
 
 - **Response:** `201` — the created profile row. Errors: `400` — `"Cutoff must be one of the allowed qualities"` or a Zod validation error.
 - **Example:**

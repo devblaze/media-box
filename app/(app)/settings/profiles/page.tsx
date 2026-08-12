@@ -26,6 +26,15 @@ interface QualityDefinition {
   rank: number;
 }
 
+interface IndexerLite {
+  id: number;
+  name: string;
+  type: string;
+  enabled: boolean;
+  supportsTv: boolean;
+  supportsMovies: boolean;
+}
+
 export default function ProfilesPage() {
   const toast = useToast();
   const confirm = useConfirm();
@@ -191,7 +200,20 @@ function ProfileDialog({
   const [preferredTerms, setPreferredTerms] = useState(initial.preferredTerms ?? []);
   const [requiredTerms, setRequiredTerms] = useState(initial.requiredTerms ?? []);
   const [ignoredTerms, setIgnoredTerms] = useState(initial.ignoredTerms ?? []);
+  // null = search every indexer (default). A non-empty list restricts this
+  // profile's searches to exactly those indexers.
+  const [indexerIds, setIndexerIds] = useState<number[] | null>(initial.indexerIds ?? null);
   const [busy, setBusy] = useState(false);
+  const { data: indexers } = useApi<IndexerLite[]>("/indexers");
+
+  function toggleIndexer(indexerId: number) {
+    setIndexerIds((prev) => {
+      const next = new Set(prev ?? []);
+      if (next.has(indexerId)) next.delete(indexerId);
+      else next.add(indexerId);
+      return [...next];
+    });
+  }
 
   function toggle(qualityId: number) {
     setItems((prev) =>
@@ -222,6 +244,8 @@ function ProfileDialog({
         preferredTerms: preferredTerms.filter((p) => p.term.trim() !== ""),
         requiredTerms: requiredTerms.filter((t) => t.trim() !== ""),
         ignoredTerms: ignoredTerms.filter((t) => t.trim() !== ""),
+        // Empty selection means "no restriction" — store null, not [].
+        indexerIds: indexerIds && indexerIds.length > 0 ? indexerIds : null,
       };
       if (isNew) {
         await apiFetch("/qualityprofiles", { method: "POST", body: JSON.stringify(body) });
@@ -409,6 +433,49 @@ function ProfileDialog({
               placeholder="e.g. CAM or /\.rar$/"
               addLabel="Add ignored term"
             />
+          </Field>
+
+          <Field
+            label="Indexers"
+            description="Which indexers searches with this profile use. Leave all unticked to search every indexer (the default) — or pick a few, e.g. an anime profile that only uses SubsPlease and Nyaa."
+          >
+            <div className="space-y-1.5">
+              <label className="flex cursor-pointer items-center gap-2 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2">
+                <Checkbox
+                  checked={!indexerIds || indexerIds.length === 0}
+                  onChange={() => setIndexerIds(null)}
+                  aria-label="Search all indexers"
+                />
+                <span className="text-sm">
+                  <strong>All indexers</strong>{" "}
+                  <span className="text-zinc-500">— use every enabled indexer</span>
+                </span>
+              </label>
+              {(indexers ?? []).map((ix) => (
+                <label
+                  key={ix.id}
+                  className="flex cursor-pointer items-center gap-2 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2"
+                >
+                  <Checkbox
+                    checked={(indexerIds ?? []).includes(ix.id)}
+                    onChange={() => toggleIndexer(ix.id)}
+                    aria-label={`Use ${ix.name}`}
+                  />
+                  <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-sm">
+                    <span className="truncate">{ix.name}</span>
+                    {ix.type === "builtin" && <Badge tone="success">Built-in</Badge>}
+                    {!ix.enabled && <Badge tone="neutral">Disabled</Badge>}
+                    {ix.supportsTv && <Badge tone="info">TV</Badge>}
+                    {ix.supportsMovies && <Badge tone="accent">Movies</Badge>}
+                  </span>
+                </label>
+              ))}
+              {(indexers ?? []).length === 0 && (
+                <p className="text-xs text-zinc-500">
+                  No indexers configured yet — add some under Settings → Indexers.
+                </p>
+              )}
+            </div>
           </Field>
         </div>
       </div>

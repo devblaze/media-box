@@ -32,6 +32,8 @@ export interface QualityProfile {
   requiredTerms: string[];
   /** A release is rejected if it contains any of these. */
   ignoredTerms: string[];
+  /** Restrict searches with this profile to these indexer ids; null = all. */
+  indexerIds: number[] | null;
 }
 
 export interface SeriesSummary {

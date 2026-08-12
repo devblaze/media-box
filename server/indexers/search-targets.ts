@@ -19,6 +19,7 @@ function loadProfile(id: number): ProfileLike {
     preferredTerms: row.preferredTerms,
     requiredTerms: row.requiredTerms,
     ignoredTerms: row.ignoredTerms,
+    indexerIds: row.indexerIds,
   };
 }
 

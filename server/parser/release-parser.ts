@@ -16,6 +16,9 @@ export interface ParsedRelease {
   releaseGroup?: string;
   /** true when the name looks like a TV release (has S/E markers) */
   isTv: boolean;
+  /** true when the episode number is ABSOLUTE (anime fansub "Title - 05" style,
+   *  no season marker) — scoring treats the season as unknown, not season 1 */
+  isAbsolute?: boolean;
 }
 
 // ---------- quality ----------
@@ -137,6 +140,8 @@ interface NumberingMatch {
   titleEnd: number;
   seasons: number[];
   episodes: number[];
+  /** anime absolute numbering ("Title - 05") — no season marker in the name */
+  isAbsolute?: boolean;
 }
 
 function range(from: number, to: number): number[] {
@@ -183,6 +188,26 @@ function matchNumbering(name: string): NumberingMatch | null {
     return { titleEnd: m.index, seasons: [parseInt(m[1] ?? m[2], 10)], episodes: [] };
   }
 
+  // Anime absolute numbering (checked LAST so explicit markers always win):
+  // "[SubsPlease] Title - 05 (1080p)", "Title - 05v2 [720p]", batches
+  // "Title - 01-24 (1080p)". Requires the " - NN" shape followed by a
+  // bracketed tag or end-of-name so plain hyphenated words never match, and
+  // rejects year-looking numbers (19xx/20xx) so "Title - 2024 (…)" stays a movie.
+  m = name.match(/\s-\s(\d{2,4})(?:v\d)?(?:\s*-\s*(\d{2,4})(?:v\d)?)?\s*(?=[([]|$)/);
+  if (m && m.index !== undefined) {
+    const yearLike = (n: number) => n >= 1900 && n <= 2099;
+    const from = parseInt(m[1], 10);
+    const to = m[2] !== undefined ? parseInt(m[2], 10) : null;
+    if (!yearLike(from) && (to === null || (!yearLike(to) && to > from))) {
+      return {
+        titleEnd: m.index,
+        seasons: [],
+        episodes: to !== null ? range(from, to) : [from],
+        isAbsolute: true,
+      };
+    }
+  }
+
   return null;
 }
 
@@ -225,6 +250,7 @@ export function parseTitle(name: string): ParsedRelease {
       quality,
       releaseGroup,
       isTv: true,
+      isAbsolute: numbering.isAbsolute,
     };
   }
 

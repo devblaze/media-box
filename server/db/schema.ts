@@ -213,6 +213,9 @@ export const qualityProfiles = sqliteTable("quality_profiles", {
     .default([]),
   requiredTerms: text("required_terms", { mode: "json" }).$type<string[]>().notNull().default([]),
   ignoredTerms: text("ignored_terms", { mode: "json" }).$type<string[]>().notNull().default([]),
+  // Restrict searches using this profile to these indexer ids. null/empty = all
+  // enabled indexers (the default and the pre-existing behaviour).
+  indexerIds: text("indexer_ids", { mode: "json" }).$type<number[] | null>(),
 });
 
 export const rootFolders = sqliteTable(

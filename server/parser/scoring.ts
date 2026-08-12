@@ -12,6 +12,8 @@ export interface ProfileLike {
   requiredTerms?: string[];
   /** A release containing any of these is rejected. */
   ignoredTerms?: string[];
+  /** Restrict searches to these indexer ids; null/empty = all indexers. */
+  indexerIds?: number[] | null;
 }
 
 /**
@@ -117,6 +119,18 @@ export function evaluate(release: ReleaseCandidate, ctx: EvaluationContext): Eva
   if (ctx.mediaType === "series") {
     if (!parsed.isTv) {
       rejections.push("Not a recognizable TV release");
+    } else if (parsed.isAbsolute) {
+      // Anime absolute numbering ("Title - 05"): the release names no season, so
+      // only the episode number can be checked. Absolute numbers usually equal
+      // the in-season numbers for season 1 (and for TMDB's flat single-season
+      // anime, always) — later broadcast seasons rely on the title match above.
+      if (
+        ctx.episodeNumbers &&
+        ctx.episodeNumbers.length > 0 &&
+        !ctx.episodeNumbers.some((e) => parsed.episodes.includes(e))
+      ) {
+        rejections.push(`Wrong episode (wanted E${ctx.episodeNumbers.join("/E")})`);
+      }
     } else if (ctx.seasonNumber !== undefined) {
       if (!parsed.seasons.includes(ctx.seasonNumber)) {
         rejections.push(`Wrong season (wanted S${ctx.seasonNumber})`);

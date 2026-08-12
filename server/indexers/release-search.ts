@@ -59,12 +59,20 @@ export async function searchReleases(target: SearchTarget): Promise<DecoratedRel
   const db = getDb();
   const enabledFlag =
     target.interactive ? schema.indexers.enableInteractiveSearch : schema.indexers.enableAutomaticSearch;
-  const indexerRows = db
+  let indexerRows = db
     .select()
     .from(schema.indexers)
     .where(and(eq(schema.indexers.enabled, true), eq(enabledFlag, true)))
     .all()
     .filter((i) => (target.mediaType === "series" ? i.supportsTv : i.supportsMovies));
+
+  // Profile-scoped indexers: a quality profile may restrict which indexers it
+  // searches (e.g. an anime profile that only uses SubsPlease + Nyaa). Empty or
+  // absent = all indexers, the pre-existing behaviour.
+  const allowedIds = target.profile.indexerIds;
+  if (allowedIds && allowedIds.length > 0) {
+    indexerRows = indexerRows.filter((i) => allowedIds.includes(i.id));
+  }
 
   const results = await Promise.allSettled(
     indexerRows.map(async (indexer) => {
@@ -81,7 +89,22 @@ export async function searchReleases(target: SearchTarget): Promise<DecoratedRel
       if (target.seasonNumber !== undefined) query.season = target.seasonNumber;
       if (target.episodeNumbers?.length === 1) query.ep = target.episodeNumbers[0];
       try {
-        const items = await withDeadline(queryIndexer(indexer, query), INDEXER_DEADLINE_MS);
+        let items = await withDeadline(queryIndexer(indexer, query), INDEXER_DEADLINE_MS);
+        // Absolute-numbering fallback (anime): fansub releases are numbered
+        // "Title - 05" with no SxxExx, and some Torznab indexers (e.g. Jackett's
+        // SubsPlease) return NOTHING when a `season` param is sent. When a
+        // season-scoped TV query comes back empty, retry once as a free-text
+        // search — "{title} 05" for an episode, plain "{title}" for a season —
+        // and let parsing/scoring sort the results out.
+        if (items.length === 0 && query.t === "tvsearch" && query.season !== undefined) {
+          const epNum = target.episodeNumbers?.length === 1 ? target.episodeNumbers[0] : null;
+          const fallback: TorznabQuery = {
+            t: "search",
+            q: epNum !== null ? `${target.query} ${String(epNum).padStart(2, "0")}` : target.query,
+            cat: query.cat,
+          };
+          items = await withDeadline(queryIndexer(indexer, fallback), INDEXER_DEADLINE_MS);
+        }
         return { indexer, items };
       } catch (err) {
         // Tag the failure with the indexer name — allSettled otherwise only
