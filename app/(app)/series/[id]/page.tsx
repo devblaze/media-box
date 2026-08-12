@@ -87,10 +87,16 @@ interface SeriesDetail {
   path: string;
   monitored: boolean;
   monitorMode: "all" | "future" | "none";
+  qualityProfileId: number;
   isAnime: boolean;
   seasons: Season[];
   episodes: Episode[];
   files: EpisodeFileLite[];
+}
+
+interface QualityProfileLite {
+  id: number;
+  name: string;
 }
 
 interface QualityDefinition {
@@ -128,6 +134,7 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
   const confirm = useConfirm();
   const { data, mutate } = useApi<SeriesDetail>(`/series/${id}`);
   const { data: qualityDefs } = useApi<QualityDefinition[]>("/qualitydefinitions");
+  const { data: profiles } = useApi<QualityProfileLite[]>("/qualityprofiles");
   const { data: me } = useApi<Me>("/auth/me");
   const { data: credits } = useApi<{ cast: CastMember[] }>(
     data?.tmdbId ? `/credits?type=series&tmdbId=${data.tmdbId}` : null
@@ -281,6 +288,27 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
       }),
     });
     await mutate();
+  }
+
+  async function toggleEpisodeMonitored(ep: Episode) {
+    await apiFetch(`/series/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ episodes: [{ id: ep.id, monitored: !ep.monitored }] }),
+    });
+    await mutate();
+  }
+
+  async function changeQualityProfile(profileId: number) {
+    try {
+      await apiFetch(`/series/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({ qualityProfileId: profileId }),
+      });
+      await mutate();
+      toast.success("Quality profile updated");
+    } catch {
+      toast.error("Failed to update quality profile");
+    }
   }
 
   async function refresh() {
@@ -489,6 +517,22 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
                   </Select>
                 </div>
               </label>
+              <label className="flex items-center gap-2 text-sm text-zinc-400">
+                <span>Quality profile</span>
+                <div className="w-44">
+                  <Select
+                    aria-label="Quality profile"
+                    value={data.qualityProfileId}
+                    onChange={(e) => changeQualityProfile(Number(e.target.value))}
+                  >
+                    {(profiles ?? []).map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              </label>
               <Button variant="secondary" size="sm" onClick={refresh}>
                 Refresh metadata
               </Button>
@@ -601,7 +645,7 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
                         onClick={() =>
                           setSearchScope({
                             scope: { seriesId: data.id, season: season.seasonNumber },
-                            label: `${data.title} — Season ${season.seasonNumber}`,
+                            label: `${data.title} — ${season.seasonNumber === 0 ? "Specials" : `Season ${season.seasonNumber}`}`,
                           })
                         }
                       >
@@ -626,8 +670,28 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
                         prog.durationSeconds > 0;
                       return (
                         <TR key={ep.id}>
-                          <TD className="w-12">
-                            <span className="text-zinc-500">{ep.episodeNumber}</span>
+                          <TD className="w-16">
+                            <span className="flex items-center gap-1.5">
+                              {isAdmin && (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleEpisodeMonitored(ep)}
+                                  title={
+                                    ep.monitored
+                                      ? "Monitored — click to unmonitor"
+                                      : "Unmonitored — click to monitor"
+                                  }
+                                  className="leading-none"
+                                >
+                                  <span
+                                    className={`text-base leading-none ${ep.monitored ? "text-amber-400" : "text-zinc-600"}`}
+                                  >
+                                    ●
+                                  </span>
+                                </button>
+                              )}
+                              <span className="text-zinc-500">{ep.episodeNumber}</span>
+                            </span>
                           </TD>
                           <TD>
                             <div className={watched ? "text-zinc-400" : undefined}>

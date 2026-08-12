@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { formatBytes } from "@/lib/types";
 
@@ -49,6 +49,29 @@ export function ReleaseSearchDrawer({
   const [grabbing, setGrabbing] = useState<string | null>(null);
   const [grabbed, setGrabbed] = useState<Set<string>>(new Set());
   const [override, setOverride] = useState(false);
+  // Narrowing filters: free text matches anywhere in the release name (so
+  // "subsplease" finds [SubsPlease] releases), quality restricts to one quality.
+  const [filter, setFilter] = useState("");
+  const [qualityFilter, setQualityFilter] = useState<number | "all">("all");
+
+  // Qualities present in THIS result set (for the dropdown), stable order.
+  const presentQualities = useMemo(() => {
+    if (!releases) return [];
+    const ids = [...new Set(releases.map((r) => r.parsed.quality.qualityId))];
+    return ids
+      .map((id) => ({ id, name: qualityNames.get(id) ?? `Quality ${id}` }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [releases, qualityNames]);
+
+  const visible = useMemo(() => {
+    if (!releases) return null;
+    const needle = filter.trim().toLowerCase();
+    return releases.filter(
+      (r) =>
+        (needle === "" || r.title.toLowerCase().includes(needle)) &&
+        (qualityFilter === "all" || r.parsed.quality.qualityId === qualityFilter)
+    );
+  }, [releases, filter, qualityFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -112,7 +135,36 @@ export function ReleaseSearchDrawer({
         {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
         {!releases && !error && <p className="mt-4 text-sm text-zinc-400">Searching indexers…</p>}
 
-        {releases && (
+        {releases && releases.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter — e.g. subsplease, toonshub, 1080p…"
+              className="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-950/60 px-2.5 py-1.5 text-sm placeholder:text-zinc-600 focus:border-amber-500/60 focus:outline-none"
+            />
+            <select
+              value={qualityFilter}
+              onChange={(e) =>
+                setQualityFilter(e.target.value === "all" ? "all" : Number(e.target.value))
+              }
+              className="rounded border border-zinc-700 bg-zinc-950/60 px-2 py-1.5 text-sm focus:border-amber-500/60 focus:outline-none"
+            >
+              <option value="all">All qualities</option>
+              {presentQualities.map((q) => (
+                <option key={q.id} value={q.id}>
+                  {q.name}
+                </option>
+              ))}
+            </select>
+            <span className="shrink-0 text-xs text-zinc-500">
+              {visible?.length ?? 0} of {releases.length}
+            </span>
+          </div>
+        )}
+
+        {visible && (
           <div className="mt-4 overflow-x-auto">
           <table className="w-full min-w-[640px] text-sm">
             <thead>
@@ -126,7 +178,7 @@ export function ReleaseSearchDrawer({
               </tr>
             </thead>
             <tbody>
-              {releases.map((r) => (
+              {visible.map((r) => (
                 <tr
                   key={r.guid}
                   className={`border-t border-zinc-800/60 ${r.accepted ? "" : "opacity-50"}`}
@@ -161,10 +213,12 @@ export function ReleaseSearchDrawer({
                   </td>
                 </tr>
               ))}
-              {releases.length === 0 && (
+              {visible.length === 0 && (
                 <tr>
                   <td colSpan={6} className="py-3 text-zinc-500">
-                    No releases found. Check your indexers under Settings → Indexers.
+                    {releases && releases.length > 0
+                      ? "No releases match the current filter."
+                      : "No releases found. Check your indexers under Settings → Indexers."}
                   </td>
                 </tr>
               )}

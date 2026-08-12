@@ -84,7 +84,9 @@ export async function addSeries(input: AddSeriesInput) {
  * - `none`   — nothing is monitored (and the series itself is unmonitored).
  *
  * Seasons are marked monitored when they contain at least one monitored episode,
- * and `series.monitored` follows the mode. Season 0 (specials) is never auto-monitored.
+ * and `series.monitored` follows the mode. Season 0 (specials) is never
+ * auto-monitored, but an explicit opt-in (its season/episode toggles) is
+ * preserved across mode changes ("none" still clears everything).
  */
 export function applyMonitorMode(seriesId: number, mode: "all" | "future" | "none") {
   const db = getDb();
@@ -95,6 +97,7 @@ export function applyMonitorMode(seriesId: number, mode: "all" | "future" | "non
       id: schema.episodes.id,
       seasonNumber: schema.episodes.seasonNumber,
       airDateUtc: schema.episodes.airDateUtc,
+      monitored: schema.episodes.monitored,
     })
     .from(schema.episodes)
     .where(eq(schema.episodes.seriesId, seriesId))
@@ -103,7 +106,11 @@ export function applyMonitorMode(seriesId: number, mode: "all" | "future" | "non
   const monitoredSeasons = new Set<number>();
   for (const ep of eps) {
     let monitored: boolean;
-    if (mode === "none" || ep.seasonNumber === 0) monitored = false;
+    if (mode === "none") monitored = false;
+    // Specials are never AUTO-monitored, but a user's explicit opt-in (the
+    // Specials season toggle) must survive monitor-mode changes — so preserve
+    // each season-0 episode's current flag instead of force-clearing it.
+    else if (ep.seasonNumber === 0) monitored = ep.monitored;
     else if (mode === "all") monitored = true;
     else monitored = !ep.airDateUtc || ep.airDateUtc.getTime() >= now; // future: unaired/upcoming
     db.update(schema.episodes).set({ monitored }).where(eq(schema.episodes.id, ep.id)).run();

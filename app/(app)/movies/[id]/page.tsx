@@ -21,6 +21,7 @@ import {
   CardBody,
   CardHeader,
   CardTitle,
+  Select,
   Skeleton,
   useConfirm,
   useToast,
@@ -37,6 +38,7 @@ interface MovieDetail {
   posterPath: string | null;
   path: string;
   monitored: boolean;
+  qualityProfileId: number;
   movieFileId: number | null;
   file: {
     relativePath: string;
@@ -108,6 +110,7 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
   const confirm = useConfirm();
   const { data, mutate } = useApi<MovieDetail>(`/movies/${id}`);
   const { data: qualityDefs } = useApi<QualityDefinition[]>("/qualitydefinitions");
+  const { data: profiles } = useApi<{ id: number; name: string }[]>("/qualityprofiles");
   const { data: me } = useApi<Me>("/auth/me");
   const { data: credits } = useApi<{ cast: CastMember[] }>(
     data?.tmdbId ? `/credits?type=movie&tmdbId=${data.tmdbId}` : null
@@ -173,6 +176,19 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
       toast.success(data!.monitored ? "Stopped monitoring" : "Now monitoring");
     } catch {
       toast.error("Failed to update monitoring");
+    }
+  }
+
+  async function changeQualityProfile(profileId: number) {
+    try {
+      await apiFetch(`/movies/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({ qualityProfileId: profileId }),
+      });
+      await mutate();
+      toast.success("Quality profile updated");
+    } catch {
+      toast.error("Failed to update quality profile");
     }
   }
 
@@ -317,6 +333,22 @@ export default function MovieDetailPage({ params }: PageProps<"/movies/[id]">) {
                 >
                   {data.monitored ? "Monitored" : "Unmonitored"}
                 </Button>
+                <label className="flex items-center gap-2 text-sm text-zinc-400">
+                  <span>Quality profile</span>
+                  <div className="w-44">
+                    <Select
+                      aria-label="Quality profile"
+                      value={data.qualityProfileId}
+                      onChange={(e) => changeQualityProfile(Number(e.target.value))}
+                    >
+                      {(profiles ?? []).map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                </label>
                 <Button variant="secondary" size="sm" onClick={refresh}>
                   Refresh metadata
                 </Button>
