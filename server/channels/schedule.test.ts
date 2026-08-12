@@ -12,6 +12,13 @@ let getDb: typeof import("@/server/db").getDb;
 let engine: typeof import("@/server/channels/schedule");
 
 beforeAll(async () => {
+  // Freeze the clock: `offsetSeconds` compares Date.now() against the schedule
+  // anchor set when the guide is built — real time passing between those two
+  // calls made the offset assertion flaky on slow CI runners (0 became 1).
+  // Fake ONLY `Date` (not setTimeout/setImmediate — async imports/db hooks need
+  // real timers to resolve, and faking them hangs beforeAll).
+  vi.useFakeTimers({ now: new Date("2026-01-01T12:00:00Z"), toFake: ["Date"] });
+
   const { runMigrations } = await import("@/server/db/migrate");
   runMigrations();
   ({ getDb, schema } = await import("@/server/db"));
@@ -102,6 +109,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   fs.rmSync(TMP, { recursive: true, force: true });
 });
