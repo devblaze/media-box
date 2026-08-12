@@ -55,15 +55,51 @@ function toMillis(value: number | string): number {
   return typeof value === "number" ? value : Date.parse(value);
 }
 
+const PAGE_SIZE = 50;
+
+interface FileChangePage {
+  items: FileChange[];
+  total: number;
+  pending: number;
+}
+
 export default function FileChangesPage() {
   const { data: me } = useApi<Me>("/auth/me");
-  const { data: changes, mutate } = useApi<FileChange[]>("/file-changes");
+  // Paged on demand — this list can hold tens of thousands of rows, and loading
+  // them all shipped a 100 MB+ payload that locked up the browser.
+  const [page, setPage] = useState(0);
+  const [pruning, setPruning] = useState(false);
+  const {
+    data: pageData,
+    mutate,
+  } = useApi<FileChangePage>(`/file-changes?limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}`);
   const [deciding, setDeciding] = useState<number | null>(null);
   const [viewing, setViewing] = useState<FileChange | null>(null);
   const toast = useToast();
   useEvents();
 
+  const changes = pageData?.items;
+  const total = pageData?.total ?? 0;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const canApprove = principalHasPermission(me, "files.approve");
+
+  async function pruneDuplicates() {
+    setPruning(true);
+    try {
+      const res = await apiFetch<{ removed: number }>("/file-changes", { method: "POST" });
+      toast.success(
+        res.removed > 0
+          ? `Removed ${res.removed.toLocaleString()} duplicate entries`
+          : "No duplicates to remove"
+      );
+      setPage(0);
+      await mutate();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Cleanup failed");
+    } finally {
+      setPruning(false);
+    }
+  }
 
   async function decide(id: number, action: "approve" | "decline") {
     setDeciding(id);
@@ -102,7 +138,21 @@ export default function FileChangesPage() {
 
   return (
     <div className="max-w-5xl space-y-4">
-      <h1 className="text-xl font-semibold">File Changes</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-xl font-semibold">
+          File Changes{" "}
+          {total > 0 && (
+            <span className="text-sm font-normal text-zinc-500">
+              ({total.toLocaleString()} total)
+            </span>
+          )}
+        </h1>
+        {total > PAGE_SIZE && (
+          <Button variant="secondary" size="sm" onClick={pruneDuplicates} loading={pruning}>
+            Remove duplicates
+          </Button>
+        )}
+      </div>
       <p className="text-sm text-zinc-400">
         When file operations are set to <strong>Ask</strong> (Settings → Media Management), imports,
         organizing, and with-files deletes are held here until you approve or decline them. Approving
@@ -178,6 +228,30 @@ export default function FileChangesPage() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {total > PAGE_SIZE && (
+        <div className="flex items-center justify-between gap-3 text-sm">
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={page === 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+          >
+            Previous
+          </Button>
+          <span className="text-zinc-500">
+            Page {page + 1} of {pageCount.toLocaleString()}
+          </span>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={page + 1 >= pageCount}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            Next
+          </Button>
         </div>
       )}
 

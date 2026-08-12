@@ -547,13 +547,30 @@ with-files deletes are recorded as pending `fileChanges` rows instead of touchin
 disk; approving one performs the real file operation.
 
 - **Auth:** permission `files.approve` (admins always; or a role granting it). `401`/`403` otherwise.
-- **Response:** `200` — array of `{ id, kind, status, title, detail, payload, requestedByUserId, decidedByUserId, decidedAt, error, createdAt }`.
+- **Query params:** `status` — one of `pending|approved|declined|applied|failed`; `limit` — page size (default `50`, clamped to `200`); `offset` — rows to skip.
+- **Response:** `200` — `{ items: [...], total, pending }`. `total` counts the rows matching `status` (for paging); `pending` is always the pending count. Each item is `{ id, kind, status, title, detail, payload, requestedByUserId, decidedByUserId, decidedAt, error, createdAt }`.
   - `kind`: `"import" | "organize" | "deleteMovie" | "deleteSeries" | "deleteVersion"`.
   - `status`: `"pending" | "approved" | "declined" | "applied" | "failed"` (`applied` = the operation ran successfully on approval; `failed` = it ran but errored, with `error` set).
+  - **Paged since v0.2.38** — this endpoint previously returned every row, which on a busy install meant a 100 MB+ response.
 - **Example:**
   ```bash
-  curl -sS "$MEDIABOX_URL/api/v1/file-changes" -H "x-api-key: $MEDIABOX_API_KEY"
+  curl -sS "$MEDIABOX_URL/api/v1/file-changes?status=pending&limit=50" -H "x-api-key: $MEDIABOX_API_KEY"
   ```
+
+## `POST /api/v1/file-changes`
+
+Housekeeping: delete duplicate **pending** changes, keeping the newest row per
+`(kind, payload)`. Recording is deduped on insert, so this only repairs installs
+that accumulated repeats beforehand (the jobs that record changes retry on a
+schedule, and each retry used to add another row).
+
+- **Auth:** permission `files.approve`
+- **Request body:** none
+- **Response:** `200` — `{ removed: <count> }`
+
+```bash
+curl -sS -X POST "$MEDIABOX_URL/api/v1/file-changes" -H "x-api-key: $MEDIABOX_API_KEY"
+```
 
 ## `PUT /api/v1/file-changes/[id]`
 

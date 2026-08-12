@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, sql } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { assertFileOperationsEnabled, fileOperationsMode } from "./media-guard";
 import { emitEvent } from "@/server/events/bus";
@@ -25,6 +25,25 @@ export function recordPendingFileChange(
   payload: unknown
 ): number {
   const db = getDb();
+  // Dedupe against the identical operation already awaiting a decision. The
+  // callers are retried by their own schedulers — the queue monitor re-offers
+  // an unimported download on every tick — so without this the pending list
+  // grows without bound (one install reached 241k rows for 104 real imports,
+  // which made the page unusable).
+  const payloadKey = JSON.stringify(payload ?? null);
+  const existing = db
+    .select({ id: schema.fileChanges.id })
+    .from(schema.fileChanges)
+    .where(
+      and(
+        eq(schema.fileChanges.kind, kind),
+        eq(schema.fileChanges.status, "pending"),
+        sql`${schema.fileChanges.payload} = ${payloadKey}`
+      )
+    )
+    .get();
+  if (existing) return existing.id;
+
   const row = db
     .insert(schema.fileChanges)
     .values({
@@ -63,8 +82,72 @@ export async function holdOrRun<T>(
 }
 
 /** All file changes, newest first (pending + recently decided). */
-export function listFileChanges() {
-  return getDb().select().from(schema.fileChanges).orderBy(desc(schema.fileChanges.id)).all();
+export interface ListFileChangesOpts {
+  /** Only this status (e.g. "pending"); omit for every status. */
+  status?: FileChangeRow["status"];
+  /** Page size (default 50, max 200) — the list can be very large. */
+  limit?: number;
+  offset?: number;
+}
+
+export interface FileChangePage {
+  items: FileChangeRow[];
+  /** Total matching `status` (for paging), and the pending count for the badge. */
+  total: number;
+  pending: number;
+}
+
+/**
+ * One page of file changes, newest first. Paged because this table can hold
+ * tens of thousands of rows — returning them all made the settings page ship a
+ * 100 MB+ payload and lock up the browser.
+ */
+export function listFileChanges(opts: ListFileChangesOpts = {}): FileChangePage {
+  const db = getDb();
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  const offset = Math.max(opts.offset ?? 0, 0);
+  const where = opts.status ? eq(schema.fileChanges.status, opts.status) : undefined;
+
+  const items = db
+    .select()
+    .from(schema.fileChanges)
+    .where(where)
+    .orderBy(desc(schema.fileChanges.id))
+    .limit(limit)
+    .offset(offset)
+    .all();
+
+  const total =
+    db.select({ n: count() }).from(schema.fileChanges).where(where).get()?.n ?? 0;
+  const pending =
+    db
+      .select({ n: count() })
+      .from(schema.fileChanges)
+      .where(eq(schema.fileChanges.status, "pending"))
+      .get()?.n ?? 0;
+
+  return { items, total, pending };
+}
+
+/**
+ * Delete duplicate PENDING changes, keeping the newest row per (kind, payload).
+ * Repairs installs that accumulated repeats before insertion was deduped.
+ * Returns how many rows were removed.
+ */
+export function pruneDuplicateFileChanges(): number {
+  const db = getDb();
+  const res = db.run(sql`
+    DELETE FROM file_changes
+    WHERE status = 'pending'
+      AND id NOT IN (
+        SELECT MAX(id) FROM file_changes
+        WHERE status = 'pending'
+        GROUP BY kind, payload
+      )
+  `);
+  const removed = Number(res.changes ?? 0);
+  if (removed > 0) emitEvent({ type: "fileChange.pending" });
+  return removed;
 }
 
 /** Re-run the deferred operation from its stored payload (dynamic imports avoid a
