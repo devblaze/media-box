@@ -155,3 +155,35 @@ describe("buildVodPlaylist", () => {
     expect(text.endsWith("#EXT-X-ENDLIST\n")).toBe(true);
   });
 });
+
+/**
+ * The playlist a SEEKABLE session serves always spans the whole runtime from
+ * segment 0 — even when ffmpeg was started mid-film (`startSec`). That makes the
+ * player's timeline ABSOLUTE media time, which is why clients must not add
+ * `startSec` as a base offset (the `seekable` flag on POST /transcode tells
+ * them which timeline they got). Regression guard for a resume bug where the
+ * offset was double-counted.
+ */
+describe("seekable playlists are absolute, regardless of where ffmpeg started", () => {
+  const session = {
+    id: "s2",
+    absPath: "/media/x.mkv",
+    dir: "/config/transcode/s2",
+    proc: null,
+    status: "running" as const,
+    lastAccess: 0,
+    durationSec: 6215,
+    segmentCount: Math.ceil(6215 / 4),
+    audioTrack: null,
+    // ffmpeg was started 20 minutes in…
+    encoderStart: 300,
+  };
+
+  test("…but the playlist still starts at segment 0 and lists the whole film", () => {
+    const lines = buildVodPlaylist(session).split("\n");
+    const segs = lines.filter((l) => /^seg\d{5}\.ts$/.test(l));
+    expect(segs[0]).toBe("seg00000.ts");
+    expect(segs).toHaveLength(session.segmentCount);
+    expect(segs[300]).toBe("seg00300.ts"); // the encoder's start is just another segment
+  });
+});

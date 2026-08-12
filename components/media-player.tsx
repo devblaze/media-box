@@ -2107,9 +2107,13 @@ function TranscodePlayer({
           }
         }
         if (cancelled) return;
-        setBaseOffset(startSec);
 
-        const res = await apiFetch<{ sessionId: string; url: string }>("/transcode", {
+        const res = await apiFetch<{
+          sessionId: string;
+          url: string;
+          seekable?: boolean;
+          durationSec?: number;
+        }>("/transcode", {
           method: "POST",
           body: JSON.stringify({
             type,
@@ -2119,11 +2123,36 @@ function TranscodePlayer({
             ...(startSec > 0 ? { startSec } : {}),
           }),
         });
+        // A seekable (VOD) transcode spans the WHOLE runtime, so the element's
+        // 0:00 is the film's 0:00 — no base offset, and the playhead is placed
+        // client-side (below) like direct play. The legacy event-playlist
+        // fallback (runtime unprobeable) still has its timeline shifted by
+        // `startSec`, so it keeps the offset.
+        const seekable = res.seekable === true;
+        setBaseOffset(seekable ? 0 : startSec);
+        if (seekable && res.durationSec && res.durationSec > 0) setKnownDuration(res.durationSec);
         sessionId = res.sessionId; // capture before any early return so cleanup can DELETE it
         if (cancelled) return;
 
         const video = videoRef.current;
         if (!video) return;
+
+        // Seekable stream + a start position → place the playhead once the
+        // media is ready. ffmpeg was already told to begin encoding there, so
+        // the segments are being produced. (Watch-together joiners don't track
+        // progress, so this is the only thing that puts them at the host's
+        // position; for normal resume it lands on the same second the
+        // watch-progress hook would seek to.)
+        if (seekable && startSec > 0) {
+          const seekOnce = () => {
+            try {
+              video.currentTime = startSec;
+            } catch {
+              /* not seekable yet — the hook's resume seek still applies */
+            }
+          };
+          video.addEventListener("loadedmetadata", seekOnce, { once: true });
+        }
 
         const { default: Hls } = await import("hls.js");
         if (cancelled) return;

@@ -16,7 +16,8 @@
           "NSAllowsArbitraryLoads": true,
           "NSAllowsLocalNetworking": true
         },
-        "NSLocalNetworkUsageDescription": "Media Box connects to your self-hosted server on your local network."
+        "NSLocalNetworkUsageDescription": "Media Box connects to your self-hosted server on your local network.",
+        "UIBackgroundModes": ["audio"]
       }
     },
     "android": {

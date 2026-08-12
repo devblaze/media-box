@@ -44,6 +44,13 @@ export async function POST(request: NextRequest) {
     return ok({
       sessionId: session.id,
       url: `/api/v1/transcode/${session.id}/index.m3u8`,
+      // `seekable` = the playlist spans the WHOLE runtime (segments produced on
+      // demand), so the player's timeline is absolute media time and the client
+      // must NOT add `startSec` as an offset — it seeks normally instead. False
+      // means the runtime couldn't be probed and we fell back to ffmpeg's
+      // growing event playlist, whose 0:00 IS `startSec`.
+      seekable: session.segmentCount > 0,
+      durationSec: session.durationSec,
     });
   } catch (err) {
     if (err instanceof CapReachedError) {

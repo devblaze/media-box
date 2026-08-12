@@ -122,6 +122,21 @@ export interface WatchProgress {
 export interface TranscodeSession {
   sessionId: string;
   url: string;
+  /** True when the playlist spans the whole runtime (segments produced on
+   *  demand) — the player's timeline is absolute media time, so seeking works
+   *  natively and no `startSec` offset must be added. */
+  seekable?: boolean;
+  durationSec?: number;
+}
+
+export interface MediaVersion {
+  fileId: number;
+  /** ffprobe-measured runtime. A live transcode's own duration only covers what's
+   *  been encoded so far, so the seek bar must use this instead. */
+  durationSec: number;
+  isPrimary: boolean;
+  resolution: string;
+  label: string;
 }
 
 export type PlayableType = "movie" | "episode";
@@ -179,6 +194,10 @@ export const saveWatchProgress = (
       durationSeconds,
     }),
   });
+
+/** Probed file versions — used for the true runtime (the seek-bar range). */
+export const getVersions = (type: PlayableType, id: number) =>
+  request<{ versions: MediaVersion[] }>(`/versions?type=${type}&id=${id}`, { method: "GET" });
 
 /** Start an HLS transcode session (fallback when a file can't direct-play). */
 export const startTranscode = (type: PlayableType, id: number, startSec = 0) =>

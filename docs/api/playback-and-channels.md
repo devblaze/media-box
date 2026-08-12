@@ -175,7 +175,11 @@ Start an on-the-fly HLS transcode session (used when a file can't be direct-play
   - `fileId` — positive integer, optional (specific source file).
   - `startSec` — number ≥ 0, optional (seek offset to begin transcoding at).
   - `audioTrack` — integer ≥ 0, optional. 0-based audio-stream index to map (`0:a:index`, from `/audio-tracks`); defaults to the first track. Used to fix multi-audio files whose default track is silent/wrong.
-- **Response:** `200` — `{ "sessionId": "…", "url": "/api/v1/transcode/{sessionId}/index.m3u8" }`. Errors: `400` `Invalid request body` (bad/failed Zod parse), `404` `Media not found`, `429` `{ error }` when the concurrent-session cap is reached, `503` `{ error: "ffmpeg not available" }`, `500`.
+- **Response:** `200` — `{ "sessionId": "…", "url": "/api/v1/transcode/{sessionId}/index.m3u8", "seekable": true, "durationSec": 6215 }`. Errors: `400` `Invalid request body` (bad/failed Zod parse), `404` `Media not found`, `429` `{ error }` when the concurrent-session cap is reached, `503` `{ error: "ffmpeg not available" }`, `500`.
+
+  `seekable: true` (the normal case) means the playlist spans the **whole runtime** — every segment listed up front, each transcoded on demand when requested — so the player's timeline is **absolute media time**: seek anywhere, and do **not** add `startSec` as an offset. `startSec` then only tells ffmpeg where to begin encoding (so playback starts quickly at the resume point); the client still positions its own playhead.
+
+  `seekable: false` means the runtime couldn't be probed and the session fell back to ffmpeg's growing *event* playlist, whose `0:00` **is** `startSec` — that stream can't seek past what has been encoded, and clients must add `startSec` to the reported position.
 - **Example:**
   ```bash
   curl -sS -X POST "$MEDIABOX_URL/api/v1/transcode" \
