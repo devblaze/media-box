@@ -61,6 +61,14 @@ export async function DELETE(request: NextRequest, ctx: RouteContext<"/api/v1/qu
           date: new Date(),
         })
         .run();
+      // Blocklisting says "not this release" — so go find another one, which is
+      // what the button promises. The blocklist entry keeps this one from winning.
+      enqueueCommand(
+        "WantedSearch",
+        row.seriesId ? { seriesId: row.seriesId } : { movieId: row.movieId },
+        "manual",
+        5
+      );
     }
 
     db.delete(schema.downloads).where(eq(schema.downloads.id, downloadId)).run();

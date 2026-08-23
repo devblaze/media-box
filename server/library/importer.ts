@@ -102,9 +102,37 @@ async function importEpisodes(
   const targetEpisodeIds = (download.episodeIds as number[] | null) ?? [];
   const grabQuality = download.quality as QualityModel;
 
+  const targetEpisodes =
+    targetEpisodeIds.length > 0
+      ? db
+          .select()
+          .from(schema.episodes)
+          .where(
+            and(
+              eq(schema.episodes.seriesId, s.id),
+              inArray(schema.episodes.id, targetEpisodeIds)
+            )
+          )
+          .all()
+      : [];
+  /**
+   * A single-file download grabbed FOR specific episodes is unambiguous: that
+   * file IS those episodes, whatever the release calls itself. Anime make this
+   * essential — "BLEACH Thousand Year Blood War S01E43" is the 43rd episode of a
+   * sequel arc that no metadata source numbers as season 1, so parsing the name
+   * points at the wrong episode (or none) and the import used to just fail.
+   */
+  const grabIsAuthoritative =
+    files.length === 1 && targetEpisodes.length > 0 && targetEpisodes.length <= 2;
+  /** Why each file was passed over — the first one explains a failed import. */
+  const skipped: string[] = [];
+  const codeOf = (ep: { seasonNumber: number; episodeNumber: number }) =>
+    `S${String(ep.seasonNumber).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}`;
+
   let imported = 0;
   for (const file of files) {
-    const parsed = parseTitle(path.basename(file.absPath));
+    const name = path.basename(file.absPath);
+    const parsed = parseTitle(name);
     // fall back to the release title for single-file torrents with useless inner names
     const effective =
       parsed.isTv && parsed.episodes.length > 0 ? parsed : parseTitle(download.title);
@@ -115,29 +143,30 @@ async function importEpisodes(
       effective.isTv &&
       effective.episodes.length > 0 &&
       (isAbsolute || effective.seasons.length === 1);
-    if (!mappable) {
-      if (files.length === 1) {
-        throw new ImportWarning(`Cannot map '${path.basename(file.absPath)}' to episodes`);
-      }
+    if (!mappable && !grabIsAuthoritative) {
+      skipped.push(`'${name}' doesn't name an episode`);
+      if (files.length === 1) throw new ImportWarning(`Cannot map '${name}' to episodes`);
       continue;
     }
 
-    let episodeRows = db
-      .select()
-      .from(schema.episodes)
-      .where(
-        isAbsolute
-          ? and(
-              eq(schema.episodes.seriesId, s.id),
-              inArray(schema.episodes.absoluteNumber, effective.episodes)
-            )
-          : and(
-              eq(schema.episodes.seriesId, s.id),
-              eq(schema.episodes.seasonNumber, effective.seasons[0]),
-              inArray(schema.episodes.episodeNumber, effective.episodes)
-            )
-      )
-      .all();
+    let episodeRows = !mappable
+      ? []
+      : db
+          .select()
+          .from(schema.episodes)
+          .where(
+            isAbsolute
+              ? and(
+                  eq(schema.episodes.seriesId, s.id),
+                  inArray(schema.episodes.absoluteNumber, effective.episodes)
+                )
+              : and(
+                  eq(schema.episodes.seriesId, s.id),
+                  eq(schema.episodes.seasonNumber, effective.seasons[0]),
+                  inArray(schema.episodes.episodeNumber, effective.episodes)
+                )
+          )
+          .all();
     if (episodeRows.length === 0 && !isAbsolute && s.isAnime) {
       // Anime scene names sometimes hang an absolute number off season 1
       // ("Bleach - S01E152"). Past the end of that season it can only be absolute.
@@ -166,14 +195,32 @@ async function importEpisodes(
           .all();
       }
     }
-    if (episodeRows.length === 0) continue;
+    // The release's own numbering has to agree with what this grab was for.
+    // When it doesn't — or names nothing we recognise — a single-file grab falls
+    // back to the episodes it was made for rather than failing the import.
+    const onTarget =
+      targetEpisodeIds.length === 0 || episodeRows.some((e) => targetEpisodeIds.includes(e.id));
+    if (!onTarget || episodeRows.length === 0) {
+      if (!grabIsAuthoritative) {
+        skipped.push(
+          episodeRows.length === 0
+            ? `'${name}' names an episode this series doesn't have`
+            : `'${name}' is ${episodeRows.map(codeOf).join("/")}, which this grab wasn't for`
+        );
+        continue;
+      }
+      recordLog(
+        "info",
+        `[import] '${name}'${
+          episodeRows.length > 0 ? ` parses as ${episodeRows.map(codeOf).join("/")}` : " names no known episode"
+        } — importing as ${targetEpisodes.map(codeOf).join("/")}, which it was grabbed for`,
+        { source: "import", context: { downloadId: download.id, seriesId: s.id } }
+      );
+      episodeRows = targetEpisodes;
+    }
+
     // Absolute-numbered releases have no season of their own — the matched rows do.
     const seasonNumber = episodeRows[0].seasonNumber;
-
-    // if the grab was for specific episodes, sanity-check overlap
-    if (targetEpisodeIds.length > 0 && !episodeRows.some((e) => targetEpisodeIds.includes(e.id))) {
-      continue;
-    }
 
     const quality = effective.quality.qualityId !== 0 ? effective.quality : grabQuality;
 
@@ -282,7 +329,14 @@ async function importEpisodes(
     emitEvent({ type: "series.updated", seriesId: s.id });
   }
 
-  if (imported === 0) throw new ImportWarning("No importable video files matched the target episodes");
+  if (imported === 0) {
+    // Say WHICH file and WHY — "nothing matched" leaves nothing to act on.
+    throw new ImportWarning(
+      skipped.length > 0
+        ? `Nothing imported: ${skipped[0]}${skipped.length > 1 ? ` (+${skipped.length - 1} more)` : ""}`
+        : "No importable video files matched the target episodes"
+    );
+  }
   markRequestsAvailable("series", s.id);
   // Fetch subtitles for what just landed — but skip anime (usually has embedded
   // subs; the user triggers those manually).

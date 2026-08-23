@@ -300,6 +300,7 @@ download client.
 - **Auth:** any
 - **Path params:** `id` — download id (must be an integer).
 - **Query params:** `blocklist` (`true` to add to the blocklist; default off), `removeFromClient` (defaults on — pass `false` to keep the data in the client).
+- **Blocklisting also queues a `WantedSearch`** for the affected series/movie, so a replacement release is looked for right away; the blocklist entry keeps the rejected one from being picked again.
 - **Response:** `200` — `{ deleted: true }`. `404` if not found, `400` on non-integer id.
 
 ---
@@ -448,7 +449,8 @@ name+payload already `queued` or `started` is deduped (no new row).
   Registered command names: `Housekeeping`, `RefreshSeries`, `RefreshMovies`,
   `DiskScan`, `RssSync`, `WantedSearch`, `SubtitleSearch`, `QueueMonitor`,
   `LibraryImportBatch`, `ChannelScheduler`, `FetchTorboxFiles`, `ImportDownload`,
-  `ExecuteMigration`. (An unregistered name still enqueues but fails at run time.)
+  `ChangeEpisodeOrdering`, `ExecuteMigration`. (An unregistered name still
+  enqueues but fails at run time.)
 
 - **Response:** `201` — `{ id, queued: true }` when enqueued; `200` — `{ id: null, queued: false }` when deduped. Errors: `400` on bad body.
 - **Example:**
