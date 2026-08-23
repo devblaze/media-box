@@ -23,10 +23,16 @@ Anonymous requests are rejected at the edge with `401`. A handful of routes are
 public (no auth): `GET /health`, `POST /auth/login`, `GET|POST /auth/setup`,
 `POST /auth/kiosk`.
 
-> **Per-endpoint auth varies.** Some routes additionally require `admin`; some
-> require any signed-in `user`; some are gated only by the edge presence check
-> (marked `session` in the catalog). Each endpoint page states its level, and
+> **Per-endpoint auth varies.** Some routes require `admin`; the rest require any
+> signed-in `user`. Each endpoint page states its level, and
 > `docs/api/catalog.json` records it per method.
+>
+> **The edge check is not authentication.** `proxy.ts` runs without DB access, so
+> it can only see *whether* a session cookie or `x-api-key` header is present — any
+> non-empty value gets through it. The real check is `requireUser`/`requireAdmin`
+> (or an explicit `getRequestUser` null-check) inside the handler, which validates
+> the session/key against the database. **Every new route must call one of them**;
+> a handler with no principal check is reachable by anyone who can reach the port.
 
 ```bash
 export MEDIABOX_URL="http://localhost:3000"

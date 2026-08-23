@@ -4,9 +4,12 @@ import { z } from "zod";
 import { getDb, schema } from "@/server/db";
 import { deleteSeries, applyMonitorMode } from "@/server/library/series-service";
 import { badRequest, notFound, ok, serverError } from "@/lib/http";
+import { requireAdmin, requireUser } from "@/server/auth/guards";
 import { emitEvent } from "@/server/events/bus";
 
-export async function GET(_req: NextRequest, ctx: RouteContext<"/api/v1/series/[id]">) {
+export async function GET(request: NextRequest, ctx: RouteContext<"/api/v1/series/[id]">) {
+  const denied = requireUser(request);
+  if (denied) return denied;
   try {
     const { id } = await ctx.params;
     const seriesId = Number(id);
@@ -48,6 +51,8 @@ const patchSchema = z.object({
 });
 
 export async function PUT(request: NextRequest, ctx: RouteContext<"/api/v1/series/[id]">) {
+  const denied = requireAdmin(request);
+  if (denied) return denied;
   try {
     const { id } = await ctx.params;
     const seriesId = Number(id);
@@ -98,6 +103,8 @@ export async function PUT(request: NextRequest, ctx: RouteContext<"/api/v1/serie
 }
 
 export async function DELETE(request: NextRequest, ctx: RouteContext<"/api/v1/series/[id]">) {
+  const denied = requireAdmin(request);
+  if (denied) return denied;
   try {
     const { id } = await ctx.params;
     const seriesId = Number(id);

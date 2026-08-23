@@ -5,8 +5,11 @@ import { getDb, schema } from "@/server/db";
 import { addMovie } from "@/server/library/movie-service";
 import { enqueueCommand } from "@/server/jobs/scheduler";
 import { ok, serverError } from "@/lib/http";
+import { requireAdmin, requireUser } from "@/server/auth/guards";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const denied = requireUser(request);
+  if (denied) return denied;
   try {
     const db = getDb();
     const rows = db
@@ -52,6 +55,8 @@ const addSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
+  const denied = requireAdmin(request);
+  if (denied) return denied;
   try {
     const input = addSchema.parse(await request.json());
     const row = await addMovie(input);

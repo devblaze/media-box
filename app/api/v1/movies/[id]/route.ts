@@ -4,9 +4,12 @@ import { z } from "zod";
 import { getDb, schema } from "@/server/db";
 import { deleteMovie } from "@/server/library/movie-service";
 import { badRequest, notFound, ok, serverError } from "@/lib/http";
+import { requireAdmin, requireUser } from "@/server/auth/guards";
 import { emitEvent } from "@/server/events/bus";
 
-export async function GET(_req: NextRequest, ctx: RouteContext<"/api/v1/movies/[id]">) {
+export async function GET(request: NextRequest, ctx: RouteContext<"/api/v1/movies/[id]">) {
+  const denied = requireUser(request);
+  if (denied) return denied;
   try {
     const { id } = await ctx.params;
     const movieId = Number(id);
@@ -29,6 +32,8 @@ const patchSchema = z.object({
 });
 
 export async function PUT(request: NextRequest, ctx: RouteContext<"/api/v1/movies/[id]">) {
+  const denied = requireAdmin(request);
+  if (denied) return denied;
   try {
     const { id } = await ctx.params;
     const movieId = Number(id);
@@ -45,6 +50,8 @@ export async function PUT(request: NextRequest, ctx: RouteContext<"/api/v1/movie
 }
 
 export async function DELETE(request: NextRequest, ctx: RouteContext<"/api/v1/movies/[id]">) {
+  const denied = requireAdmin(request);
+  if (denied) return denied;
   try {
     const { id } = await ctx.params;
     const movieId = Number(id);

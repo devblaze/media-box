@@ -6,6 +6,7 @@ import {
   type MediaKind,
 } from "@/server/metadata/availability";
 import { badRequest, ok, serverError } from "@/lib/http";
+import { requireUser } from "@/server/auth/guards";
 
 /**
  * TMDB search for the request flow, annotated with library availability so the UI
@@ -13,6 +14,8 @@ import { badRequest, ok, serverError } from "@/lib/http";
  * user) has already requested. Anime is searched as TV and tracked as a series.
  */
 export async function GET(request: NextRequest) {
+  const denied = requireUser(request);
+  if (denied) return denied;
   const type = request.nextUrl.searchParams.get("type");
   const q = request.nextUrl.searchParams.get("q")?.trim();
   if (!q) return badRequest("Missing ?q=");

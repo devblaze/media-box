@@ -1,9 +1,13 @@
+import type { NextRequest } from "next/server";
 import { ok } from "@/lib/http";
+import { requireUser } from "@/server/auth/guards";
 import { CONFIG_DIR } from "@/server/config/paths";
 
 const startedAt = new Date();
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const denied = requireUser(request);
+  if (denied) return denied;
   return ok({
     appName: "media-box",
     version: process.env.npm_package_version ?? "0.1.0",

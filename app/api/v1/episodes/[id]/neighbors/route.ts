@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { and, asc, eq, isNotNull } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { ok, badRequest, notFound, serverError } from "@/lib/http";
+import { requireUser } from "@/server/auth/guards";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,6 +21,8 @@ interface Neighbor {
  * player's Prev/Next buttons + auto-advance "up next". Any signed-in user.
  */
 export async function GET(request: NextRequest, ctx: RouteContext<"/api/v1/episodes/[id]/neighbors">) {
+  const denied = requireUser(request);
+  if (denied) return denied;
   const { id } = await ctx.params;
   const epId = Number(id);
   if (!Number.isInteger(epId)) return badRequest("Invalid id");

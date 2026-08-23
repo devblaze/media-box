@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { enqueueCommand } from "@/server/jobs/scheduler";
 import { ok, serverError } from "@/lib/http";
+import { requireAdmin } from "@/server/auth/guards";
 
 export const runtime = "nodejs";
 
@@ -17,6 +18,8 @@ const bodySchema = z.object({
  * title (uncapped); with an empty body it queues the full backlog scan.
  */
 export async function POST(request: NextRequest) {
+  const denied = requireAdmin(request);
+  if (denied) return denied;
   try {
     const body = bodySchema.parse(await request.json().catch(() => ({})));
     const payload = body.movieId || body.episodeId || body.seriesId ? body : {};

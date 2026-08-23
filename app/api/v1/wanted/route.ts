@@ -1,8 +1,12 @@
+import type { NextRequest } from "next/server";
 import { and, desc, eq, isNull, lt } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { ok, serverError } from "@/lib/http";
+import { requireUser } from "@/server/auth/guards";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const denied = requireUser(request);
+  if (denied) return denied;
   try {
     const db = getDb();
     const now = new Date();

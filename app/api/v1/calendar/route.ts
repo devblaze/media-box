@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { and, asc, eq, gte, lte } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { ok, serverError } from "@/lib/http";
+import { requireUser } from "@/server/auth/guards";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +13,8 @@ export const dynamic = "force-dynamic";
  * is a ~6-week window from today. Any signed-in user may read it.
  */
 export async function GET(request: NextRequest) {
+  const denied = requireUser(request);
+  if (denied) return denied;
   try {
     const db = getDb();
     const sp = request.nextUrl.searchParams;

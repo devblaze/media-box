@@ -4,10 +4,13 @@ import { getDb, schema } from "@/server/db";
 import { getClient } from "@/server/download/client";
 import { enqueueCommand } from "@/server/jobs/scheduler";
 import { badRequest, notFound, ok, serverError } from "@/lib/http";
+import { requireAdmin } from "@/server/auth/guards";
 import { emitEvent } from "@/server/events/bus";
 
 // POST = retry import; DELETE = remove (optionally blocklist + remove from client)
-export async function POST(_req: NextRequest, ctx: RouteContext<"/api/v1/queue/[id]">) {
+export async function POST(request: NextRequest, ctx: RouteContext<"/api/v1/queue/[id]">) {
+  const denied = requireAdmin(request);
+  if (denied) return denied;
   try {
     const { id } = await ctx.params;
     const downloadId = Number(id);
@@ -22,6 +25,8 @@ export async function POST(_req: NextRequest, ctx: RouteContext<"/api/v1/queue/[
 }
 
 export async function DELETE(request: NextRequest, ctx: RouteContext<"/api/v1/queue/[id]">) {
+  const denied = requireAdmin(request);
+  if (denied) return denied;
   try {
     const { id } = await ctx.params;
     const downloadId = Number(id);

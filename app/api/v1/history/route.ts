@@ -2,8 +2,11 @@ import type { NextRequest } from "next/server";
 import { desc, eq } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { ok, serverError } from "@/lib/http";
+import { requireUser } from "@/server/auth/guards";
 
 export async function GET(request: NextRequest) {
+  const denied = requireUser(request);
+  if (denied) return denied;
   try {
     const db = getDb();
     const limit = Math.min(Number(request.nextUrl.searchParams.get("limit") ?? 100), 500);
