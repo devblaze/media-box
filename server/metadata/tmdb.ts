@@ -140,6 +140,57 @@ export const getTvSeason = (tmdbId: number, seasonNumber: number) =>
 export const getMovie = (tmdbId: number) =>
   tmdb<TmdbMovieDetails>(`/movie/${tmdbId}`, { append_to_response: "external_ids" });
 
+// ---------- episode groups (alternate season orderings) ----------
+
+/**
+ * TMDB `type` of an episode group. 1 = original air date (this is what the
+ * community-maintained "TVDB Order" groups use), 2 = absolute, 3 = DVD,
+ * 4 = digital, 5 = story arc, 6 = production, 7 = TV.
+ */
+export type TmdbEpisodeGroupType = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+export interface TmdbEpisodeGroupSummary {
+  id: string;
+  name: string;
+  description?: string;
+  /** Number of seasons the grouping splits the show into. */
+  group_count: number;
+  episode_count: number;
+  type: TmdbEpisodeGroupType;
+  network?: { name?: string } | null;
+}
+
+export interface TmdbEpisodeGroupDetails {
+  id: string;
+  name: string;
+  type: TmdbEpisodeGroupType;
+  groups: {
+    id: string;
+    name: string;
+    /** Season number this grouping assigns (0 = specials). */
+    order: number;
+    episodes: {
+      id: number;
+      /** Native (aired-order) coordinates of the same episode. */
+      season_number: number;
+      episode_number: number;
+      /** 0-based position inside THIS group → episode number is `order + 1`. */
+      order: number;
+      name?: string;
+      overview?: string;
+      air_date?: string | null;
+      runtime?: number | null;
+    }[];
+  }[];
+}
+
+/** Alternate orderings TMDB knows for a show (TVDB order, DVD order, arcs…). */
+export const getTvEpisodeGroups = (tmdbId: number) =>
+  tmdb<{ results: TmdbEpisodeGroupSummary[] }>(`/tv/${tmdbId}/episode_groups`);
+
+export const getTvEpisodeGroup = (groupId: string) =>
+  tmdb<TmdbEpisodeGroupDetails>(`/tv/episode_group/${groupId}`);
+
 export const findByTvdbId = (tvdbId: number) =>
   tmdb<{ tv_results: TmdbTvSummary[] }>(`/find/${tvdbId}`, { external_source: "tvdb_id" });
 

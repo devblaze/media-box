@@ -211,6 +211,41 @@ Re-identify a series/anime as a different TMDB title. Swaps the series' `tmdbId`
 - **Request body:** `{ "tmdbId": number }` — the correct TMDB TV id.
 - **Response:** `200` — `{ reidentified: true }`. Errors: `400` (invalid id / body); `500` (incl. "another series already uses that TMDB title").
 
+## `GET /api/v1/series/{id}/ordering`
+
+Season orderings available for this series: TMDB's aired order (the default) plus every **episode group** TMDB publishes for the show — "TVDB Order", DVD order, story arcs, streaming splits.
+
+This matters for long-running anime: TMDB airs *Bleach* as **2** seasons (S01E001–E366 plus a 50-episode *Thousand-Year Blood War*), while Jellyfin, the folders on disk and virtually every release group count **17**. Pinning the TVDB grouping makes media-box agree with them, which is also what makes `SxxExx` searches and imports line up.
+
+- **Auth:** admin
+- **Path params:** `id` — series id.
+- **Response:** `200` — `{ current, recommendedId, options }`. `current` is the pinned episode-group id (`null` = TMDB aired order); `recommendedId` is the TVDB grouping when TMDB has one; `options[]` is `{ id, name, description, type, seasonCount, episodeCount }`. Errors: `400` (invalid id); `404` (not found); `500` (TMDB unreachable / no API key).
+- **Example:**
+  ```bash
+  curl -sS "$MEDIABOX_URL/api/v1/series/3/ordering" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
+## `PUT /api/v1/series/{id}/ordering`
+
+Re-number a series onto another ordering. Episodes are renumbered **in place** (matched on their TMDB episode id), so watch progress, subtitles and monitored flags follow the episode they belong to. Every episode file is then unlinked and the series is rescanned so the files on disk are re-matched against the new numbering — files themselves are never moved or deleted.
+
+Because that rescan can take a while, the work is queued as a `ChangeEpisodeOrdering` command rather than done inside the request.
+
+- **Auth:** admin
+- **Path params:** `id` — series id.
+- **Request body:**
+
+  | field | type | required | default | notes |
+  | --- | --- | --- | --- | --- |
+  | `episodeGroupId` | string \| null | yes | — | TMDB episode-group id from `GET …/ordering`; `null` = TMDB aired order |
+
+- **Response:** `200` — `{ queued: true, commandId }`, or `{ queued: false, unchanged: true }` when it already uses that ordering. Errors: `400` (invalid id / body); `404` (not found); `500`.
+- **Example:**
+  ```bash
+  curl -sS -X PUT "$MEDIABOX_URL/api/v1/series/3/ordering" -H "x-api-key: $MEDIABOX_API_KEY" \
+    -H "Content-Type: application/json" -d '{"episodeGroupId":"663fb548c10d4be3e80b2f6d"}'
+  ```
+
 ## `GET /api/v1/episodes/{id}/neighbors`
 
 Previous / next **playable** episode (one that has a file) relative to this episode, ordered across season boundaries. Feeds the player's Prev/Next + auto-advance.

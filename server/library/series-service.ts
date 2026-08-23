@@ -1,8 +1,13 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
-import { getTv, getTvSeason } from "@/server/metadata/tmdb";
+import { getTv } from "@/server/metadata/tmdb";
+import {
+  buildEpisodeOrder,
+  defaultEpisodeGroupId,
+  type SeasonSummary,
+} from "@/server/metadata/episode-order";
 import { mapSeries } from "@/server/metadata/tmdb-map";
 import { airDateToUtc } from "@/server/metadata/air-time";
 import { renderSeriesFolder } from "./naming";
@@ -49,6 +54,11 @@ export async function addSeries(input: AddSeriesInput) {
   const folderName = renderSeriesFolder(template, { title: mapped.title, year: mapped.year });
   const seriesPath = input.path ?? path.join(rootFolder.path, folderName);
 
+  // Anime get TMDB's "TVDB Order" grouping when it exists, so their seasons match
+  // Jellyfin, the folders on disk and how releases are named (see episode-order.ts).
+  const isAnime = input.isAnime ?? false;
+  const episodeGroupId = await defaultEpisodeGroupId(input.tmdbId, isAnime);
+
   const row = db
     .insert(schema.series)
     .values({
@@ -59,14 +69,15 @@ export async function addSeries(input: AddSeriesInput) {
       monitored: input.monitored ?? true,
       monitorMode: input.monitorMode ?? "all",
       seasonFolder: input.seasonFolder ?? true,
-      isAnime: input.isAnime ?? false,
+      isAnime,
+      episodeGroupId,
       addedAt: new Date(),
     })
     .returning()
     .get();
 
   await fs.mkdir(seriesPath, { recursive: true });
-  await syncSeasonsAndEpisodes(row.id, input.tmdbId, details.seasons);
+  await syncSeasonsAndEpisodes(row.id, input.tmdbId, details.seasons, episodeGroupId);
   applyMonitorMode(row.id, input.monitorMode ?? "all");
 
   db.update(schema.series)
@@ -138,11 +149,31 @@ export function applyMonitorMode(seriesId: number, mode: "all" | "future" | "non
   emitEvent({ type: "series.updated", seriesId });
 }
 
-// Pull season/episode lists from TMDB and upsert; never deletes files' episodes.
+/**
+ * Coordinates are shifted this far out of the way before a renumber so the
+ * (series, season, episode) unique index can't trip while rows swap places.
+ */
+const VACATE_SEASON_OFFSET = 100_000;
+
+const coordKey = (seasonNumber: number, episodeNumber: number) =>
+  `${seasonNumber}:${episodeNumber}`;
+
+/**
+ * Pull the season/episode list from TMDB — in the ordering the series is pinned to
+ * (`episodeGroupId`; null = TMDB's aired order) — and reconcile it into the DB.
+ *
+ * Rows are matched on `tmdbEpisodeId` first, so switching a show's ordering
+ * *renumbers* its episodes in place instead of duplicating them: watch progress,
+ * subtitles and file links all follow the episode they belong to. Rows the new
+ * ordering no longer contains are dropped when nothing is attached to them; one
+ * that still holds a file keeps its old slot if it's free, and otherwise gives the
+ * file up for the next disk scan to re-match (the file on disk is never touched).
+ */
 export async function syncSeasonsAndEpisodes(
   seriesId: number,
   tmdbId: number,
-  seasonSummaries: { season_number: number }[]
+  seasonSummaries: SeasonSummary[],
+  episodeGroupId: string | null = null
 ) {
   const db = getDb();
   // Origin country places each episode's air time in the right zone (see air-time.ts);
@@ -153,54 +184,143 @@ export async function syncSeasonsAndEpisodes(
       .from(schema.series)
       .where(eq(schema.series.id, seriesId))
       .get()?.originCountry ?? null;
-  for (const s of seasonSummaries) {
-    const seasonNumber = s.season_number;
-    const existingSeason = db
-      .select()
-      .from(schema.seasons)
-      .where(and(eq(schema.seasons.seriesId, seriesId), eq(schema.seasons.seasonNumber, seasonNumber)))
-      .get();
-    if (!existingSeason) {
-      db.insert(schema.seasons)
-        .values({ seriesId, seasonNumber, monitored: seasonNumber !== 0 })
-        .run();
-    }
 
-    const season = await getTvSeason(tmdbId, seasonNumber);
-    for (const ep of season.episodes) {
-      const values = {
-        tmdbEpisodeId: ep.id,
-        title: ep.name ?? null,
-        overview: ep.overview ?? null,
-        airDateUtc: airDateToUtc(ep.air_date, originCountry),
-        runtime: ep.runtime ?? null,
-      };
-      const existing = db
-        .select({ id: schema.episodes.id })
-        .from(schema.episodes)
-        .where(
-          and(
-            eq(schema.episodes.seriesId, seriesId),
-            eq(schema.episodes.seasonNumber, ep.season_number),
-            eq(schema.episodes.episodeNumber, ep.episode_number)
-          )
-        )
-        .get();
-      if (existing) {
-        db.update(schema.episodes).set(values).where(eq(schema.episodes.id, existing.id)).run();
-      } else {
-        db.insert(schema.episodes)
-          .values({
-            seriesId,
-            seasonNumber: ep.season_number,
-            episodeNumber: ep.episode_number,
-            monitored: ep.season_number !== 0,
-            ...values,
-          })
-          .run();
+  const ordered = await buildEpisodeOrder(tmdbId, seasonSummaries, episodeGroupId);
+  if (ordered.length === 0) return;
+
+  const existing = db
+    .select()
+    .from(schema.episodes)
+    .where(eq(schema.episodes.seriesId, seriesId))
+    .all();
+  const byTmdbId = new Map<number, (typeof existing)[number]>();
+  const byCoord = new Map<string, (typeof existing)[number]>();
+  for (const row of existing) {
+    if (row.tmdbEpisodeId != null && !byTmdbId.has(row.tmdbEpisodeId)) {
+      byTmdbId.set(row.tmdbEpisodeId, row);
+    }
+    byCoord.set(coordKey(row.seasonNumber, row.episodeNumber), row);
+  }
+  const targetTmdbIds = new Set(ordered.map((e) => e.tmdbEpisodeId));
+
+  // Pair every incoming episode with the row it should update (by TMDB id, else by
+  // the slot it already occupies — but never steal a slot another episode owns).
+  const claimed = new Set<number>();
+  const plan = ordered.map((ep) => {
+    let row = byTmdbId.get(ep.tmdbEpisodeId);
+    if (row && claimed.has(row.id)) row = undefined;
+    if (!row) {
+      const atCoord = byCoord.get(coordKey(ep.seasonNumber, ep.episodeNumber));
+      if (
+        atCoord &&
+        !claimed.has(atCoord.id) &&
+        (atCoord.tmdbEpisodeId == null || !targetTmdbIds.has(atCoord.tmdbEpisodeId))
+      ) {
+        row = atCoord;
       }
     }
+    if (row) claimed.add(row.id);
+    return { ep, row };
+  });
+
+  const renumbering = plan.some(
+    ({ ep, row }) =>
+      row && (row.seasonNumber !== ep.seasonNumber || row.episodeNumber !== ep.episodeNumber)
+  );
+  if (renumbering) {
+    db.update(schema.episodes)
+      .set({ seasonNumber: sql`${schema.episodes.seasonNumber} + ${VACATE_SEASON_OFFSET}` })
+      .where(eq(schema.episodes.seriesId, seriesId))
+      .run();
   }
+
+  for (const { ep, row } of plan) {
+    const values = {
+      seasonNumber: ep.seasonNumber,
+      episodeNumber: ep.episodeNumber,
+      absoluteNumber: ep.absoluteNumber,
+      tmdbEpisodeId: ep.tmdbEpisodeId,
+      title: ep.title,
+      overview: ep.overview,
+      airDateUtc: airDateToUtc(ep.airDate, originCountry),
+      runtime: ep.runtime,
+    };
+    if (row) {
+      db.update(schema.episodes).set(values).where(eq(schema.episodes.id, row.id)).run();
+    } else {
+      db.insert(schema.episodes)
+        .values({ seriesId, monitored: ep.seasonNumber !== 0, ...values })
+        .run();
+    }
+  }
+
+  // Rows the new ordering doesn't cover (TMDB dropped them, or an ordering change
+  // left them behind). Give a file-holding one its old slot back when it's still
+  // free; otherwise drop the row and its file record so a rescan can re-match it.
+  const occupied = new Set(plan.map(({ ep }) => coordKey(ep.seasonNumber, ep.episodeNumber)));
+  for (const row of existing) {
+    if (claimed.has(row.id)) continue;
+    const home = coordKey(row.seasonNumber, row.episodeNumber);
+    if (row.episodeFileId != null && !occupied.has(home)) {
+      occupied.add(home);
+      db.update(schema.episodes)
+        .set({ seasonNumber: row.seasonNumber, episodeNumber: row.episodeNumber })
+        .where(eq(schema.episodes.id, row.id))
+        .run();
+      continue;
+    }
+    if (row.episodeFileId != null) {
+      db.delete(schema.episodeFiles).where(eq(schema.episodeFiles.id, row.episodeFileId)).run();
+    }
+    db.delete(schema.episodes).where(eq(schema.episodes.id, row.id)).run();
+  }
+
+  // Season rows follow the episodes: add what's new, drop what no longer exists.
+  const wantedSeasons = new Set(ordered.map((e) => e.seasonNumber));
+  const seasonRows = db
+    .select()
+    .from(schema.seasons)
+    .where(eq(schema.seasons.seriesId, seriesId))
+    .all();
+  const haveSeasons = new Set(seasonRows.map((r) => r.seasonNumber));
+  for (const seasonNumber of wantedSeasons) {
+    if (haveSeasons.has(seasonNumber)) continue;
+    db.insert(schema.seasons)
+      .values({ seriesId, seasonNumber, monitored: seasonNumber !== 0 })
+      .run();
+  }
+  for (const row of seasonRows) {
+    if (!wantedSeasons.has(row.seasonNumber)) {
+      db.delete(schema.seasons).where(eq(schema.seasons.id, row.id)).run();
+    }
+  }
+}
+
+/**
+ * Re-number a series onto another TMDB ordering (`episodeGroupId`, null = aired).
+ *
+ * Every episode↔file link is dropped first and the series is rescanned afterwards:
+ * the numbering the files carry on disk is the one the *new* ordering uses, so
+ * re-matching them from scratch is both correct and self-healing — it also clears
+ * out mismatches the previous ordering left behind. The file *records* survive
+ * (the rescan re-attaches them), and nothing on disk is moved or deleted.
+ */
+export async function setEpisodeOrdering(seriesId: number, episodeGroupId: string | null) {
+  const db = getDb();
+  const row = db.select().from(schema.series).where(eq(schema.series.id, seriesId)).get();
+  if (!row) throw new Error(`Series ${seriesId} not found`);
+  if ((row.episodeGroupId ?? null) === episodeGroupId) return;
+
+  db.update(schema.episodes)
+    .set({ episodeFileId: null })
+    .where(eq(schema.episodes.seriesId, seriesId))
+    .run();
+  db.update(schema.series).set({ episodeGroupId }).where(eq(schema.series.id, seriesId)).run();
+
+  await refreshSeries(seriesId);
+  const { scanSeries } = await import("./disk-scanner");
+  await scanSeries(seriesId);
+  emitEvent({ type: "series.updated", seriesId });
 }
 
 export async function refreshSeries(seriesId: number) {
@@ -213,7 +333,7 @@ export async function refreshSeries(seriesId: number) {
     .set({ ...mapped, lastRefreshAt: new Date() })
     .where(eq(schema.series.id, seriesId))
     .run();
-  await syncSeasonsAndEpisodes(seriesId, row.tmdbId, details.seasons);
+  await syncSeasonsAndEpisodes(seriesId, row.tmdbId, details.seasons, row.episodeGroupId ?? null);
   emitEvent({ type: "series.updated", seriesId });
 }
 
@@ -237,7 +357,12 @@ export async function reidentifySeries(seriesId: number, newTmdbId: number) {
   if (clash != null && clash !== seriesId) {
     throw new Error("Another series in your library already uses that TMDB title.");
   }
-  db.update(schema.series).set({ tmdbId: newTmdbId }).where(eq(schema.series.id, seriesId)).run();
+  // The episode grouping belonged to the OLD show — re-pick one for the new title.
+  const episodeGroupId = await defaultEpisodeGroupId(newTmdbId, row.isAnime);
+  db.update(schema.series)
+    .set({ tmdbId: newTmdbId, episodeGroupId })
+    .where(eq(schema.series.id, seriesId))
+    .run();
   await refreshSeries(seriesId); // re-pull metadata + re-sync seasons/episodes
 }
 

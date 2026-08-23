@@ -88,15 +88,24 @@ export async function rssSyncHandler(): Promise<string> {
       try {
         if (parsed.isTv) {
           const s = lib.seriesByTitle.get(parsed.normalizedTitle);
-          if (!s || parsed.seasons.length !== 1 || parsed.episodes.length !== 1) continue;
+          if (!s || parsed.episodes.length !== 1) continue;
+          // Anime feeds (SubsPlease, Erai-raws…) name episodes by their absolute
+          // number and no season — "[SubsPlease] Bleach - 409" — so those match
+          // through `episodes.absoluteNumber` instead of an SxxExx coordinate.
+          const byAbsolute = parsed.isAbsolute === true && s.isAnime;
+          if (!byAbsolute && parsed.seasons.length !== 1) continue;
           const episode = db
             .select()
             .from(schema.episodes)
             .where(
               and(
                 eq(schema.episodes.seriesId, s.id),
-                eq(schema.episodes.seasonNumber, parsed.seasons[0]),
-                eq(schema.episodes.episodeNumber, parsed.episodes[0]),
+                byAbsolute
+                  ? eq(schema.episodes.absoluteNumber, parsed.episodes[0])
+                  : and(
+                      eq(schema.episodes.seasonNumber, parsed.seasons[0]),
+                      eq(schema.episodes.episodeNumber, parsed.episodes[0])
+                    ),
                 eq(schema.episodes.monitored, true)
               )
             )
@@ -117,6 +126,8 @@ export async function rssSyncHandler(): Promise<string> {
             targetYear: s.year,
             seasonNumber: episode.seasonNumber,
             episodeNumbers: [episode.episodeNumber],
+            absoluteEpisodeNumbers:
+              episode.absoluteNumber != null ? [episode.absoluteNumber] : [],
             currentQuality: (currentFile?.quality as QualityModel) ?? null,
             minimumSeeders: indexer.minimumSeeders,
             mediaType: "series",

@@ -43,6 +43,10 @@ export function episodeTarget(episodeId: number, interactive: boolean): {
       targetYear: s.year,
       seasonNumber: episode.seasonNumber,
       episodeNumbers: [episode.episodeNumber],
+      // Anime releases are numbered across the whole run ("Bleach - 409"), so an
+      // anime search also goes out by absolute number — see release-search.ts.
+      absoluteEpisodeNumbers: episode.absoluteNumber != null ? [episode.absoluteNumber] : [],
+      isAnime: s.isAnime,
       allowSeasonPack: false,
       currentQuality: (currentFile?.quality as QualityModel) ?? null,
       query: s.title,
@@ -74,6 +78,10 @@ export function seasonTarget(seriesId: number, seasonNumber: number, interactive
       targetYear: s.year,
       seasonNumber,
       episodeNumbers: episodes.map((e) => e.episodeNumber),
+      absoluteEpisodeNumbers: episodes
+        .map((e) => e.absoluteNumber)
+        .filter((n): n is number => n != null),
+      isAnime: s.isAnime,
       allowSeasonPack: true,
       currentQuality: null,
       query: s.title,

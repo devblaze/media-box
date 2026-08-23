@@ -89,6 +89,8 @@ interface SeriesDetail {
   monitorMode: "all" | "future" | "none";
   qualityProfileId: number;
   isAnime: boolean;
+  /** TMDB episode-group id the seasons are numbered by; null = TMDB aired order. */
+  episodeGroupId: string | null;
   seasons: Season[];
   episodes: Episode[];
   files: EpisodeFileLite[];
@@ -97,6 +99,19 @@ interface SeriesDetail {
 interface QualityProfileLite {
   id: number;
   name: string;
+}
+
+/** Season orderings TMDB knows for this show (see /series/[id]/ordering). */
+interface OrderingInfo {
+  current: string | null;
+  recommendedId: string | null;
+  options: {
+    id: string;
+    name: string;
+    description: string;
+    seasonCount: number;
+    episodeCount: number;
+  }[];
 }
 
 interface QualityDefinition {
@@ -142,6 +157,8 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
   // Per-user smart-resume state: which episode the series-level Play should open.
   const { data: resume, mutate: mutateResume } = useApi<ResumeInfo>(`/series/${id}/resume`);
   const isAdmin = me?.role === "admin";
+  // Alternate season orderings (admin-only control; one small TMDB call).
+  const { data: ordering } = useApi<OrderingInfo>(isAdmin ? `/series/${id}/ordering` : null);
   // Interactive search & grab is delegatable via releases.search (admins have it).
   const canSearch = principalHasPermission(me, "releases.search");
   const [progressMap, setProgressMap] = useState<Map<number, EpProgress>>(new Map());
@@ -308,6 +325,18 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
       toast.success("Quality profile updated");
     } catch {
       toast.error("Failed to update quality profile");
+    }
+  }
+
+  async function changeOrdering(groupId: string) {
+    try {
+      await apiFetch(`/series/${id}/ordering`, {
+        method: "PUT",
+        body: JSON.stringify({ episodeGroupId: groupId || null }),
+      });
+      toast.info("Re-numbering the seasons — episode files are re-matched from disk.");
+    } catch {
+      toast.error("Failed to change the season order");
     }
   }
 
@@ -533,6 +562,26 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
                   </Select>
                 </div>
               </label>
+              {ordering && ordering.options.length > 0 && (
+                <label className="flex items-center gap-2 text-sm text-zinc-400">
+                  <span>Season order</span>
+                  <div className="w-52">
+                    <Select
+                      aria-label="Season order"
+                      value={ordering.current ?? ""}
+                      onChange={(e) => changeOrdering(e.target.value)}
+                    >
+                      <option value="">Aired (TMDB)</option>
+                      {ordering.options.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.name} ({o.seasonCount} seasons)
+                          {o.id === ordering.recommendedId ? " ★" : ""}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                </label>
+              )}
               <Button variant="secondary" size="sm" onClick={refresh}>
                 Refresh metadata
               </Button>
@@ -553,6 +602,32 @@ export default function SeriesDetailPage({ params }: PageProps<"/series/[id]">) 
           </div>
         </div>
       </div>
+
+      {isAdmin && ordering && !ordering.current && ordering.recommendedId && (
+        <Callout
+          tone="warning"
+          className="mt-4"
+          title="These season numbers don't match Jellyfin or how releases are named"
+        >
+          <p className="text-zinc-400">
+            TMDB lists this show as {data.seasons.filter((s) => s.seasonNumber > 0).length} season
+            {data.seasons.filter((s) => s.seasonNumber > 0).length === 1 ? "" : "s"}, but Jellyfin,
+            the folders on disk and most release groups follow TVDB&rsquo;s{" "}
+            {ordering.options.find((o) => o.id === ordering.recommendedId)?.seasonCount ?? "?"}.
+            Switching renumbers the episodes and re-matches the files on disk — nothing is moved or
+            deleted.
+          </p>
+          <div className="mt-2">
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => changeOrdering(ordering.recommendedId!)}
+            >
+              Use TVDB order
+            </Button>
+          </div>
+        </Callout>
+      )}
 
       {resume?.action === "start-from-available" && firstAvail && (
         <Callout

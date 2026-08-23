@@ -58,6 +58,11 @@ export interface EvaluationContext {
   /** for series targets */
   seasonNumber?: number;
   episodeNumbers?: number[];
+  /**
+   * Absolute (whole-run) numbers of the wanted episodes — anime fansub releases
+   * number that way ("[SubsPlease] Bleach - 409"), with no season marker at all.
+   */
+  absoluteEpisodeNumbers?: number[];
   allowSeasonPack?: boolean;
   /** current best file quality for upgrade decisions (null = missing) */
   currentQuality?: QualityModel | null;
@@ -120,16 +125,24 @@ export function evaluate(release: ReleaseCandidate, ctx: EvaluationContext): Eva
     if (!parsed.isTv) {
       rejections.push("Not a recognizable TV release");
     } else if (parsed.isAbsolute) {
-      // Anime absolute numbering ("Title - 05"): the release names no season, so
-      // only the episode number can be checked. Absolute numbers usually equal
-      // the in-season numbers for season 1 (and for TMDB's flat single-season
-      // anime, always) — later broadcast seasons rely on the title match above.
-      if (
-        ctx.episodeNumbers &&
-        ctx.episodeNumbers.length > 0 &&
-        !ctx.episodeNumbers.some((e) => parsed.episodes.includes(e))
+      // Anime absolute numbering ("Title - 409"): the release names no season, so
+      // the number is matched against the episodes' absolute numbers. Only when
+      // those are unknown (metadata not refreshed yet) do we fall back to the
+      // in-season numbers, which agree with the absolute ones in season 1.
+      const wanted =
+        ctx.absoluteEpisodeNumbers && ctx.absoluteEpisodeNumbers.length > 0
+          ? ctx.absoluteEpisodeNumbers
+          : ctx.episodeNumbers;
+      if (wanted && wanted.length > 0 && !wanted.some((e) => parsed.episodes.includes(e))) {
+        rejections.push(`Wrong episode (wanted ${wanted.join("/")} absolute)`);
+      } else if (
+        // A fansub batch ("Title - 01-24") is the absolute-numbering equivalent of
+        // a season pack — not what a single-episode search asked for.
+        parsed.episodes.length > 1 &&
+        !ctx.allowSeasonPack &&
+        (ctx.episodeNumbers?.length ?? 0) <= 1
       ) {
-        rejections.push(`Wrong episode (wanted E${ctx.episodeNumbers.join("/E")})`);
+        rejections.push("Season pack not wanted here");
       }
     } else if (ctx.seasonNumber !== undefined) {
       if (!parsed.seasons.includes(ctx.seasonNumber)) {

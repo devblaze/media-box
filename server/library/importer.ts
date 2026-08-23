@@ -108,26 +108,67 @@ async function importEpisodes(
     // fall back to the release title for single-file torrents with useless inner names
     const effective =
       parsed.isTv && parsed.episodes.length > 0 ? parsed : parseTitle(download.title);
-    if (!effective.isTv || effective.seasons.length !== 1 || effective.episodes.length === 0) {
+    // Anime fansub releases carry an absolute, whole-run number and no season
+    // ("[SubsPlease] Bleach - 409"); those map through `episodes.absoluteNumber`.
+    const isAbsolute = effective.isAbsolute === true;
+    const mappable =
+      effective.isTv &&
+      effective.episodes.length > 0 &&
+      (isAbsolute || effective.seasons.length === 1);
+    if (!mappable) {
       if (files.length === 1) {
         throw new ImportWarning(`Cannot map '${path.basename(file.absPath)}' to episodes`);
       }
       continue;
     }
 
-    const seasonNumber = effective.seasons[0];
-    const episodeRows = db
+    let episodeRows = db
       .select()
       .from(schema.episodes)
       .where(
-        and(
-          eq(schema.episodes.seriesId, s.id),
-          eq(schema.episodes.seasonNumber, seasonNumber),
-          inArray(schema.episodes.episodeNumber, effective.episodes)
-        )
+        isAbsolute
+          ? and(
+              eq(schema.episodes.seriesId, s.id),
+              inArray(schema.episodes.absoluteNumber, effective.episodes)
+            )
+          : and(
+              eq(schema.episodes.seriesId, s.id),
+              eq(schema.episodes.seasonNumber, effective.seasons[0]),
+              inArray(schema.episodes.episodeNumber, effective.episodes)
+            )
       )
       .all();
+    if (episodeRows.length === 0 && !isAbsolute && s.isAnime) {
+      // Anime scene names sometimes hang an absolute number off season 1
+      // ("Bleach - S01E152"). Past the end of that season it can only be absolute.
+      const inSeason = db
+        .select({ n: schema.episodes.episodeNumber })
+        .from(schema.episodes)
+        .where(
+          and(
+            eq(schema.episodes.seriesId, s.id),
+            eq(schema.episodes.seasonNumber, effective.seasons[0])
+          )
+        )
+        .all();
+      const seasonLength = inSeason.reduce((max, r) => Math.max(max, r.n), 0);
+      // Only when the series HAS that season — an unknown season says nothing.
+      if (inSeason.length > 0 && effective.episodes.every((n) => n > seasonLength)) {
+        episodeRows = db
+          .select()
+          .from(schema.episodes)
+          .where(
+            and(
+              eq(schema.episodes.seriesId, s.id),
+              inArray(schema.episodes.absoluteNumber, effective.episodes)
+            )
+          )
+          .all();
+      }
+    }
     if (episodeRows.length === 0) continue;
+    // Absolute-numbered releases have no season of their own — the matched rows do.
+    const seasonNumber = episodeRows[0].seasonNumber;
 
     // if the grab was for specific episodes, sanity-check overlap
     if (targetEpisodeIds.length > 0 && !episodeRows.some((e) => targetEpisodeIds.includes(e.id))) {

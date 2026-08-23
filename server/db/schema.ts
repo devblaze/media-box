@@ -44,6 +44,10 @@ export const series = sqliteTable(
       .default("all"),
     // Marks the series as anime (own library path / Anime category).
     isAnime: integer("is_anime", { mode: "boolean" }).notNull().default(false),
+    // TMDB episode-group id defining the season ordering (see metadata/episode-order.ts).
+    // NULL = TMDB's own aired order. Long-running anime are usually pulled onto the
+    // "TVDB Order" group so seasons line up with Jellyfin, disk folders and releases.
+    episodeGroupId: text("episode_group_id"),
     seasonFolder: integer("season_folder", { mode: "boolean" }).notNull().default(true),
     addedAt: integer("added_at", { mode: "timestamp" }).notNull(),
     lastRefreshAt: integer("last_refresh_at", { mode: "timestamp" }),

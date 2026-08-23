@@ -124,3 +124,61 @@ describe("absolute numbering — scoring", () => {
     expect(res.rejections.join(" ")).toMatch(/does not match/i);
   });
 });
+
+/**
+ * A show whose seasons are numbered TVDB-style (Bleach S17E42) but whose releases
+ * are numbered across the whole run (episode 408). The absolute number is what
+ * decides the match — the in-season number would say 42 and grab the wrong file.
+ */
+describe("absolute numbering — long-running anime", () => {
+  const bleach408 = {
+    guid: "g2",
+    indexerId: 1,
+    indexerName: "Nyaa",
+    title: "[SubsPlease] Bleach - 408 (1080p) [ABCD1234].mkv",
+    size: 1_400_000_000,
+    seeders: 40,
+    leechers: 2,
+    downloadUrl: "magnet:?xt=urn:btih:def",
+    parsed: parseTitle("[SubsPlease] Bleach - 408 (1080p) [ABCD1234].mkv"),
+  };
+  const ctx = {
+    mediaType: "series" as const,
+    profile,
+    targetTitles: ["Bleach"],
+    seasonNumber: 17,
+    episodeNumbers: [42],
+  };
+
+  test("the wanted absolute number is accepted for a high season", () => {
+    const res = evaluate(bleach408, { ...ctx, absoluteEpisodeNumbers: [408] });
+    expect(res.rejections).toEqual([]);
+    expect(res.accepted).toBe(true);
+  });
+
+  test("a release numbered like the in-season episode is rejected", () => {
+    const res = evaluate(
+      { ...bleach408, title: "[SubsPlease] Bleach - 42 (1080p).mkv", parsed: parseTitle("[SubsPlease] Bleach - 42 (1080p).mkv") },
+      { ...ctx, absoluteEpisodeNumbers: [408] }
+    );
+    expect(res.accepted).toBe(false);
+    expect(res.rejections.join(" ")).toMatch(/wrong episode/i);
+  });
+
+  test("a whole-run batch is not grabbed for a single-episode search", () => {
+    const batch = parseTitle("[Erai-raws] Bleach - 01-366 (1080p)");
+    const res = evaluate(
+      { ...bleach408, title: batch.originalTitle, parsed: batch },
+      { ...ctx, absoluteEpisodeNumbers: [408], episodeNumbers: [42], allowSeasonPack: false }
+    );
+    expect(res.accepted).toBe(false);
+  });
+
+  test("without absolute numbers it still falls back to the in-season number", () => {
+    const res = evaluate(
+      { ...bleach408, title: "[SubsPlease] Bleach - 42 (1080p).mkv", parsed: parseTitle("[SubsPlease] Bleach - 42 (1080p).mkv") },
+      ctx
+    );
+    expect(res.accepted).toBe(true);
+  });
+});

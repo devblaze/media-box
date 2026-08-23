@@ -34,6 +34,15 @@ registerHandler("ImportDownload", async (payload) => {
   const { downloadId } = payload as { downloadId: number };
   return importDownload(downloadId);
 });
+registerHandler("ChangeEpisodeOrdering", async (payload) => {
+  const { seriesId, episodeGroupId } = payload as {
+    seriesId: number;
+    episodeGroupId: string | null;
+  };
+  const { setEpisodeOrdering } = await import("@/server/library/series-service");
+  await setEpisodeOrdering(seriesId, episodeGroupId ?? null);
+  return `series ${seriesId} re-numbered onto ${episodeGroupId ?? "TMDB aired order"}`;
+});
 registerHandler("ExecuteMigration", async (payload) => {
   const { executeMigration } = await import("@/server/migration/migrate-service");
   return executeMigration(payload as never);

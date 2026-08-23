@@ -29,6 +29,17 @@ export interface DecoratedRelease extends ReleaseCandidate {
   score: number;
 }
 
+/**
+ * The free-text number to search an anime episode by: its absolute (whole-run)
+ * number, zero-padded to at least two digits the way fansub releases write it.
+ * Null for season-wide searches and for episodes with no absolute number yet.
+ */
+function absoluteQueryTerm(target: SearchTarget): string | null {
+  const abs = target.absoluteEpisodeNumbers ?? [];
+  if (abs.length !== 1 || target.episodeNumbers?.length !== 1) return null;
+  return String(abs[0]).padStart(2, "0");
+}
+
 export interface SearchTarget {
   mediaType: "series" | "movie";
   profile: ProfileLike;
@@ -36,6 +47,10 @@ export interface SearchTarget {
   targetYear?: number | null;
   seasonNumber?: number;
   episodeNumbers?: number[];
+  /** Whole-run episode numbers, for anime releases that use them. */
+  absoluteEpisodeNumbers?: number[];
+  /** Anime searches additionally go out by absolute number. */
+  isAnime?: boolean;
   allowSeasonPack?: boolean;
   currentQuality?: EvaluationContext["currentQuality"];
   /** torznab text query, e.g. "Show Title" (season/ep go as params) */
@@ -90,17 +105,37 @@ export async function searchReleases(target: SearchTarget): Promise<DecoratedRel
       if (target.episodeNumbers?.length === 1) query.ep = target.episodeNumbers[0];
       try {
         let items = await withDeadline(queryIndexer(indexer, query), INDEXER_DEADLINE_MS);
-        // Absolute-numbering fallback (anime): fansub releases are numbered
-        // "Title - 05" with no SxxExx, and some Torznab indexers (e.g. Jackett's
-        // SubsPlease) return NOTHING when a `season` param is sent. When a
-        // season-scoped TV query comes back empty, retry once as a free-text
-        // search — "{title} 05" for an episode, plain "{title}" for a season —
-        // and let parsing/scoring sort the results out.
-        if (items.length === 0 && query.t === "tvsearch" && query.season !== undefined) {
+
+        // Anime are numbered across the whole run by fansubbers ("Bleach - 409")
+        // with no SxxExx at all, so an SxxExx-only search finds nothing for them.
+        // Run the absolute-numbered free-text query alongside the season one and
+        // merge; parsing/scoring sorts out which results actually match.
+        const absolute = absoluteQueryTerm(target);
+        const absolutePassRan = target.isAnime === true && absolute !== null && query.t === "tvsearch";
+        if (absolutePassRan) {
+          const extra = await withDeadline(
+            queryIndexer(indexer, { t: "search", q: `${target.query} ${absolute}`, cat: query.cat }),
+            INDEXER_DEADLINE_MS
+          ).catch(() => []); // a failing extra pass must not sink the main one
+          items = [...items, ...extra];
+        }
+
+        // Some Torznab indexers (e.g. Jackett's SubsPlease) return NOTHING when a
+        // `season` param is sent. When a season-scoped TV query came back empty,
+        // retry once as free text — by absolute number when we know it, else the
+        // in-season number, else the bare title for a whole season.
+        if (
+          items.length === 0 &&
+          !absolutePassRan && // that pass already ran this exact free-text query
+          query.t === "tvsearch" &&
+          query.season !== undefined
+        ) {
           const epNum = target.episodeNumbers?.length === 1 ? target.episodeNumbers[0] : null;
+          const term =
+            absolute ?? (epNum !== null ? String(epNum).padStart(2, "0") : null);
           const fallback: TorznabQuery = {
             t: "search",
-            q: epNum !== null ? `${target.query} ${String(epNum).padStart(2, "0")}` : target.query,
+            q: term !== null ? `${target.query} ${term}` : target.query,
             cat: query.cat,
           };
           items = await withDeadline(queryIndexer(indexer, fallback), INDEXER_DEADLINE_MS);

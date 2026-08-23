@@ -1,0 +1,1 @@
+ALTER TABLE `series` ADD `episode_group_id` text;
