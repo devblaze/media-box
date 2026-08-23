@@ -39,7 +39,7 @@ interface WantedData {
 }
 
 export default function WantedPage() {
-  const { data, mutate } = useApi<WantedData>("/wanted");
+  const { data } = useApi<WantedData>("/wanted");
   const toast = useToast();
   const [searching, setSearching] = useState(false);
   useEvents();

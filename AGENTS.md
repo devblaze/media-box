@@ -23,3 +23,37 @@ This version has breaking changes — APIs, conventions, and file structure may 
   false, media-box never moves/renames/deletes media files (enforced centrally in
   `server/library/media-guard.ts` + `filesystem.ts`). Endpoints that touch files
   return `409` while it's off.
+
+# Local dev on macOS: iCloud can gut `node_modules`
+
+If your checkout lives under an iCloud-synced folder (`~/Documents`, `~/Desktop`),
+macOS reclaims space by turning `node_modules` files into **dataless
+placeholders**. They still `stat` at full size, but the first read blocks until
+iCloud fetches them back — so every `require()` waits on the network. Measured
+here: `eslint` went from **6 seconds to over 10 minutes**, `tsc` the same, and a
+partially-materialised read can surface as a bogus "X is not a constructor".
+
+Check it:
+
+```bash
+yarn doctor      # samples node_modules for iCloud placeholders
+```
+
+Repair by **reinstalling** — pulling 200 MB back out of iCloud is far slower than
+refetching it from the package cache (46s vs. hours, measured):
+
+```bash
+rm -rf node_modules && yarn install --frozen-lockfile
+```
+
+Do **not** try the usual `node_modules.nosync` + symlink trick: Turbopack decides
+what to treat as an external package by path, so with the real directory named
+something other than `node_modules` it bundles `better-sqlite3` instead of
+externalising it, and `next dev` dies looking for `better_sqlite3.node` under
+`.next/dev/`. Everything else (lint, tsc, tests, `next build`) survives it — the
+dev server does not.
+
+The durable fixes are to move the checkout out of the synced folder, or to turn
+off System Settings → Apple Account → iCloud → iCloud Drive → "Optimise Mac
+Storage". Moving it out is worth doing anyway: sync has also duplicated files
+inside `.git` here before, which broke `git pull`.

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useApi } from "@/lib/api";
-import { Calendar, dayKey, getCalendarDays, isSameDay } from "@/components/calendar";
+import { Calendar, dayKey, getCalendarDays } from "@/components/calendar";
 import { ReleaseSearchDrawer, type SearchScope } from "@/components/release-search";
 import {
   Badge,

@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { queryIndexer } from "@/server/indexers/query";
 import { parseTitle } from "@/server/parser/release-parser";

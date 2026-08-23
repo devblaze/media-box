@@ -11,7 +11,6 @@ import {
   getSeriesEpisodes,
   providerId,
   ticksToSeconds,
-  type JellyfinConnection,
   type JellyfinItem,
 } from "./jellyfin-client";
 import { connectionFor, getAllLinks, getJellyfinUrl, getLink, recordSyncResult } from "./jellyfin-service";

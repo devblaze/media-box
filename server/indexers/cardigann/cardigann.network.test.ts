@@ -28,7 +28,6 @@ describe.skipIf(!LIVE)("cardigann live", () => {
     async () => {
       const def = parseDefinition(await getDefinitionYaml("limetorrents"));
       const analyzed = analyzeDefinition(def);
-      // eslint-disable-next-line no-console
       console.log("limetorrents:", analyzed.supported, analyzed.unsupportedReason ?? "");
       expect(def.id).toBe("limetorrents");
     },
@@ -58,7 +57,6 @@ describe.skipIf(!LIVE)("cardigann live", () => {
           // Unparseable YAML is excluded from the catalog entirely.
         }
       }
-      // eslint-disable-next-line no-console
       console.log(
         `public defs: ${publicCount}, supported: ${supported} (${Math.round((supported / publicCount) * 100)}%)`,
         [...reasons.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15)
@@ -83,11 +81,9 @@ describe.skipIf(!LIVE)("cardigann live", () => {
     "searches a real public tracker",
     async () => {
       const result = await testCardigann("limetorrents", null);
-      // eslint-disable-next-line no-console
       console.log("limetorrents test:", result);
       if (!result.ok) return; // Mirror/geo-block — not an engine bug.
       const items = await searchCardigann("limetorrents", null, { t: "search", q: "ubuntu", limit: 10 });
-      // eslint-disable-next-line no-console
       console.log("first item:", items[0]);
       for (const item of items) {
         expect(item.title.length).toBeGreaterThan(0);

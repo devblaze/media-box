@@ -525,7 +525,6 @@ function DirectLive({
 
   return (
     <>
-      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video
         ref={videoRef}
         autoPlay
@@ -648,7 +647,6 @@ function TranscodeLive({
 
   return (
     <>
-      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video
         ref={videoRef}
         autoPlay

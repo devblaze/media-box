@@ -38,8 +38,7 @@ const LEVEL_TONE: Record<Level, BadgeTone> = {
   debug: "neutral", // muted
 };
 
-const LEVEL_FILTERS = ["all", "error", "warn", "info", "debug"] as const;
-type LevelFilter = (typeof LEVEL_FILTERS)[number];
+type LevelFilter = "all" | "error" | "warn" | "info" | "debug";
 
 const PAGE_SIZES = [50, 100, 200] as const;
 

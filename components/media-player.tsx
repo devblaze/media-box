@@ -2000,7 +2000,6 @@ function DirectPlayer({
 
   return (
     <>
-      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video
         ref={videoRef}
         autoPlay
@@ -2233,7 +2232,6 @@ function TranscodePlayer({
 
   return (
     <>
-      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video
         ref={videoRef}
         autoPlay

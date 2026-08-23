@@ -56,4 +56,7 @@ next-env.d.ts
 
 # MCP server (zero-dep; ignore deps if any are ever added, and local overrides)
 /mcp/node_modules/
+# The Expo app keeps its own install + local cache.
+apps/*/node_modules
+.expo/
 .mcp.local.json

@@ -18,7 +18,6 @@ export function normalizeTitle(title: string): string {
 }
 
 // Windows/SMB-illegal characters plus ASCII control characters.
-// eslint-disable-next-line no-control-regex
 const ILLEGAL = /[<>:"/\\|?*\u0000-\u001f]/g;
 
 export function sanitizePathComponent(name: string): string {
@@ -29,7 +28,6 @@ export function sanitizePathComponent(name: string): string {
 // name a single, safe path component. Used when the user disabled the aggressive
 // "replace illegal characters" sanitize but we still can't let a name escape its
 // directory (so ':', '?', '*', etc. are preserved, but '/' and '\' are not).
-// eslint-disable-next-line no-control-regex
 const PATH_UNSAFE = /[/\\\u0000-\u001f]/g;
 
 export function stripPathSeparators(name: string): string {

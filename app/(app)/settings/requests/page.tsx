@@ -60,8 +60,7 @@ const STATUS_TONE: Record<Status, BadgeTone> = {
   declined: "danger",
 };
 
-const STATUS_FILTERS = ["all", "pending", "approved", "available", "declined"] as const;
-type StatusFilter = (typeof STATUS_FILTERS)[number];
+type StatusFilter = "all" | "pending" | "approved" | "available" | "declined";
 
 /**
  * The library scope for an interactive release search, or null when the request

@@ -47,7 +47,7 @@ function render(template: string, values: Record<string, string>): string {
   return out.replace(/\s+/g, " ").trim();
 }
 
-function episodeToken(numbers: number[], seasonNumber: number): string {
+function episodeToken(numbers: number[]): string {
   if (numbers.length <= 1) return `E${pad(numbers[0] ?? 1, 2)}`;
   return `E${pad(numbers[0], 2)}-E${pad(numbers[numbers.length - 1], 2)}`;
 }
@@ -57,7 +57,7 @@ export function renderEpisodeFilename(
   ctx: EpisodeNamingContext,
   opts?: RenderOptions
 ): string {
-  const epPart = episodeToken(ctx.episodeNumbers, ctx.seasonNumber);
+  const epPart = episodeToken(ctx.episodeNumbers);
   const values: Record<string, string> = {
     "{Series Title}": ctx.seriesTitle,
     "{Year}": ctx.seriesYear ? String(ctx.seriesYear) : "",
