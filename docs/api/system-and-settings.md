@@ -230,7 +230,7 @@ List the built-in quality definitions (the fixed `QUALITIES` set), sorted by asc
 
 Basic app/runtime status. No auth guard — returns static process info only.
 
-- **Auth:** none (unguarded)
+- **Auth:** user (any signed-in user)
 - **Response:** `200` — `{ appName: "media-box", version: string, startedAt: ISO string, configDir: string, node: string }`.
 - **Example:**
   ```bash

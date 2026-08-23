@@ -274,7 +274,7 @@ List subtitle tracks available for a movie/episode (for the player's caption men
 
 Queue a background subtitle search. Targeted (single title, uncapped) with any of the ids; empty body queues the full backlog scan.
 
-- **Auth:** Any authenticated (proxy-enforced; no in-handler check).
+- **Auth:** admin
 - **Request body:** JSON (optional; defaults to `{}` if body is absent/invalid)
   - `movieId` / `episodeId` / `seriesId` — positive integers, coerced, all optional.
 - **Response:** `200` — `{ "queued": true }`. Errors: `400` (Zod validation), `500`.

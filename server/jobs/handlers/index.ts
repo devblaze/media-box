@@ -43,6 +43,12 @@ registerHandler("ChangeEpisodeOrdering", async (payload) => {
   await setEpisodeOrdering(seriesId, episodeGroupId ?? null);
   return `series ${seriesId} re-numbered onto ${episodeGroupId ?? "TMDB aired order"}`;
 });
+registerHandler("AlignSeasonOrdering", async (payload) => {
+  const p = (payload ?? {}) as { seriesIds?: number[]; dryRun?: boolean };
+  const { alignLibraryOrdering } = await import("@/server/library/ordering-audit");
+  const { changes, checked, failed } = await alignLibraryOrdering(p);
+  return JSON.stringify({ checked, failed, changed: changes.length, changes });
+});
 registerHandler("ExecuteMigration", async (payload) => {
   const { executeMigration } = await import("@/server/migration/migrate-service");
   return executeMigration(payload as never);

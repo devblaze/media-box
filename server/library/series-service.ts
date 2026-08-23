@@ -28,6 +28,12 @@ export interface AddSeriesInput {
   path?: string;
   /** Mark the series as anime (separate library type). */
   isAnime?: boolean;
+  /**
+   * Season ordering to pin (a TMDB episode-group id, or null for TMDB's aired
+   * order). Omit to decide automatically — importers that can see how the source
+   * numbers the show pass what they worked out; see `orderingForImport`.
+   */
+  episodeGroupId?: string | null;
 }
 
 export async function addSeries(input: AddSeriesInput) {
@@ -57,7 +63,10 @@ export async function addSeries(input: AddSeriesInput) {
   // Anime get TMDB's "TVDB Order" grouping when it exists, so their seasons match
   // Jellyfin, the folders on disk and how releases are named (see episode-order.ts).
   const isAnime = input.isAnime ?? false;
-  const episodeGroupId = await defaultEpisodeGroupId(input.tmdbId, isAnime);
+  const episodeGroupId =
+    input.episodeGroupId !== undefined
+      ? input.episodeGroupId
+      : await defaultEpisodeGroupId(input.tmdbId, isAnime);
 
   const row = db
     .insert(schema.series)

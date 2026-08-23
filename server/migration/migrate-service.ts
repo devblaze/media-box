@@ -16,6 +16,7 @@ import { mapProfile, type MappedProfile } from "./profile-mapping";
 import { findByTvdbId, getMovie, getTv } from "@/server/metadata/tmdb";
 import { mapMovie, mapSeries } from "@/server/metadata/tmdb-map";
 import { syncSeasonsAndEpisodes } from "@/server/library/series-service";
+import { orderingForImport } from "@/server/library/ordering-audit";
 import { enqueueCommand } from "@/server/jobs/scheduler";
 import { emitEvent } from "@/server/events/bus";
 
@@ -349,6 +350,15 @@ export async function executeMigration(payload: MigrationPayload): Promise<strin
 
         const details = await getTv(tmdbId);
         const mapped = mapSeries(details);
+        // Sonarr counts TVDB seasons; TMDB airs some shows (long-running anime
+        // above all) as one huge season. Pin the ordering that matches the season
+        // list Sonarr reports, so the files it already sorted line up here too.
+        // Free when the two agree — the scorer stops before fetching any group.
+        const episodeGroupId = await orderingForImport(
+          tmdbId,
+          src.seasons.map((season) => ({ seasonNumber: season.seasonNumber, episodeNumber: 1 })),
+          details.seasons
+        );
         const { rootFolderId, isAnime } = resolveItemRoot(
           src.path,
           src.rootFolderPath,
@@ -366,6 +376,7 @@ export async function executeMigration(payload: MigrationPayload): Promise<strin
             // Sonarr marks anime itself (seriesType), so honour that even when
             // the destination root isn't the anime type.
             isAnime: isAnime || src.seriesType === "anime",
+            episodeGroupId,
             qualityProfileId: profileIdMap.get(src.qualityProfileId) ?? 1,
             monitored: src.monitored,
             seasonFolder: src.seasonFolder,
@@ -374,7 +385,7 @@ export async function executeMigration(payload: MigrationPayload): Promise<strin
           })
           .returning({ id: schema.series.id })
           .get();
-        await syncSeasonsAndEpisodes(row.id, tmdbId, details.seasons);
+        await syncSeasonsAndEpisodes(row.id, tmdbId, details.seasons, episodeGroupId);
         // apply per-season monitored flags from the source
         for (const season of src.seasons) {
           db.update(schema.seasons)

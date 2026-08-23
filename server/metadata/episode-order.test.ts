@@ -20,10 +20,12 @@ vi.mock("@/server/metadata/tmdb", () => ({
 
 const {
   absoluteNumberer,
+  bestOrdering,
   buildAiredOrder,
   buildEpisodeOrder,
   buildGroupOrder,
   pickTvdbOrderGroup,
+  scoreOrderings,
 } = await import("./episode-order");
 
 /** A group season: `order` is its season number, episodes carry native coords. */
@@ -203,5 +205,83 @@ describe("pickTvdbOrderGroup", () => {
 
   test("ignores a single-season 'TVDB' grouping — it renumbers nothing", () => {
     expect(pickTvdbOrderGroup([g("TVDB Order", 1, 1, 12)])).toBeNull();
+  });
+});
+
+
+/**
+ * Choosing an ordering from the numbering a library already uses — the thing
+ * that makes a Sonarr/Jellyfin/Plex library line up without asking the user.
+ */
+describe("scoreOrderings / bestOrdering", () => {
+  const TVDB_SUMMARY = {
+    id: "tvdb",
+    name: "TVDB Order",
+    type: 1 as const,
+    group_count: 5,
+    episode_count: 420,
+  };
+
+  test("a library numbered TVDB-style picks the TVDB grouping over aired order", async () => {
+    getTvEpisodeGroups.mockResolvedValue({ results: [TVDB_SUMMARY] });
+    getTvEpisodeGroup.mockResolvedValue(BLEACH_TVDB_GROUP);
+
+    // What a Sonarr-sorted Bleach folder looks like: seasons 1-3 and 17.
+    const observed = [
+      { seasonNumber: 1, episodeNumber: 5 },
+      { seasonNumber: 2, episodeNumber: 21 },
+      { seasonNumber: 3, episodeNumber: 22 },
+      { seasonNumber: 17, episodeNumber: 42 },
+    ];
+    const scores = await scoreOrderings(30984, BLEACH_SEASONS, observed);
+    const aired = scores.find((s) => s.id === null)!;
+    const tvdb = scores.find((s) => s.id === "tvdb")!;
+    // Aired order only has seasons 1 and 2, and its season 2 stops at 50 — so it
+    // explains S01E05 and S02E21 but neither S03E22 nor S17E42.
+    expect(aired.covered).toBe(2);
+    expect(tvdb.coverage).toBe(1);
+    expect(bestOrdering(scores, null)?.id).toBe("tvdb");
+  });
+
+  test("a library that already matches aired order costs no group lookups", async () => {
+    getTvEpisodeGroups.mockResolvedValue({ results: [TVDB_SUMMARY] });
+    const observed = [
+      { seasonNumber: 1, episodeNumber: 5 },
+      { seasonNumber: 2, episodeNumber: 12 },
+    ];
+    const scores = await scoreOrderings(30984, BLEACH_SEASONS, observed);
+    expect(scores.find((s) => s.id === null)!.coverage).toBe(1);
+    expect(getTvEpisodeGroup).not.toHaveBeenCalled();
+    expect(bestOrdering(scores, null)).toBeNull(); // nothing to change
+  });
+
+  test("thin or ambiguous evidence never triggers a renumber", async () => {
+    getTvEpisodeGroups.mockResolvedValue({ results: [TVDB_SUMMARY] });
+    getTvEpisodeGroup.mockResolvedValue(BLEACH_TVDB_GROUP);
+    // One stray file naming a season nobody has: TVDB order explains it, but so
+    // little of the library is at stake that renumbering would be a guess.
+    const scores = await scoreOrderings(30984, BLEACH_SEASONS, [
+      { seasonNumber: 1, episodeNumber: 1 },
+      { seasonNumber: 1, episodeNumber: 2 },
+      { seasonNumber: 1, episodeNumber: 3 },
+      { seasonNumber: 9, episodeNumber: 4 },
+    ]);
+    expect(bestOrdering(scores, null)).toBeNull();
+  });
+
+  test("no evidence at all leaves the ordering alone", async () => {
+    const scores = await scoreOrderings(30984, BLEACH_SEASONS, []);
+    expect(bestOrdering(scores, null)).toBeNull();
+    expect(getTvEpisodeGroups).not.toHaveBeenCalled();
+  });
+
+  test("the ordering already in use is never 'changed' to itself", async () => {
+    getTvEpisodeGroups.mockResolvedValue({ results: [TVDB_SUMMARY] });
+    getTvEpisodeGroup.mockResolvedValue(BLEACH_TVDB_GROUP);
+    const scores = await scoreOrderings(30984, BLEACH_SEASONS, [
+      { seasonNumber: 3, episodeNumber: 1 },
+      { seasonNumber: 17, episodeNumber: 42 },
+    ]);
+    expect(bestOrdering(scores, "tvdb")).toBeNull();
   });
 });

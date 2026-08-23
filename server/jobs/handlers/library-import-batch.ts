@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { addMovie, getMovieIdByTmdb } from "@/server/library/movie-service";
 import { addSeries } from "@/server/library/series-service";
+import { coordinatesOnDisk, orderingForImport } from "@/server/library/ordering-audit";
 import {
   importMovieFileAt,
   scanMovie,
@@ -72,6 +73,12 @@ export async function libraryImportBatchHandler(payload: unknown): Promise<strin
           else await scanMovie(movie.id);
         }
       } else {
+        // The folder was sorted by whatever the user ran before (Sonarr, Jellyfin,
+        // Plex) — all of which count TVDB seasons. Pin the ordering that explains
+        // the numbering already on disk BEFORE scanning, so every file matches the
+        // first time instead of landing on a same-numbered episode of the wrong arc.
+        const observed = await coordinatesOnDisk(row.path);
+        const episodeGroupId = await orderingForImport(row.suggestedTmdbId, observed);
         const series = await addSeries({
           tmdbId: row.suggestedTmdbId,
           rootFolderId: row.rootFolderId,
@@ -79,6 +86,8 @@ export async function libraryImportBatchHandler(payload: unknown): Promise<strin
           monitored: true,
           path: row.path,
           isAnime: type === "anime",
+          // undefined = let addSeries decide (anime default); a hit overrides it.
+          episodeGroupId: episodeGroupId ?? undefined,
         });
         await scanSeries(series.id);
       }

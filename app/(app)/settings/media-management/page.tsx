@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { apiFetch, useApi } from "@/lib/api";
+import { useEvents } from "@/lib/use-events";
 import { formatBytes, type RootFolder } from "@/lib/types";
 import {
   Badge,
@@ -123,6 +125,7 @@ export default function MediaManagementPage() {
         can hardlink instead of copy.
       </Callout>
 
+      <SeasonOrderingSection />
       <PathsSection />
       <NamingSection />
       <RemotePathMappingsSection />
@@ -688,3 +691,128 @@ function RemotePathMappingsSection() {
   );
 }
 
+
+/**
+ * Season numbering drift, and the one-click fix for it.
+ *
+ * Sonarr, Jellyfin and Plex all count TVDB's seasons. TMDB — which media-box
+ * reads metadata from — airs some shows as one enormous season instead (every
+ * long-running anime: Bleach is 2 TMDB seasons against TVDB's 17). A library
+ * moved over from any of those therefore arrives full of `Season 07/…S07E20`
+ * files matched to the wrong episode, or to nothing at all.
+ *
+ * The audit is pure DB work, so it renders instantly; the fix re-points each
+ * series at whichever TMDB ordering explains the numbering its own files use.
+ */
+interface OrderingFinding {
+  seriesId: number;
+  title: string;
+  isAnime: boolean;
+  filesChecked: number;
+  mismatched: number;
+  unknownSeasons: number[];
+  reason: string;
+}
+
+function SeasonOrderingSection() {
+  const { data, mutate } = useApi<{
+    count: number;
+    mismatchedFiles: number;
+    findings: OrderingFinding[];
+  }>("/series/ordering-audit");
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [queueing, setQueueing] = useState(false);
+  // A sweep emits `series.updated` per fixed series, which revalidates this list.
+  useEvents();
+
+  const findings = data?.findings ?? [];
+
+  async function fixAll() {
+    if (
+      !(await confirm({
+        title: `Fix season numbering for ${findings.length} series?`,
+        message:
+          "Each series is re-numbered onto whichever ordering its own files already use, then its files are re-matched from disk. Watch progress and monitoring follow the episode; nothing on disk is moved, renamed or deleted. You can change any series back from its own page.",
+        confirmLabel: "Fix all",
+      }))
+    )
+      return;
+    setQueueing(true);
+    try {
+      await apiFetch("/series/ordering-audit", { method: "POST", body: JSON.stringify({}) });
+      toast.success("Fixing season numbering — this runs in the background.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not start the fix");
+    } finally {
+      setQueueing(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-wrap items-center justify-between gap-2">
+        <CardTitle>Season numbering</CardTitle>
+        <div className="flex gap-2">
+          <Button variant="ghost" size="sm" onClick={() => mutate()}>
+            Re-check
+          </Button>
+          {findings.length > 0 && (
+            <Button variant="primary" size="sm" onClick={fixAll} disabled={queueing}>
+              Fix all ({findings.length})
+            </Button>
+          )}
+        </div>
+      </CardHeader>
+      <CardBody className="space-y-3">
+        <p className="text-sm text-zinc-400">
+          Sonarr, Jellyfin and Plex count TVDB&rsquo;s seasons. TMDB airs some shows — long-running
+          anime above all — as one huge season, so their files end up on the wrong episode.
+          media-box can re-number a series onto the ordering its own files use.
+        </p>
+        {!data ? (
+          <Skeleton className="h-16 w-full" />
+        ) : findings.length === 0 ? (
+          <Callout tone="info">
+            Every series is numbered the same way as the files on disk.
+          </Callout>
+        ) : (
+          <>
+            <Callout tone="warning">
+              {findings.length} series {findings.length === 1 ? "is" : "are"} numbered differently
+              from {data.mismatchedFiles} of their episode files.
+            </Callout>
+            <Table>
+              <TBody>
+                {findings.slice(0, 10).map((f) => (
+                  <TR key={f.seriesId}>
+                    <TD>
+                      <Link
+                        href={`/series/${f.seriesId}`}
+                        className="text-amber-400 hover:underline"
+                      >
+                        {f.title}
+                      </Link>
+                      {f.isAnime && (
+                        <Badge tone="accent" className="ml-2">
+                          Anime
+                        </Badge>
+                      )}
+                      <div className="mt-0.5 text-xs text-zinc-500">{f.reason}</div>
+                    </TD>
+                    <TD className="whitespace-nowrap text-right text-xs text-zinc-500">
+                      {f.mismatched}/{f.filesChecked} files
+                    </TD>
+                  </TR>
+                ))}
+              </TBody>
+            </Table>
+            {findings.length > 10 && (
+              <p className="text-xs text-zinc-500">and {findings.length - 10} more…</p>
+            )}
+          </>
+        )}
+      </CardBody>
+    </Card>
+  );
+}

@@ -185,3 +185,143 @@ export async function defaultEpisodeGroupId(
     return null;
   }
 }
+
+
+// ---------- choosing an ordering from evidence ----------
+
+/** A candidate ordering, scored against the episode numbers a library uses. */
+export interface OrderingScore {
+  /** TMDB episode-group id; null = TMDB's aired order. */
+  id: string | null;
+  name: string;
+  seasonCount: number;
+  /** Observed coordinates this ordering can explain. */
+  covered: number;
+  total: number;
+  /** covered / total (1 when there was nothing to explain). */
+  coverage: number;
+}
+
+/** An `SxxExx` coordinate observed somewhere outside media-box (disk, Sonarr…). */
+export interface ObservedCoordinate {
+  seasonNumber: number;
+  episodeNumber: number;
+}
+
+const coord = (s: number, e: number) => `${s}:${e}`;
+
+/** Coordinates TMDB's aired order provides, straight from the season summaries. */
+function airedCoordinates(seasonSummaries: SeasonSummary[]): Set<string> {
+  const out = new Set<string>();
+  for (const s of seasonSummaries) {
+    for (let e = 1; e <= (s.episode_count ?? 0); e++) out.add(coord(s.season_number, e));
+  }
+  return out;
+}
+
+function coverageOf(available: Set<string>, observed: ObservedCoordinate[]): {
+  covered: number;
+  total: number;
+  coverage: number;
+} {
+  const total = observed.length;
+  if (total === 0) return { covered: 0, total: 0, coverage: 1 };
+  let covered = 0;
+  for (const o of observed) if (available.has(coord(o.seasonNumber, o.episodeNumber))) covered++;
+  return { covered, total, coverage: covered / total };
+}
+
+/**
+ * Score TMDB's aired order and the most promising episode groups against the
+ * season/episode numbers a library actually uses.
+ *
+ * Only a few groups are fetched (TVDB grouping first, then other aired-date
+ * ones): every candidate costs a TMDB call, and a library-wide audit runs this
+ * for hundreds of shows. Scoring stops early once a candidate explains
+ * everything, so the common case is one extra call.
+ */
+export async function scoreOrderings(
+  tmdbId: number,
+  seasonSummaries: SeasonSummary[],
+  observed: ObservedCoordinate[],
+  opts: { maxGroups?: number } = {}
+): Promise<OrderingScore[]> {
+  const airedSeasons = seasonSummaries.filter((s) => s.season_number > 0).length;
+  const scores: OrderingScore[] = [
+    {
+      id: null,
+      name: "Aired (TMDB)",
+      seasonCount: airedSeasons,
+      ...coverageOf(airedCoordinates(seasonSummaries), observed),
+    },
+  ];
+  if (observed.length === 0) return scores;
+
+  let groups: TmdbEpisodeGroupSummary[] = [];
+  try {
+    groups = (await getTvEpisodeGroups(tmdbId)).results ?? [];
+  } catch (err) {
+    console.warn(`[episode-order] could not list episode groups for ${tmdbId}:`, err);
+    return scores;
+  }
+
+  // TVDB order first — it is what Sonarr, Jellyfin and Plex all count by — then
+  // other "original air date" groupings, then whatever is left.
+  const tvdb = pickTvdbOrderGroup(groups);
+  const ranked = [
+    ...(tvdb ? [tvdb] : []),
+    ...groups.filter((g) => g !== tvdb && g.type === 1 && g.group_count > 1),
+    ...groups.filter((g) => g !== tvdb && g.type !== 1 && g.group_count > 1),
+  ].slice(0, opts.maxGroups ?? 3);
+
+  for (const g of ranked) {
+    if (scores.some((s) => s.coverage === 1 && s.total > 0)) break; // already perfect
+    try {
+      const detail = await getTvEpisodeGroup(g.id);
+      const available = new Set<string>();
+      const hasSpecials = (detail.groups ?? []).some(
+        (x) => x.order === 0 && /special/i.test(x.name)
+      );
+      const shift = !hasSpecials && (detail.groups ?? []).some((x) => x.order === 0) ? 1 : 0;
+      for (const season of detail.groups ?? []) {
+        season.episodes.forEach((ep, index) =>
+          available.add(
+            coord(season.order + shift, (Number.isFinite(ep.order) ? ep.order : index) + 1)
+          )
+        );
+      }
+      scores.push({
+        id: g.id,
+        name: g.name,
+        seasonCount: g.group_count,
+        ...coverageOf(available, observed),
+      });
+    } catch (err) {
+      console.warn(`[episode-order] episode group ${g.id} unreadable:`, err);
+    }
+  }
+  return scores;
+}
+
+/**
+ * The ordering a library's own numbering points at, or null to keep the current
+ * one. A challenger has to explain clearly more of the observed episodes than
+ * the incumbent does (`MIN_GAIN`) and get most of them right — a library is
+ * always a bit messy, and renumbering on thin evidence is worse than leaving it.
+ */
+export const MIN_ORDERING_COVERAGE = 0.6;
+export const MIN_ORDERING_GAIN = 0.15;
+
+export function bestOrdering(
+  scores: OrderingScore[],
+  currentId: string | null
+): OrderingScore | null {
+  if (scores.length === 0) return null;
+  const current = scores.find((s) => s.id === (currentId ?? null));
+  const best = [...scores].sort((a, b) => b.coverage - a.coverage || b.total - a.total)[0];
+  if (best.total === 0) return null;
+  if (best.id === (currentId ?? null)) return null;
+  if (best.coverage < MIN_ORDERING_COVERAGE) return null;
+  if (current && best.coverage - current.coverage < MIN_ORDERING_GAIN) return null;
+  return best;
+}

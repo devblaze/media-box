@@ -19,7 +19,7 @@ Set `MEDIABOX_URL` and `MEDIABOX_API_KEY` for the examples below.
 
 List all movies (summary fields), sorted by sort title.
 
-- **Auth:** any authenticated
+- **Auth:** user (any signed-in user)
 - **Response:** `200` — array of `{ id, tmdbId, title, sortTitle, year, status, posterPath, path, monitored, qualityProfileId, movieFileId, addedAt, importedAt }`. `addedAt` is epoch-ms when the movie was added; `importedAt` is epoch-ms when its file was imported (`null` if no file yet). Errors: `500`.
 - **Example:**
   ```bash
@@ -30,7 +30,7 @@ List all movies (summary fields), sorted by sort title.
 
 Add a movie to the library by TMDB id, then enqueue a `DiskScan` for it.
 
-- **Auth:** any authenticated
+- **Auth:** admin
 - **Request body:**
 
   | field | type | required | default | notes |
@@ -53,7 +53,7 @@ Add a movie to the library by TMDB id, then enqueue a `DiskScan` for it.
 
 Fetch one movie plus its primary movie file.
 
-- **Auth:** any authenticated
+- **Auth:** user (any signed-in user)
 - **Path params:** `id` — movie id.
 - **Response:** `200` — `{ ...movie, file }` where `file` is the primary `movieFiles` row or `null`. Errors: `404` (not found); `500`.
 - **Example:**
@@ -65,7 +65,7 @@ Fetch one movie plus its primary movie file.
 
 Update mutable movie settings.
 
-- **Auth:** any authenticated
+- **Auth:** admin
 - **Path params:** `id` — movie id.
 - **Request body:**
 
@@ -86,7 +86,7 @@ Update mutable movie settings.
 
 Remove a movie from the library, optionally deleting its files from disk.
 
-- **Auth:** any authenticated
+- **Auth:** admin
 - **Path params:** `id` — movie id.
 - **Query params:** `deleteFiles` — `true` also removes the movie folder from disk (default: DB row only).
 - **Response:** `200` — `{ deleted: true }`. Errors: `400` (invalid id); **`409` if `deleteFiles=true` while file operations are disabled**; `500`.
@@ -121,7 +121,7 @@ Delete one quality version (a single `movieFiles` row) of a movie. If it was the
 
 List all series (summary fields with episode counts), sorted by sort title.
 
-- **Auth:** any authenticated
+- **Auth:** user (any signed-in user)
 - **Response:** `200` — array of `{ id, tmdbId, title, sortTitle, year, status, network, posterPath, path, monitored, monitorMode, isAnime, qualityProfileId, episodeCount, episodeFileCount, addedAt, importedAt }` (counts exclude specials, season 0). `addedAt` is epoch-ms when the series was added; `importedAt` is epoch-ms of the most recent episode-file import (`null` if none yet). Errors: `500`.
 - **Example:**
   ```bash
@@ -132,7 +132,7 @@ List all series (summary fields with episode counts), sorted by sort title.
 
 Add a series to the library by TMDB id, then enqueue a `DiskScan` for it.
 
-- **Auth:** any authenticated
+- **Auth:** admin
 - **Request body:**
 
   | field | type | required | default | notes |
@@ -156,7 +156,7 @@ Add a series to the library by TMDB id, then enqueue a `DiskScan` for it.
 
 Fetch one series with its seasons, episodes, and episode files.
 
-- **Auth:** any authenticated
+- **Auth:** user (any signed-in user)
 - **Path params:** `id` — series id.
 - **Response:** `200` — `{ ...series, seasons: [...], episodes: [...], files: [...] }`. Errors: `404` (not found); `500`.
 - **Example:**
@@ -168,7 +168,7 @@ Fetch one series with its seasons, episodes, and episode files.
 
 Update series settings and/or per-season / per-episode monitored flags. Setting `monitorMode` re-derives every season/episode monitored flag.
 
-- **Auth:** any authenticated
+- **Auth:** admin
 - **Path params:** `id` — series id.
 - **Request body:**
 
@@ -193,7 +193,7 @@ Update series settings and/or per-season / per-episode monitored flags. Setting 
 
 Remove a series from the library, optionally deleting its files from disk.
 
-- **Auth:** any authenticated
+- **Auth:** admin
 - **Path params:** `id` — series id.
 - **Query params:** `deleteFiles` — `true` also removes files from disk (default: DB rows only).
 - **Response:** `200` — `{ deleted: true }`. Errors: `400` (invalid id); **`409` if `deleteFiles=true` while file operations are disabled**; `500`.
@@ -210,6 +210,40 @@ Re-identify a series/anime as a different TMDB title. Swaps the series' `tmdbId`
 - **Path params:** `id` — series id.
 - **Request body:** `{ "tmdbId": number }` — the correct TMDB TV id.
 - **Response:** `200` — `{ reidentified: true }`. Errors: `400` (invalid id / body); `500` (incl. "another series already uses that TMDB title").
+
+## `GET /api/v1/series/ordering-audit`
+
+Series whose episode files are numbered differently from the episodes they are attached to — the signature of a library moved over from Sonarr, Jellyfin or Plex. Those all count TVDB's seasons, while TMDB airs some shows (long-running anime above all) as one huge season, so their files land on a same-numbered episode of the wrong arc, or on nothing.
+
+Pure DB work — no TMDB calls — so it answers immediately even for a large library.
+
+- **Auth:** admin
+- **Response:** `200` — `{ count, mismatchedFiles, findings }`. Each finding is `{ seriesId, title, isAnime, currentGroupId, filesChecked, mismatched, unknownSeasons, reason }`, worst first. Errors: `500`.
+- **Example:**
+  ```bash
+  curl -sS "$MEDIABOX_URL/api/v1/series/ordering-audit" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
+## `POST /api/v1/series/ordering-audit`
+
+Queue an `AlignSeasonOrdering` sweep. Each candidate series is scored against the season/episode numbers its own files use, and re-pointed at whichever TMDB ordering explains them; a series is only renumbered when a challenger explains clearly more of the files than the current ordering does. Renumbering re-matches files from disk — nothing on disk is moved, renamed or deleted.
+
+With no body, the sweep covers everything the audit flagged plus anime that have never been pinned to an ordering.
+
+- **Auth:** admin
+- **Request body:**
+
+  | field | type | required | default | notes |
+  | --- | --- | --- | --- | --- |
+  | `seriesIds` | number[] | no | — | limit the sweep to these series |
+  | `dryRun` | boolean | no | `false` | score and report without renumbering |
+
+- **Response:** `200` — `{ queued, commandId }`. The command's `result` (see `GET /api/v1/command`) is JSON: `{ checked, failed, changed, changes }`. Errors: `400` (validation); `500`.
+- **Example:**
+  ```bash
+  curl -sS -X POST "$MEDIABOX_URL/api/v1/series/ordering-audit" -H "x-api-key: $MEDIABOX_API_KEY" \
+    -H "Content-Type: application/json" -d '{"dryRun":true}'
+  ```
 
 ## `GET /api/v1/series/{id}/ordering`
 
@@ -250,7 +284,7 @@ Because that rescan can take a while, the work is queued as a `ChangeEpisodeOrde
 
 Previous / next **playable** episode (one that has a file) relative to this episode, ordered across season boundaries. Feeds the player's Prev/Next + auto-advance.
 
-- **Auth:** any authenticated
+- **Auth:** user (any signed-in user)
 - **Path params:** `id` — episode id.
 - **Response:** `200` — `{ prev, next }` where each is `{ id, seasonNumber, episodeNumber, title, seriesTitle }` or `null`. Errors: `400` (invalid id); `404` (episode not found); `500`.
 - **Example:**
@@ -262,7 +296,7 @@ Previous / next **playable** episode (one that has a file) relative to this epis
 
 Missing but wanted media: monitored episodes that have aired without a file, and monitored movies without a file.
 
-- **Auth:** any authenticated
+- **Auth:** user (any signed-in user)
 - **Response:** `200` — `{ episodes, movies }`. `episodes[]`: `{ episodeId, seriesId, seriesTitle, seasonNumber, episodeNumber, episodeTitle, airDateUtc }` (aired before now, newest first, max 200). `movies[]`: `{ movieId, title, year, status, minimumAvailability }` (newest added first, max 200). Errors: `500`.
 - **Example:**
   ```bash
@@ -350,7 +384,7 @@ Update the naming configuration (row id 1).
 
 TMDB search for the request flow, annotated with library availability. Anime is searched as TV.
 
-- **Auth:** any authenticated
+- **Auth:** user (any signed-in user)
 - **Query params:**
 
   | param | type | required | notes |
@@ -436,7 +470,7 @@ Best title-logo artwork (transparent PNG) for a TMDB title, used by the hero bil
 
 Upcoming (and recent) air dates for episodes of monitored series/anime — the schedule calendar.
 
-- **Auth:** any authenticated
+- **Auth:** user (any signed-in user)
 - **Query params:**
 
   | param | type | required | notes |

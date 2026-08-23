@@ -288,7 +288,7 @@ Active download queue: rows whose status is one of `queued`, `downloading`,
 
 Retry the import of a queue item (enqueues an `ImportDownload` command).
 
-- **Auth:** any
+- **Auth:** admin
 - **Path params:** `id` — download id.
 - **Response:** `200` — `{ retrying: true }`. `404` if the item is not found.
 
@@ -297,7 +297,7 @@ Retry the import of a queue item (enqueues an `ImportDownload` command).
 Remove a queue item; optionally blocklist the release and/or remove it from the
 download client.
 
-- **Auth:** any
+- **Auth:** admin
 - **Path params:** `id` — download id (must be an integer).
 - **Query params:** `blocklist` (`true` to add to the blocklist; default off), `removeFromClient` (defaults on — pass `false` to keep the data in the client).
 - **Blocklisting also queues a `WantedSearch`** for the affected series/movie, so a replacement release is looked for right away; the blocklist entry keeps the rejected one from being picked again.
@@ -403,7 +403,7 @@ Delete a request. Owners may delete their own; admins may delete any.
 
 Recent history events, newest first.
 
-- **Auth:** any
+- **Auth:** user (any signed-in user)
 - **Query params:** `limit` (default 100, capped at 500).
 - **Response:** `200` — array of `{ id, eventType, mediaType, sourceTitle, quality, date, seriesId, movieId, seriesTitle, movieTitle, data }`.
 
@@ -449,8 +449,8 @@ name+payload already `queued` or `started` is deduped (no new row).
   Registered command names: `Housekeeping`, `RefreshSeries`, `RefreshMovies`,
   `DiskScan`, `RssSync`, `WantedSearch`, `SubtitleSearch`, `QueueMonitor`,
   `LibraryImportBatch`, `ChannelScheduler`, `FetchTorboxFiles`, `ImportDownload`,
-  `ChangeEpisodeOrdering`, `ExecuteMigration`. (An unregistered name still
-  enqueues but fails at run time.)
+  `ChangeEpisodeOrdering`, `AlignSeasonOrdering`, `ExecuteMigration`. (An
+  unregistered name still enqueues but fails at run time.)
 
 - **Response:** `201` — `{ id, queued: true }` when enqueued; `200` — `{ id: null, queued: false }` when deduped. Errors: `400` on bad body.
 - **Example:**
