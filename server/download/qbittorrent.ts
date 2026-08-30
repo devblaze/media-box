@@ -1,4 +1,6 @@
 import parseTorrent from "parse-torrent";
+import { describeFetchFailure } from "@/lib/fetch-error";
+import { infoHashFromMagnet, resolveTorrentSource } from "./torrent-source";
 import type {
   AddDownloadRequest,
   ClientItem,
@@ -72,8 +74,10 @@ export class QbittorrentClient implements DownloadClient {
           `qBittorrent did not respond within ${Math.round(timeoutMs / 1000)}s (${what}) — it may be overloaded or unreachable at ${this.baseUrl}`
         );
       }
+      const cause = describeFetchFailure(err, this.baseUrl);
       throw new Error(
-        `Cannot reach qBittorrent at ${this.baseUrl} (${what}) — check host/port and that the WebUI is enabled`
+        `Cannot reach qBittorrent at ${this.baseUrl} (${what})${cause ? ` — ${cause}` : ""} — check host/port and that the WebUI is enabled`,
+        { cause: err }
       );
     }
   }
@@ -140,27 +144,36 @@ export class QbittorrentClient implements DownloadClient {
       if (m) infoHash = m[1].toLowerCase();
     } else if (req.torrentFileUrl) {
       try {
-        // download the .torrent ourselves so we can compute the infohash
-        const torrentRes = await fetch(req.torrentFileUrl, {
-          signal: AbortSignal.timeout(60_000),
-          headers: { "User-Agent": "media-box/0.1" },
-          redirect: "follow",
-        });
-        if (!torrentRes.ok) throw new Error(`Failed to fetch .torrent (${torrentRes.status})`);
-        const buffer = Buffer.from(await torrentRes.arrayBuffer());
-        const parsed = await parseTorrent(buffer);
-        infoHash = typeof parsed.infoHash === "string" ? parsed.infoHash.toLowerCase() : undefined;
-        form.set("torrents", new Blob([new Uint8Array(buffer)], { type: "application/x-bittorrent" }), "release.torrent");
+        // The link may resolve to a magnet rather than a file — Jackett redirects
+        // to one for every magnet-only tracker (see torrent-source.ts).
+        const source = await resolveTorrentSource(req.torrentFileUrl);
+        if (source.kind === "magnet") {
+          infoHash = infoHashFromMagnet(source.magnetUrl);
+          form.set("urls", source.magnetUrl);
+        } else {
+          // Parse the file ourselves so the infohash is known before we hand it
+          // over — the queue is correlated back to the client by that hash.
+          const parsed = await parseTorrent(source.buffer);
+          infoHash = typeof parsed.infoHash === "string" ? parsed.infoHash.toLowerCase() : undefined;
+          form.set(
+            "torrents",
+            new Blob([new Uint8Array(source.buffer)], { type: "application/x-bittorrent" }),
+            "release.torrent"
+          );
+        }
       } catch (err) {
-        // Dead/expired .torrent link (404s and indexer timeouts are common) —
-        // fall back to a magnet synthesized from the announced infohash so the
-        // grab can still succeed via DHT/trackers.
-        if (!req.infoHash) throw err;
+        // Dead/expired link (404s and indexer timeouts are common) — fall back to
+        // a magnet synthesized from the announced infohash so the grab can still
+        // succeed via DHT/trackers. Without one there is nothing to fall back TO.
+        if (!req.infoHash) {
+          const why = err instanceof Error ? err.message : String(err);
+          throw new Error(
+            `${why}, and the release carries no infohash to build a magnet from`,
+            { cause: err }
+          );
+        }
         infoHash = req.infoHash.toLowerCase();
-        form.set(
-          "urls",
-          `magnet:?xt=urn:btih:${infoHash}&dn=${encodeURIComponent(req.title)}`
-        );
+        form.set("urls", `magnet:?xt=urn:btih:${infoHash}&dn=${encodeURIComponent(req.title)}`);
       }
     } else {
       throw new Error("Neither magnetUrl nor torrentFileUrl provided");

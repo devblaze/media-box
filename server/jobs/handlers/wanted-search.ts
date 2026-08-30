@@ -2,7 +2,7 @@ import { and, eq, isNull, lt } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { searchReleases } from "@/server/indexers/release-search";
 import { episodeTarget, movieTarget, seasonTarget } from "@/server/indexers/search-targets";
-import { grab } from "@/server/download/download-service";
+import { episodesWithDownloadInFlight, grab } from "@/server/download/download-service";
 import { getSettings } from "@/server/settings/settings-service";
 
 const INDEXER_DELAY_MS = 2_000;
@@ -58,6 +58,7 @@ export async function wantedSearchHandler(payload: unknown): Promise<string> {
   }
 
   // ---- episodes ----
+  const inFlight = episodesWithDownloadInFlight();
   const missingEpisodes = db
     .select({
       id: schema.episodes.id,
@@ -75,7 +76,10 @@ export async function wantedSearchHandler(payload: unknown): Promise<string> {
       )
     )
     .all()
-    .filter((e) => (p?.seriesId ? e.seriesId === p.seriesId : !p?.movieId));
+    .filter((e) => (p?.seriesId ? e.seriesId === p.seriesId : !p?.movieId))
+    // An episode whose release is already downloading doesn't need another one;
+    // the file it is missing is on its way (see episodesWithDownloadInFlight).
+    .filter((e) => !inFlight.has(e.id));
 
   // group by series+season; use a season-pack search when >= half the season is missing
   const bySeason = new Map<string, { seriesId: number; seasonNumber: number; episodeIds: number[] }>();

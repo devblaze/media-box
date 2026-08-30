@@ -416,6 +416,21 @@ failures calendar.
 - **Query params:** `start`, `end` (ISO dates). Default window is the last 60 days ending now.
 - **Response:** `200` — array of `{ id, date, mediaType, seriesId, movieId, episodeId, seriesTitle, movieTitle, sourceTitle, quality, data }`.
 
+## `GET /api/v1/history/downloads`
+
+Downloads that **worked** — `grabbed` and `imported` events — for the same admin
+calendar as the failures. Seeing the wins next to the losses is what makes a
+misbehaving grab visible: several grabs of one episode within a minute is a
+duplicate storm, which the failures view alone shows nothing of.
+
+- **Auth:** admin
+- **Query params:** `start`, `end` (ISO dates). Default window is the last 60 days ending now.
+- **Response:** `200` — array of `{ id, date, eventType, mediaType, seriesId, movieId, episodeId, seriesTitle, movieTitle, sourceTitle, quality, data }` where `eventType` is `"grabbed"` or `"imported"`.
+- **Example:**
+  ```bash
+  curl -sS "$MEDIABOX_URL/api/v1/history/downloads?start=2026-08-01" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
 ---
 
 ## `GET /api/v1/command`

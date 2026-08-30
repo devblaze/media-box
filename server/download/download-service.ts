@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { getClient } from "./client";
 import type { DecoratedRelease } from "@/server/indexers/release-search";
@@ -15,6 +15,36 @@ export interface GrabTarget {
   override?: boolean;
 }
 
+/** Download states that mean "this release is still on its way in". */
+const IN_FLIGHT = [
+  "queued",
+  "downloading",
+  "remoteCompleted",
+  "fetching",
+  "importPending",
+  "importing",
+] as const;
+
+/**
+ * Episode ids that already have a release in flight.
+ *
+ * An RSS feed routinely carries the same episode five or six times over (one per
+ * release group). Without this, every one of them passed the "monitored and has
+ * no file" test — the file only appears after the FIRST download imports — so
+ * media-box grabbed them all, and whichever finished last won. That is how a
+ * SUBFRENCH release ended up replacing a perfectly good English one.
+ */
+export function episodesWithDownloadInFlight(): Set<number> {
+  const rows = getDb()
+    .select({ episodeIds: schema.downloads.episodeIds })
+    .from(schema.downloads)
+    .where(inArray(schema.downloads.status, [...IN_FLIGHT]))
+    .all();
+  const out = new Set<number>();
+  for (const row of rows) for (const id of (row.episodeIds as number[] | null) ?? []) out.add(id);
+  return out;
+}
+
 export async function grab(release: DecoratedRelease, target: GrabTarget) {
   const db = getDb();
   const clientRows = db
@@ -25,7 +55,9 @@ export async function grab(release: DecoratedRelease, target: GrabTarget) {
     .all();
   if (clientRows.length === 0) throw new Error("No enabled download client configured");
 
-  let lastError: unknown;
+  // Every client's failure is kept: with two clients configured, being told only
+  // about the last one hides the reason the preferred one didn't take the grab.
+  const failures: string[] = [];
   for (const row of clientRows) {
     try {
       const client = await getClient(row);
@@ -99,11 +131,14 @@ export async function grab(release: DecoratedRelease, target: GrabTarget) {
       });
       return download ?? { externalId };
     } catch (err) {
-      lastError = err;
+      failures.push(`${row.name}: ${err instanceof Error ? err.message : String(err)}`);
       console.error(`[grab] client '${row.name}' failed:`, err);
     }
   }
-  const reason = `All download clients failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`;
+  const reason =
+    failures.length === 1
+      ? `Could not send the release to ${failures[0]}`
+      : `No download client accepted the release — ${failures.join("; ")}`;
   recordDownloadFailure({
     mediaType: target.mediaType,
     seriesId: target.seriesId ?? null,

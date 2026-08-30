@@ -102,6 +102,19 @@ function attrMap(item: RawItem): Map<string, string> {
   return map;
 }
 
+/**
+ * Pull a BitTorrent infohash out of a magnet/URL/guid: the `btih:` form first,
+ * then a standalone 40-hex token (bounded on both sides so it can't be a slice
+ * of some longer identifier).
+ */
+function findInfoHash(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const btih = value.match(/btih:([a-fA-F0-9]{40})/);
+  if (btih) return btih[1].toLowerCase();
+  const bare = value.match(/(?:^|[^a-fA-F0-9])([a-fA-F0-9]{40})(?:[^a-fA-F0-9]|$)/);
+  return bare ? bare[1].toLowerCase() : undefined;
+}
+
 export async function search(
   baseUrl: string,
   apiKey: string | null,
@@ -132,7 +145,14 @@ export async function search(
         size: Number(attrs.get("size") ?? item.size ?? 0),
         link,
         magnetUrl: magnet ?? (link.startsWith("magnet:") ? link : undefined),
-        infoHash: attrs.get("infohash")?.toLowerCase(),
+        // Many indexers omit the infohash attribute but still spell the hash out
+        // in the magnet, the guid or the download link. Finding it there is what
+        // lets a grab fall back to a magnet when the .torrent link is dead.
+        infoHash:
+          attrs.get("infohash")?.toLowerCase() ??
+          findInfoHash(magnet) ??
+          findInfoHash(link) ??
+          findInfoHash(guid),
         seeders: attrs.has("seeders") ? Number(attrs.get("seeders")) : null,
         leechers: attrs.has("peers") ? Number(attrs.get("peers")) : null,
         publishDate: item.pubDate,

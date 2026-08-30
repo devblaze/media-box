@@ -6,7 +6,7 @@ import { evaluate, type ReleaseCandidate } from "@/server/parser/scoring";
 import type { ProfileLike } from "@/server/parser/scoring";
 import type { QualityModel } from "@/server/parser/quality";
 import { normalizeTitle } from "@/server/library/naming-utils";
-import { grab } from "@/server/download/download-service";
+import { episodesWithDownloadInFlight, grab } from "@/server/download/download-service";
 
 const TV_CATS = [5000, 5030, 5040];
 const MOVIE_CATS = [2000, 2010, 2020, 2030, 2040, 2045, 2060];
@@ -52,6 +52,8 @@ export async function rssSyncHandler(): Promise<string> {
 
   let grabbed = 0;
   let seen = 0;
+  // Snapshot once per run, then keep it current as this run grabs.
+  const inFlight = episodesWithDownloadInFlight();
 
   for (const indexer of indexerRows) {
     let items;
@@ -111,6 +113,10 @@ export async function rssSyncHandler(): Promise<string> {
             )
             .get();
           if (!episode) continue;
+          // An RSS feed lists the same episode once per release group. Only the
+          // first one is grabbed: the rest would pile onto the same episode and
+          // whichever landed last would win (see episodesWithDownloadInFlight).
+          if (inFlight.has(episode.id)) continue;
           const currentFile = episode.episodeFileId
             ? db
                 .select()
@@ -138,6 +144,7 @@ export async function rssSyncHandler(): Promise<string> {
             seriesId: s.id,
             episodeIds: [episode.id],
           });
+          inFlight.add(episode.id); // later items in this same feed must not re-grab it
           grabbed++;
         } else {
           const m = lib.moviesByTitle.get(parsed.normalizedTitle);
