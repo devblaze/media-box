@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { DEFAULT_TRANSCODE_QUALITY, transcodeQuality } from "@/lib/transcode-quality";
 import { buildFfmpegArgs, buildVodPlaylist, type Session } from "./session-manager";
 
 /** Value following a flag in an argv array (fails the test if the flag is absent). */
@@ -89,6 +90,76 @@ describe("buildFfmpegArgs", () => {
     expect(buildFfmpegArgs(ABS, DIR, "none", "", 0, -1)).toContain("0:a:0?");
     expect(buildFfmpegArgs(ABS, DIR, "none", "", 0, 1.5)).toContain("0:a:0?");
   });
+
+  // ---- bitrate rungs (lib/transcode-quality) ----
+
+  /** The constant-quality flag each hardware encoder uses on the top rung. */
+  const HW_CONSTANT_QUALITY = [
+    ["vaapi", "-qp"],
+    ["qsv", "-global_quality"],
+    ["nvenc", "-cq"],
+  ] as const;
+
+  test("no rung given: the software encode is exactly the pre-ladder one", () => {
+    const args = buildFfmpegArgs(ABS, DIR, "none", "", 0);
+    // Capped CRF at the generous LAN settings, 1080p ceiling, 160k audio.
+    expect(argAfter(args, "-crf")).toBe("21");
+    expect(argAfter(args, "-maxrate")).toBe("8000k");
+    expect(argAfter(args, "-bufsize")).toBe("16000k");
+    expect(argAfter(args, "-vf")).toBe("scale=-2:'min(1080,ih)'");
+    expect(argAfter(args, "-b:a")).toBe("160k");
+  });
+
+  test("a lower rung caps the picture as well as the bitrate", () => {
+    const medium = transcodeQuality("medium"); // 720p · 2 Mbps · 128k audio
+    const args = buildFfmpegArgs(ABS, DIR, "none", "", 0, undefined, medium);
+    // Fewer pixels is what makes a small bitrate watchable.
+    expect(argAfter(args, "-vf")).toBe(`scale=-2:'min(${medium.height},ih)'`);
+    expect(argAfter(args, "-maxrate")).toBe(`${medium.videoKbps}k`);
+    expect(argAfter(args, "-bufsize")).toBe(`${medium.videoKbps * 2}k`); // 2 s of VBV
+    // Below the top rung the encode trades quality for fitting the budget.
+    expect(argAfter(args, "-crf")).toBe("23");
+    expect(argAfter(args, "-b:a")).toBe(`${medium.audioKbps}k`);
+  });
+
+  test("hardware top rung: constant quality, no explicit bitrate", () => {
+    for (const [mode, cqFlag] of HW_CONSTANT_QUALITY) {
+      const args = buildFfmpegArgs(ABS, DIR, mode, "/dev/dri/renderD128", 0);
+      expect(argAfter(args, cqFlag)).toBe("23");
+      expect(args, `${mode} should not target a bitrate`).not.toContain("-b:v");
+    }
+  });
+
+  test("hardware lower rung: an explicit bitrate replaces constant quality", () => {
+    const low = transcodeQuality("low"); // 480p · 1 Mbps
+    for (const [mode, cqFlag] of HW_CONSTANT_QUALITY) {
+      const args = buildFfmpegArgs(ABS, DIR, mode, "/dev/dri/renderD128", 0, undefined, low);
+      expect(argAfter(args, "-b:v")).toBe(`${low.videoKbps}k`);
+      expect(argAfter(args, "-maxrate")).toBe(`${low.videoKbps}k`);
+      expect(argAfter(args, "-bufsize")).toBe(`${low.videoKbps * 2}k`);
+      // "Roughly this good" is no use when the budget is 1 Mbps.
+      expect(args, `${mode} should drop ${cqFlag}`).not.toContain(cqFlag);
+    }
+    // Each encoder needs its own rate-control mode switched to bitrate-targeted.
+    const vaapi = buildFfmpegArgs(ABS, DIR, "vaapi", "/dev/dri/renderD128", 0, undefined, low);
+    expect(argAfter(vaapi, "-rc_mode")).toBe("VBR");
+    const nvenc = buildFfmpegArgs(ABS, DIR, "nvenc", "", 0, undefined, low);
+    expect(argAfter(nvenc, "-rc")).toBe("vbr");
+  });
+
+  test("the rung leaves the rest of the argv alone", () => {
+    const minimal = transcodeQuality("minimal");
+    const args = buildFfmpegArgs(ABS, DIR, "none", "", 300, 2, minimal);
+    // Segment numbering, keyframe anchoring and audio mapping are rung-independent.
+    expect(argAfter(args, "-start_number")).toBe("300");
+    expect(argAfter(args, "-force_key_frames")).toBe("expr:gte(t,1200+n_forced*4)");
+    expect(args).toContain("0:a:2?");
+    expect(argAfter(args, "-hls_time")).toBe("4");
+    expect(argAfter(args, "-hls_playlist_type")).toBe("event");
+    expect(argAfter(args, "-hls_flags")).toBe("independent_segments+temp_file");
+    expect(argAfter(args, "-hls_segment_type")).toBe("mpegts");
+    expect(args[args.length - 1]).toBe(`${DIR}/index.m3u8`);
+  });
 });
 
 describe("buildVodPlaylist", () => {
@@ -103,6 +174,7 @@ describe("buildVodPlaylist", () => {
     segmentCount: 0,
     audioTrack: null,
     encoderStart: 0,
+    quality: DEFAULT_TRANSCODE_QUALITY,
     ...over,
   });
 
@@ -177,6 +249,7 @@ describe("seekable playlists are absolute, regardless of where ffmpeg started", 
     audioTrack: null,
     // ffmpeg was started 20 minutes in…
     encoderStart: 300,
+    quality: DEFAULT_TRANSCODE_QUALITY,
   };
 
   test("…but the playlist still starts at segment 0 and lists the whole film", () => {

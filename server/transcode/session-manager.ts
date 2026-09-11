@@ -7,6 +7,11 @@ import { CONFIG_DIR } from "@/server/config/paths";
 import { getSettings } from "@/server/settings/settings-service";
 import { probeAudioTracks, probeMediaInfo } from "@/server/library/media-info";
 import { recordLog } from "@/server/logging/logger";
+import {
+  DEFAULT_TRANSCODE_QUALITY,
+  transcodeQuality,
+  type TranscodeQuality,
+} from "@/lib/transcode-quality";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,6 +53,9 @@ export interface Session {
   audioTrack: number | null;
   /** Segment index the CURRENT ffmpeg run started at (its `-start_number`). */
   encoderStart: number;
+  /** Bitrate rung this session encodes to. Fixed for the session's life — a
+   *  different rung means a different session (the playlist has no ABR ladder). */
+  quality: TranscodeQuality;
 }
 
 export interface StartOpts {
@@ -55,6 +63,8 @@ export interface StartOpts {
   startSec?: number;
   /** 0-based audio-stream index to map (`0:a:index`). Defaults to the first track. */
   audioTrack?: number;
+  /** Bitrate rung id (see `lib/transcode-quality`). Unknown/absent → the top rung. */
+  quality?: string;
 }
 
 /** Thrown when the configured concurrent-session cap is already reached. */
@@ -121,47 +131,81 @@ function hwaccelInputArgs(mode: HwAccel, device: string): string[] {
 }
 
 /**
- * Every source (incl. 10-bit HEVC) is downscaled to at most 1080p and converted
- * to 8-bit nv12/yuv420p BEFORE the encoder, so no encoder ever sees a pixel
- * format it can't handle. `min(1080,ih)` only ever scales DOWN.
+ * Every source (incl. 10-bit HEVC) is downscaled to the rung's height and
+ * converted to 8-bit nv12/yuv420p BEFORE the encoder, so no encoder ever sees a
+ * pixel format it can't handle. `min(h,ih)` only ever scales DOWN.
  */
-const DOWNSCALE = "scale=-2:'min(1080,ih)'";
+function downscale(height: number): string {
+  return `scale=-2:'min(${height},ih)'`;
+}
 
-/** Output-side video encoder flags per hardware mode. */
-function videoArgs(mode: HwAccel): string[] {
+/**
+ * Output-side video encoder flags per hardware mode, for one bitrate rung.
+ *
+ * The top rung keeps the long-standing quality-targeted settings (constant
+ * quality, generously capped) — that is what a healthy LAN should get. Every
+ * lower rung switches to a hard bitrate ceiling instead, because the point of
+ * those rungs is fitting a stream down a link that has a known, small capacity:
+ * "roughly this good" is no use when the budget is 1 Mbps.
+ */
+function videoArgs(mode: HwAccel, quality: TranscodeQuality): string[] {
+  const vf = downscale(quality.height);
+  const capped = quality.id !== DEFAULT_TRANSCODE_QUALITY.id;
+  const rate = quality.videoKbps;
+  // VBV: a ceiling plus two seconds of buffer, so a busy scene borrows bits from
+  // a quiet one without ever outrunning the link.
+  const vbv = ["-maxrate", `${rate}k`, "-bufsize", `${rate * 2}k`];
   switch (mode) {
     case "vaapi":
-      return ["-vf", `${DOWNSCALE},format=nv12,hwupload`, "-c:v", "h264_vaapi", "-qp", "23"];
+      return capped
+        ? [
+            "-vf",
+            `${vf},format=nv12,hwupload`,
+            "-c:v",
+            "h264_vaapi",
+            "-rc_mode",
+            "VBR",
+            "-b:v",
+            `${rate}k`,
+            ...vbv,
+          ]
+        : ["-vf", `${vf},format=nv12,hwupload`, "-c:v", "h264_vaapi", "-qp", "23"];
     case "qsv":
-      return ["-vf", `${DOWNSCALE},format=nv12`, "-c:v", "h264_qsv", "-global_quality", "23"];
+      return capped
+        ? ["-vf", `${vf},format=nv12`, "-c:v", "h264_qsv", "-b:v", `${rate}k`, ...vbv]
+        : ["-vf", `${vf},format=nv12`, "-c:v", "h264_qsv", "-global_quality", "23"];
     case "nvenc":
-      return [
-        "-vf",
-        `${DOWNSCALE},format=nv12`,
-        "-c:v",
-        "h264_nvenc",
-        "-preset",
-        "p4",
-        "-cq",
-        "23",
-      ];
+      return capped
+        ? [
+            "-vf",
+            `${vf},format=nv12`,
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            "p4",
+            "-rc",
+            "vbr",
+            "-b:v",
+            `${rate}k`,
+            ...vbv,
+          ]
+        : ["-vf", `${vf},format=nv12`, "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"];
     case "none":
     default:
       return [
         // Software (libx264) can't keep up with 4K/1440p in real time, so the
         // encoder falls behind playback → the stalls/"won't play" people hit.
         "-vf",
-        DOWNSCALE,
+        vf,
         "-c:v",
         "libx264",
         "-preset",
         "veryfast",
+        // Capped CRF: spend fewer bits than the ceiling when the picture is easy,
+        // never more than it when the picture is hard.
         "-crf",
-        "21",
-        "-maxrate",
-        "8M",
-        "-bufsize",
-        "16M",
+        capped ? "23" : "21",
+        ...vbv,
         "-pix_fmt",
         "yuv420p",
         // Keyframes ONLY at the forced 4s boundaries (no mid-segment scene-cut
@@ -175,14 +219,16 @@ function videoArgs(mode: HwAccel): string[] {
 }
 
 /** Build the full ffmpeg argv for a seekable HLS (mpegts) transcode that begins at
- *  `startSegment` (segment index) and numbers its segments by absolute position. */
+ *  `startSegment` (segment index) and numbers its segments by absolute position.
+ *  `quality` is the bitrate rung the output is pinned to (default: the top one). */
 export function buildFfmpegArgs(
   absPath: string,
   dir: string,
   mode: HwAccel,
   vaapiDevice: string,
   startSegment: number,
-  audioTrack?: number
+  audioTrack?: number,
+  quality: TranscodeQuality = DEFAULT_TRANSCODE_QUALITY
 ): string[] {
   const startSec = Math.max(0, startSegment) * SEG_DUR;
   const seek = startSec > 0 ? ["-ss", String(startSec)] : [];
@@ -202,7 +248,7 @@ export function buildFfmpegArgs(
     "0:v:0",
     "-map",
     `0:a:${audioIndex}?`,
-    ...videoArgs(mode),
+    ...videoArgs(mode, quality),
     // Force a keyframe at every 4 s segment boundary. Timestamps are absolute
     // (`-copyts`), so the expression is anchored at this run's start offset —
     // otherwise every early frame would be forced to a keyframe after a seek.
@@ -213,7 +259,7 @@ export function buildFfmpegArgs(
     "-ac",
     "2",
     "-b:a",
-    "160k",
+    `${quality.audioKbps}k`,
     // Stretch/squeeze audio to its timestamps so long files can't drift out of
     // A/V sync (drifty sources play "weird" — lips ahead/behind the picture).
     "-af",
@@ -438,7 +484,8 @@ function spawnEncoder(session: Session, startSegment: number): void {
     settings.transcodeHwAccel,
     settings.transcodeVaapiDevice,
     startSegment,
-    session.audioTrack ?? undefined
+    session.audioTrack ?? undefined,
+    session.quality
   );
 
   const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
@@ -586,6 +633,7 @@ export async function startSession(absPath: string, opts: StartOpts = {}): Promi
     segmentCount: durationSec > 0 ? Math.ceil(durationSec / SEG_DUR) : 0,
     audioTrack,
     encoderStart: startSegment,
+    quality: transcodeQuality(opts.quality),
   };
   sessions().set(id, session);
 

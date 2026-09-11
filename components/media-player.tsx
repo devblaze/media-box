@@ -25,6 +25,18 @@ import {
   type SubtitleTrack,
 } from "@/components/subtitle-overlay";
 import type { MediaInfo } from "@/server/library/media-info";
+import { cachedLinkKbps, measureLinkKbps, rememberLinkKbps } from "@/lib/bandwidth";
+import {
+  DEFAULT_TRANSCODE_QUALITY,
+  TRANSCODE_QUALITIES,
+  formatKbps,
+  linkCanCarry,
+  lowerQuality,
+  qualityForLinkKbps,
+  transcodeQuality,
+  worseQuality,
+  type TranscodeQuality,
+} from "@/lib/transcode-quality";
 
 // Type-only import of the hls.js instance type. The runtime class is loaded via
 // a dynamic `import("hls.js")` inside the player effect so it is code-split out
@@ -245,6 +257,30 @@ function saveForceTranscode(on: boolean): void {
     else window.localStorage.removeItem(FORCE_TRANSCODE_KEY);
   } catch {
     /* storage disabled — non-fatal, the choice just isn't remembered */
+  }
+}
+
+// Persisted stream-quality choice: "auto" (follow the measured link speed) or a
+// rung id from the ladder. Remembered per browser, because the thing it really
+// describes — how good this device's connection to the server is — doesn't change
+// between titles.
+const QUALITY_PREF_KEY = "mediabox.streamQuality";
+const AUTO_QUALITY = "auto";
+function loadQualityPref(): string {
+  if (typeof window === "undefined") return AUTO_QUALITY;
+  try {
+    return window.localStorage.getItem(QUALITY_PREF_KEY) || AUTO_QUALITY;
+  } catch {
+    return AUTO_QUALITY;
+  }
+}
+function saveQualityPref(value: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (value === AUTO_QUALITY) window.localStorage.removeItem(QUALITY_PREF_KEY);
+    else window.localStorage.setItem(QUALITY_PREF_KEY, value);
+  } catch {
+    /* storage disabled — the choice just isn't remembered */
   }
 }
 
@@ -567,13 +603,110 @@ export function VideoPlayerModal({
   const [selectedFileId, setSelectedFileId] = useState<number | null>(null);
   const [qualityOpen, setQualityOpen] = useState(false);
 
+  // ---- connection-aware streaming ----
+  // How fast this browser can actually pull bytes from THIS server, in kbps.
+  // Seeded from a recent measurement in this tab, so the second title of a sitting
+  // decides instantly; null until one lands, which means "assume nothing" — the
+  // same behaviour as before any of this existed.
+  const [linkKbps, setLinkKbps] = useState<number | null>(() => cachedLinkKbps());
+  // "auto" (follow the link speed) or a rung id the viewer picked by hand.
+  const [qualityPref, setQualityPref] = useState<string>(loadQualityPref);
+  // A rung forced by the stream failing to keep up, whatever the preference says.
+  const [qualityFloor, setQualityFloor] = useState<string | null>(null);
+  // Where a restarted transcode session must pick up, set when the rung changes
+  // mid-playback or direct play gives up part-way through.
+  const [restartAt, setRestartAt] = useState<number | null>(null);
+  // Direct play stalled for good and handed over to the transcoder.
+  const [directGaveUp, setDirectGaveUp] = useState(false);
+  const [bitrateOpen, setBitrateOpen] = useState(false);
+  // Set once the viewer picks a mode themselves: their choice then sticks, and
+  // the bandwidth check stops overriding it.
+  const [modeChosenByUser, setModeChosenByUser] = useState(false);
+  // Latest whole-second play position, for restarting a stream where it left off.
+  const playedSecondsRef = useRef(0);
+
+  // The rung in force: the preference, never above whatever a stall has forced.
+  const preferredQuality =
+    qualityPref === AUTO_QUALITY ? qualityForLinkKbps(linkKbps) : transcodeQuality(qualityPref);
+  const activeQuality = qualityFloor
+    ? worseQuality(preferredQuality, transcodeQuality(qualityFloor))
+    : preferredQuality;
+
+  // Measure the link against the very file about to play, once per title, reusing
+  // a recent measurement from this tab. The probe runs ALONGSIDE playback rather
+  // than gating it: a healthy connection finishes it in well under a second and
+  // notices nothing, and it is only on a bad one — where the answer matters — that
+  // it costs a couple of seconds of bandwidth.
+  useEffect(() => {
+    if (cachedLinkKbps() != null) return; // a recent measurement still stands
+    let cancelled = false;
+    const url = `/api/v1/stream/${current.type}/${current.id}${
+      selectedFileId != null ? `?file=${selectedFileId}` : ""
+    }`;
+    void measureLinkKbps(url).then((kbps) => {
+      if (cancelled || kbps == null) return;
+      rememberLinkKbps(kbps);
+      setLinkKbps(kbps);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [current.type, current.id, selectedFileId]);
+
+  // Bitrate of the file that would be direct-played, kbps. The version list gives
+  // the file ACTUALLY playing (so it stays right after navigating to a neighbour
+  // episode); the probed `mediaInfo` covers the moment before that list resolves.
+  const playingVersion =
+    versions.find((v) => v.fileId === selectedFileId) ??
+    versions.find((v) => v.isPrimary) ??
+    versions[0];
+  const sourceKbps =
+    playingVersion?.durationSec && playingVersion.size > 0
+      ? (playingVersion.size * 8) / playingVersion.durationSec / 1000
+      : mediaInfo?.bitrate
+        ? mediaInfo.bitrate / 1000
+        : null;
+
+  // A weak connection is the one failure direct play cannot report: the browser
+  // waits for bytes that arrive slower than they are consumed, raises no error,
+  // and buffers forever. So when the measured link can't carry the file's own
+  // bitrate, don't attempt it — play a transcode sized for the link instead.
+  // Derived rather than stored, so it takes effect on the render a measurement
+  // lands, with no second pass through an effect.
+  const linkBlocksDirect =
+    !modeChosenByUser && sourceKbps != null && !linkCanCarry(sourceKbps, linkKbps);
+  const effectiveMode: "direct" | "transcode" =
+    mode === "direct" && linkBlocksDirect ? "transcode" : mode;
+  // Whether what's playing was cut down to fit the connection — drives the amber
+  // treatment on the quality chip and the note in its menu.
+  const reducedForLink = linkBlocksDirect || directGaveUp || qualityFloor != null;
+
+  // Anything that re-creates the stream — a new rung, a different version or audio
+  // track, switching between direct and transcoded — must record where playback
+  // had got to, or the freshly built stream inherits a stale position (or an older
+  // one from earlier in this sitting) and jumps backwards.
+  const resumeHere = useCallback(() => {
+    setRestartAt(playedSecondsRef.current > 0 ? playedSecondsRef.current : null);
+  }, []);
+
+  // Drop to the next rung down and resume there. Called when the stream keeps
+  // stalling, or when direct play never gets going. Returns false at the bottom
+  // of the ladder, where there is nothing further to give up.
+  const stepDownQuality = useCallback(() => {
+    const next = lowerQuality(activeQuality.id);
+    if (!next) return false;
+    setQualityFloor(next.id);
+    resumeHere();
+    return true;
+  }, [activeQuality.id, resumeHere]);
+
   // The overlay is portaled to <body>. Without this, the player is a React child
   // of whatever card opened it, and clicks bubble (through the React tree) to that
   // card's onClick/Link — which made a click on the video "exit to home".
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  const barVisible = controlsVisible || ccOpen || qualityOpen || audioOpen;
+  const barVisible = controlsVisible || ccOpen || qualityOpen || audioOpen || bitrateOpen;
 
   // Opens windowed (full-page overlay, browser chrome still visible). Native
   // fullscreen is opt-in via the maximize button / `F` — no auto-request here.
@@ -724,6 +857,12 @@ export function VideoPlayerModal({
     setCurrent({ type: "episode", id: n.id });
     setCurrentTitle(neighborLabel(n));
     setMode(loadForceTranscode() ? "transcode" : "direct");
+    // A new title starts from the top of the ladder decision again: no resume
+    // offset, and the automatic mode choice is live once more. The rung floor is
+    // deliberately kept — the connection that forced it hasn't changed.
+    setRestartAt(null);
+    setDirectGaveUp(false);
+    setModeChosenByUser(false);
     setSelectedFileId(null);
     setVersions([]);
     setSelectedSub(-1);
@@ -866,13 +1005,13 @@ export function VideoPlayerModal({
   // as `startSec` instead (an event playlist can't seek to unencoded time).
   const joinerSeeded = useRef(false);
   useEffect(() => {
-    if (joinerSeeded.current || sync?.role !== "joiner" || mode !== "direct") return;
+    if (joinerSeeded.current || sync?.role !== "joiner" || effectiveMode !== "direct") return;
     const start = sync.startPositionSeconds;
     if (start == null || start <= 0) return;
     joinerSeeded.current = true;
     seekNonce.current += 1;
     setSeekReq({ t: start, n: seekNonce.current });
-  }, [sync, mode]);
+  }, [sync, effectiveMode]);
 
   // Fetch skip-intro / skip-recap segments (from chapter markers) for the title.
   useEffect(() => {
@@ -925,6 +1064,7 @@ export function VideoPlayerModal({
   const handleTime = useCallback(
     (currentTime: number, duration?: number) => {
       const sec = Math.floor(currentTime);
+      playedSecondsRef.current = sec;
       setPlayedSeconds((prev) => (prev === sec ? prev : sec));
       // Track the element's duration for the custom seek bar (a live transcode
       // reports only the encoded-so-far length — the probed duration wins there).
@@ -998,6 +1138,30 @@ export function VideoPlayerModal({
       if (hideTimer.current) window.clearTimeout(hideTimer.current);
     };
   }, [showControls]);
+
+  // Pick a stream-quality rung by hand, or hand the choice back to "auto".
+  // Naming a rung means "encode it at this size", which only a transcode can do;
+  // "auto" returns to the normal decision (direct play unless the measured link
+  // or the file's own codecs rule it out).
+  const chooseQuality = useCallback(
+    (id: string) => {
+      setQualityPref(id);
+      saveQualityPref(id);
+      setQualityFloor(null); // a deliberate choice clears any stall-forced drop
+      setBitrateOpen(false);
+      if (id === AUTO_QUALITY) {
+        setDirectGaveUp(false);
+        setModeChosenByUser(false);
+        setMode(loadForceTranscode() || !canDirectPlay(mediaInfo) ? "transcode" : "direct");
+      } else {
+        resumeHere();
+        setModeChosenByUser(true);
+        setMode("transcode");
+      }
+      showControls();
+    },
+    [mediaInfo, resumeHere, showControls]
+  );
 
   const handleClose = useCallback(() => {
     exitFullscreen();
@@ -1154,10 +1318,11 @@ export function VideoPlayerModal({
         e.preventDefault();
         toggleFullscreen();
       } else if (e.key === "Escape") {
-        if (ccOpen || qualityOpen || audioOpen) {
+        if (ccOpen || qualityOpen || audioOpen || bitrateOpen) {
           setCcOpen(false);
           setQualityOpen(false);
           setAudioOpen(false);
+          setBitrateOpen(false);
         } else if (document.fullscreenElement) {
           exitFullscreen();
         } else {
@@ -1199,6 +1364,7 @@ export function VideoPlayerModal({
     ccOpen,
     qualityOpen,
     audioOpen,
+    bitrateOpen,
     seekBy,
     changeVolume,
     toggleMute,
@@ -1234,7 +1400,7 @@ export function VideoPlayerModal({
       {/* Keying by the selected fileId remounts the player when the version
           changes, which re-inits the source (and, via the shared hooks, saves the
           old position then resumes it on the newly-loaded stream). */}
-      {mode === "direct" ? (
+      {effectiveMode === "direct" ? (
         <DirectPlayer
           key={`${current.type}-${current.id}-${selectedFileId ?? "default"}`}
           target={current}
@@ -1243,7 +1409,18 @@ export function VideoPlayerModal({
           selectedSub={selectedSub}
           subtitleStyle={subtitleStyle}
           subtitleOffset={subtitleOffset}
-          onFallback={() => setMode("transcode")}
+          onFallback={() => {
+            resumeHere();
+            setMode("transcode");
+          }}
+          onTooSlow={() => {
+            // The file is arriving slower than it plays and the browser will
+            // never say so. Hand over to a transcode sized for the link, picking
+            // up wherever direct play got to.
+            resumeHere();
+            setDirectGaveUp(true);
+            setMode("transcode");
+          }}
           onTime={handleTime}
           onEnded={handleEnded}
           seekReq={seekReq}
@@ -1252,7 +1429,7 @@ export function VideoPlayerModal({
         />
       ) : (
         <TranscodePlayer
-          key={`${current.type}-${current.id}-${selectedFileId ?? "default"}-a${selectedAudio ?? "def"}`}
+          key={`${current.type}-${current.id}-${selectedFileId ?? "default"}-a${selectedAudio ?? "def"}-q${activeQuality.id}`}
           target={current}
           fileId={selectedFileId}
           tracks={tracks}
@@ -1265,7 +1442,11 @@ export function VideoPlayerModal({
           audioTrack={selectedAudio}
           onVideoEl={registerVideo}
           disableProgress={isJoiner}
-          initialStartSec={isJoiner ? (sync?.startPositionSeconds ?? 0) : undefined}
+          initialStartSec={
+            isJoiner ? (sync?.startPositionSeconds ?? 0) : (restartAt ?? undefined)
+          }
+          quality={activeQuality}
+          onTooSlow={stepDownQuality}
         />
       )}
 
@@ -1516,6 +1697,11 @@ export function VideoPlayerModal({
               const next = !forceTranscode;
               setForceTranscode(next);
               saveForceTranscode(next);
+              // An explicit choice wins from here on: the bandwidth check stops
+              // moving the viewer off the mode they asked for.
+              setModeChosenByUser(true);
+              setDirectGaveUp(false);
+              resumeHere();
               setMode(next || !canDirectPlay(mediaInfo) ? "transcode" : "direct");
               showControls();
             }}
@@ -1523,7 +1709,7 @@ export function VideoPlayerModal({
             title={
               forceTranscode
                 ? "Transcoding is forced (fixes no-audio / incompatible files). Tap to go back to automatic."
-                : mode === "transcode"
+                : effectiveMode === "transcode"
                   ? "This file is transcoded automatically for this device. Tap to always transcode."
                   : "Playing directly. No sound or won't play? Tap to transcode — re-encodes audio to compatible stereo AAC."
             }
@@ -1534,8 +1720,79 @@ export function VideoPlayerModal({
                 : "border-white/15 text-zinc-300 hover:bg-white/10"
             )}
           >
-            {mode === "transcode" ? "Transcoding" : "Direct"}
+            {effectiveMode === "transcode" ? "Transcoding" : "Direct"}
           </button>
+
+          {/* Stream quality. This is the control for a weak link to the server:
+              rather than waiting on a stream that cannot arrive in time, ask for
+              a smaller one. "Auto" follows the measured connection speed and
+              steps down on its own when playback keeps stalling. */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                setBitrateOpen((o) => !o);
+                setCcOpen(false);
+                setQualityOpen(false);
+                setAudioOpen(false);
+                showControls();
+              }}
+              aria-haspopup="menu"
+              aria-expanded={bitrateOpen}
+              title={
+                qualityPref === AUTO_QUALITY
+                  ? linkKbps != null
+                    ? `Stream quality: automatic. Your connection to the server measures ${formatKbps(linkKbps)}.`
+                    : "Stream quality: automatic."
+                  : `Stream quality fixed at ${activeQuality.label}.`
+              }
+              className={cn(
+                "rounded-md border px-2 py-1 text-xs font-medium transition-colors",
+                reducedForLink
+                  ? "border-amber-500/60 bg-amber-500/15 text-amber-300"
+                  : "border-white/15 text-zinc-300 hover:bg-white/10"
+              )}
+            >
+              {qualityPref !== AUTO_QUALITY
+                ? activeQuality.label
+                : effectiveMode === "transcode"
+                  ? `Auto · ${activeQuality.height}p`
+                  : "Auto"}
+            </button>
+            {bitrateOpen && (
+              <div
+                role="menu"
+                className="absolute right-0 bottom-full mb-2 max-h-64 min-w-56 overflow-auto rounded-md border border-white/10 bg-zinc-900/95 py-1 shadow-xl backdrop-blur"
+              >
+                <p className="px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+                  Stream quality
+                </p>
+                <SubtitleMenuItem
+                  label={
+                    linkKbps != null
+                      ? `Auto · connection ${formatKbps(linkKbps)}`
+                      : "Auto · match my connection"
+                  }
+                  active={qualityPref === AUTO_QUALITY}
+                  onSelect={() => chooseQuality(AUTO_QUALITY)}
+                />
+                {TRANSCODE_QUALITIES.map((q) => (
+                  <SubtitleMenuItem
+                    key={q.id}
+                    label={q.label}
+                    active={qualityPref === q.id}
+                    onSelect={() => chooseQuality(q.id)}
+                  />
+                ))}
+                {reducedForLink && qualityPref === AUTO_QUALITY && (
+                  <p className="px-3 py-1 text-[11px] text-amber-400/90">
+                    Reduced to {activeQuality.label} — the connection to the server could not carry
+                    more.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Current-quality chip — always shown when a quality is known. */}
           {qualityChip && (
@@ -1589,6 +1846,7 @@ export function VideoPlayerModal({
                       active={v.fileId === selectedFileId}
                       onSelect={() => {
                         setSelectedFileId(v.fileId);
+                        resumeHere();
                         setQualityOpen(false);
                         showControls();
                       }}
@@ -1651,6 +1909,7 @@ export function VideoPlayerModal({
                       active={selectedAudio === t.index || (selectedAudio == null && t.isDefault)}
                       onSelect={() => {
                         setSelectedAudio(t.index);
+                        resumeHere();
                         setMode("transcode"); // remap audio → transcode required
                         setAudioOpen(false);
                         showControls();
@@ -1958,7 +2217,22 @@ function useRegisterVideo(
   }, [videoRef, onVideoEl]);
 }
 
-/** Native direct play with a "Try transcoding" fallback on <video> error. */
+/**
+ * How long direct play may make no progress before the player says so, and
+ * before it gives up. A file that arrives slower than it plays fires no `error`
+ * event — the element simply waits for bytes — so these timers are the only
+ * signal that a weak connection has stalled the stream for good.
+ */
+const SLOW_NOTICE_MS = 8_000;
+const SLOW_HANDOVER_MS = 20_000;
+
+/** Buffer stalls within this window count towards the same slow-link verdict. */
+const STALL_WINDOW_MS = 60_000;
+/** Stalls in that window before the transcode drops to a smaller rung. */
+const STALLS_BEFORE_STEP_DOWN = 3;
+
+/** Native direct play with a "Try transcoding" fallback on <video> error, and a
+ *  watchdog that hands over to a transcode when the bytes can't keep up. */
 function DirectPlayer({
   target,
   fileId,
@@ -1967,6 +2241,7 @@ function DirectPlayer({
   subtitleStyle,
   subtitleOffset,
   onFallback,
+  onTooSlow,
   onTime,
   onEnded,
   seekReq,
@@ -1980,6 +2255,8 @@ function DirectPlayer({
   subtitleStyle: SubtitleStyle;
   subtitleOffset: number;
   onFallback: () => void;
+  /** Called when playback has stalled long enough that direct play won't recover. */
+  onTooSlow: () => void;
   onTime?: (currentTime: number, duration: number) => void;
   onEnded?: () => void;
   seekReq?: { t: number; n: number } | null;
@@ -1989,6 +2266,49 @@ function DirectPlayer({
   const videoRef = useRef<HTMLVideoElement>(null);
   const subtitleSinkRef = useRef<HTMLDivElement>(null);
   const [errored, setErrored] = useState(false);
+  const [stalled, setStalled] = useState(false);
+  // Held in a ref so a caller passing an inline arrow can't restart the watchdog
+  // (and reset its timers) on every parent render.
+  const tooSlowRef = useRef(onTooSlow);
+  useEffect(() => {
+    tooSlowRef.current = onTooSlow;
+  }, [onTooSlow]);
+
+  // Progress watchdog. "Healthy" is: enough data buffered to keep playing, and
+  // either advancing or deliberately paused. Everything else — buffering that
+  // never completes, a playhead that stops moving — counts against the timers.
+  useEffect(() => {
+    let healthyAt = Date.now();
+    let lastTime = -1;
+    let hasPlayed = false;
+    let handedOver = false;
+    const id = window.setInterval(() => {
+      const v = videoRef.current;
+      if (!v || handedOver) return;
+      const playable = v.readyState >= 3; // HAVE_FUTURE_DATA
+      if (playable && !v.paused) hasPlayed = true;
+      // Paused once playback got going is the viewer's doing, not a stall. Paused
+      // BEFORE that means autoplay is still waiting on data — which is exactly the
+      // case we're watching for.
+      const waiting = !v.paused || (!hasPlayed && !playable);
+      const healthy = playable && (v.paused || v.currentTime > lastTime + 0.05);
+      lastTime = v.currentTime;
+      const now = Date.now();
+      if (!waiting || healthy) {
+        healthyAt = now;
+        setStalled(false);
+        return;
+      }
+      const stuckMs = now - healthyAt;
+      if (stuckMs >= SLOW_HANDOVER_MS) {
+        handedOver = true;
+        tooSlowRef.current();
+      } else if (stuckMs >= SLOW_NOTICE_MS) {
+        setStalled(true);
+      }
+    }, 1_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   useWatchProgress(videoRef, target, disableProgress);
   useStyledSubtitles(videoRef, tracks, selectedSub, subtitleOffset, subtitleSinkRef);
@@ -2012,6 +2332,21 @@ function DirectPlayer({
         <SubtitleTracks tracks={tracks} />
       </video>
       <SubtitleOverlay sinkRef={subtitleSinkRef} style={subtitleStyle} />
+      {stalled && !errored && (
+        <div className="pointer-events-auto absolute inset-x-0 top-20 z-20 flex justify-center px-4">
+          <Callout tone="warning" title="Slow connection" className="max-w-md bg-zinc-900/90">
+            <p>
+              This file is arriving from the server more slowly than it plays. Switching to a
+              stream sized for your connection…
+            </p>
+            <div className="mt-2">
+              <Button size="sm" onClick={() => tooSlowRef.current()}>
+                Switch now
+              </Button>
+            </div>
+          </Callout>
+        </div>
+      )}
       {errored && (
         <div className="absolute inset-0 z-0 flex items-center justify-center p-6">
           <Callout tone="warning" title="Direct play failed" className="max-w-md bg-zinc-900/90">
@@ -2051,6 +2386,8 @@ function TranscodePlayer({
   onVideoEl,
   disableProgress,
   initialStartSec,
+  quality,
+  onTooSlow,
 }: {
   target: PlaybackTarget;
   fileId: number | null;
@@ -2064,14 +2401,28 @@ function TranscodePlayer({
   audioTrack?: number | null;
   onVideoEl?: (el: HTMLVideoElement | null) => void;
   disableProgress?: boolean;
-  /** Media-time to start the transcode at (watch-together joiners). Undefined = resume from saved progress. */
+  /** Media-time to start the transcode at — a watch-together joiner's host position,
+   *  or where playback had got to when the stream was re-created (a quality change,
+   *  a hand-over from direct play). Undefined = resume from saved progress. */
   initialStartSec?: number;
+  /** Bitrate rung the session is pinned to. Changing it remounts this player. */
+  quality: TranscodeQuality;
+  /** Ask for the next rung down. False when there is none left to drop to. */
+  onTooSlow: () => boolean;
 }) {
   const { type, id } = target;
   const videoRef = useRef<HTMLVideoElement>(null);
   const subtitleSinkRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<"starting" | "playing" | "error">("starting");
   const [error, setError] = useState<string | null>(null);
+  // Set when the stream keeps stalling and there is no lower rung left to try.
+  const [linkTooSlow, setLinkTooSlow] = useState(false);
+  // Held in a ref so the start effect doesn't restart the whole session just
+  // because the parent re-rendered with a new callback identity.
+  const tooSlowRef = useRef(onTooSlow);
+  useEffect(() => {
+    tooSlowRef.current = onTooSlow;
+  }, [onTooSlow]);
   // Media-time of the stream's 0:00. null until known — an HLS event playlist
   // can't seek to unencoded time, so resume must happen server-side via
   // `startSec` (ffmpeg -ss), never by seeking the <video> after the fact.
@@ -2120,6 +2471,7 @@ function TranscodePlayer({
             ...(fileId != null ? { fileId } : {}),
             ...(audioTrack != null ? { audioTrack } : {}),
             ...(startSec > 0 ? { startSec } : {}),
+            quality: quality.id,
           }),
         });
         // A seekable (VOD) transcode spans the WHOLE runtime, so the element's
@@ -2165,17 +2517,83 @@ function TranscodePlayer({
             maxMaxBufferLength: 600,
             maxBufferSize: 200 * 1000 * 1000,
             backBufferLength: 90,
+            // Segments are encoded ON DEMAND, so the first byte of one the encoder
+            // hasn't reached yet can be twenty seconds away, and down a weak link
+            // the segment then takes far longer to arrive than hls.js's defaults
+            // (10 s to first byte) allow. Those defaults turn a slow connection
+            // into a dead stream: every fragment times out, the retries run out,
+            // and the player reports a failure that was only ever slowness. Wait
+            // it out, with backoff, instead.
+            fragLoadPolicy: {
+              default: {
+                maxTimeToFirstByteMs: 30_000,
+                maxLoadTimeMs: 300_000,
+                timeoutRetry: {
+                  maxNumRetry: 6,
+                  retryDelayMs: 1_000,
+                  maxRetryDelayMs: 8_000,
+                  backoff: "linear",
+                },
+                errorRetry: {
+                  maxNumRetry: 8,
+                  retryDelayMs: 1_000,
+                  maxRetryDelayMs: 8_000,
+                  backoff: "exponential",
+                },
+              },
+            },
+            playlistLoadPolicy: {
+              default: {
+                maxTimeToFirstByteMs: 20_000,
+                maxLoadTimeMs: 60_000,
+                timeoutRetry: {
+                  maxNumRetry: 4,
+                  retryDelayMs: 1_000,
+                  maxRetryDelayMs: 8_000,
+                  backoff: "linear",
+                },
+                errorRetry: {
+                  maxNumRetry: 4,
+                  retryDelayMs: 1_000,
+                  maxRetryDelayMs: 8_000,
+                  backoff: "linear",
+                },
+              },
+            },
           });
           // Count CONSECUTIVE fatal errors (reset on any successful fragment): a
           // fatal error mid-transcode is usually just reaching the encoder's edge
           // (segment not written yet), so recover a few times before giving up.
           let consecutiveFatal = 0;
+          // Buffer stalls, counted over a rolling window. Unlike a load failure,
+          // a stall means the segments are arriving fine — just slower than they
+          // play — which no amount of retrying fixes.
+          let stalls = 0;
+          let lastStallAt = 0;
+          let steppedDown = false;
           const activeHls = hls;
           activeHls.on(Hls.Events.FRAG_BUFFERED, () => {
             consecutiveFatal = 0;
+            // A whole window of clean playback since the last stall: the link
+            // recovered, so stop telling the viewer it hasn't.
+            if (lastStallAt > 0 && Date.now() - lastStallAt > STALL_WINDOW_MS) {
+              setLinkTooSlow(false);
+            }
           });
           activeHls.on(Hls.Events.ERROR, (_evt, data) => {
-            if (!data.fatal || cancelled) return;
+            if (cancelled || steppedDown) return;
+            if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) {
+              const now = Date.now();
+              stalls = now - lastStallAt > STALL_WINDOW_MS ? 1 : stalls + 1;
+              lastStallAt = now;
+              if (stalls < STALLS_BEFORE_STEP_DOWN) return;
+              // Dropping a rung restarts the session from here, so this player
+              // is about to be replaced — leave the old one alone.
+              steppedDown = tooSlowRef.current();
+              if (!steppedDown) setLinkTooSlow(true);
+              return;
+            }
+            if (!data.fatal) return;
             if (consecutiveFatal < 6) {
               consecutiveFatal += 1;
               if (data.type === Hls.ErrorTypes.NETWORK_ERROR) activeHls.startLoad();
@@ -2184,6 +2602,12 @@ function TranscodePlayer({
                 setStatus("error");
                 setError("The transcode stream failed. The file may be unsupported.");
               }
+              return;
+            }
+            // Out of recovery attempts. If the fragments were failing to load, a
+            // smaller stream is worth trying before calling the playback dead.
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && tooSlowRef.current()) {
+              steppedDown = true;
               return;
             }
             setStatus("error");
@@ -2228,7 +2652,7 @@ function TranscodePlayer({
         );
       }
     };
-  }, [type, id, fileId, audioTrack, initialStartSec, disableProgress]);
+  }, [type, id, fileId, audioTrack, initialStartSec, disableProgress, quality.id]);
 
   return (
     <>
@@ -2246,6 +2670,19 @@ function TranscodePlayer({
         <div className="absolute inset-0 z-0 flex flex-col items-center justify-center gap-2 bg-black/70 text-sm text-zinc-300">
           <Spinner className="size-6" />
           <span>Starting transcode…</span>
+          {quality.id !== DEFAULT_TRANSCODE_QUALITY.id && (
+            <span className="text-xs text-zinc-500">{quality.label} for your connection</span>
+          )}
+        </div>
+      )}
+      {linkTooSlow && status !== "error" && (
+        <div className="pointer-events-none absolute inset-x-0 top-20 z-20 flex justify-center px-4">
+          <Callout tone="warning" title="Connection too slow" className="max-w-md bg-zinc-900/90">
+            <p>
+              Playback keeps pausing to buffer even at {quality.label}, the smallest stream this
+              server makes. The connection to the server is the limit here, not the file.
+            </p>
+          </Callout>
         </div>
       )}
       {status === "error" && (

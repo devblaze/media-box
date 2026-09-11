@@ -128,6 +128,10 @@ export async function streamFile(
     start = Number(startStr);
     // Open-ended bytes=N- runs through EOF.
     end = endStr === "" ? size - 1 : Number(endStr);
+    // RFC 7233: an end past EOF is CLAMPED, not an error. Players that ask for a
+    // fixed-size chunk (rather than an open-ended range) hit this on the last
+    // chunk of every file, and a 416 there reads to them as a broken stream.
+    if (Number.isFinite(end) && end >= size) end = size - 1;
   }
 
   // Validate 0 <= start <= end < size.
@@ -136,8 +140,7 @@ export async function streamFile(
     !Number.isFinite(end) ||
     start < 0 ||
     end < start ||
-    start >= size ||
-    end >= size
+    start >= size
   ) {
     return unsatisfiable(size);
   }

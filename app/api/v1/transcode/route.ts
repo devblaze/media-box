@@ -21,6 +21,9 @@ const bodySchema = z.object({
   // 0-based audio-stream index to transcode (from /audio-tracks). Defaults to the
   // first track when omitted.
   audioTrack: z.coerce.number().int().min(0).optional(),
+  // Bitrate rung to encode to (see lib/transcode-quality). Clients on a slow link
+  // ask for a lower one so the stream fits; omitted/unknown → the top rung.
+  quality: z.string().optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -40,6 +43,7 @@ export async function POST(request: NextRequest) {
     const session = await startSession(resolved.absPath, {
       startSec: body.startSec,
       audioTrack: body.audioTrack,
+      quality: body.quality,
     });
     return ok({
       sessionId: session.id,
@@ -51,6 +55,10 @@ export async function POST(request: NextRequest) {
       // growing event playlist, whose 0:00 IS `startSec`.
       seekable: session.segmentCount > 0,
       durationSec: session.durationSec,
+      // Echo the rung actually in force, so a client that asked for an unknown
+      // one (or omitted it) knows what it is getting.
+      quality: session.quality.id,
+      maxKbps: session.quality.videoKbps + session.quality.audioKbps,
     });
   } catch (err) {
     if (err instanceof CapReachedError) {

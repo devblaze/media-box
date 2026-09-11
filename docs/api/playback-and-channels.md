@@ -140,7 +140,7 @@ Direct-play a movie's video file with byte-range (seek) support. Exports both `G
 - **Auth:** Any authenticated (`getRequestUser`); returns `401` `Unauthorized` (plain text) otherwise.
 - **Path params:** `id` — movie id.
 - **Query params:** `file` — optional numeric movie-file id (selects a specific file when a movie has more than one).
-- **Response:** binary video stream, `Content-Type` inferred from file extension (mp4/mkv/webm/…). No `Range` header → `200` full body with `Content-Length` + `Accept-Ranges: bytes`; `Range: bytes=start-end` → `206` partial with `Content-Range`; invalid/unsatisfiable range → `416`. `HEAD` returns the same status/headers with no body. Errors: `401` (plain), `404` `Not Found` (plain) if the media or file is missing.
+- **Response:** binary video stream, `Content-Type` inferred from file extension (mp4/mkv/webm/…). No `Range` header → `200` full body with `Content-Length` + `Accept-Ranges: bytes`; `Range: bytes=start-end` → `206` partial with `Content-Range`; an `end` past the last byte is clamped to it (per RFC 7233) rather than rejected; a malformed range, or a `start` at or past the end of the file → `416`. `HEAD` returns the same status/headers with no body. Errors: `401` (plain), `404` `Not Found` (plain) if the media or file is missing.
 - **Buffering:** bytes are served through an in-RAM read-ahead cache (setting `streamRamCacheMb`, default 2048 MiB; `0` disables): a background prefetcher stays a full budget ahead of the newest read position, so slow storage (HDD arrays / Unraid FUSE) is masked and a budget larger than the file keeps the whole movie in RAM. Cache entries are keyed by path+size+mtime, so replaced files never serve stale bytes.
 - **Example:**
   ```bash
@@ -175,7 +175,20 @@ Start an on-the-fly HLS transcode session (used when a file can't be direct-play
   - `fileId` — positive integer, optional (specific source file).
   - `startSec` — number ≥ 0, optional (seek offset to begin transcoding at).
   - `audioTrack` — integer ≥ 0, optional. 0-based audio-stream index to map (`0:a:index`, from `/audio-tracks`); defaults to the first track. Used to fix multi-audio files whose default track is silent/wrong.
-- **Response:** `200` — `{ "sessionId": "…", "url": "/api/v1/transcode/{sessionId}/index.m3u8", "seekable": true, "durationSec": 6215 }`. Errors: `400` `Invalid request body` (bad/failed Zod parse), `404` `Media not found`, `429` `{ error }` when the concurrent-session cap is reached, `503` `{ error: "ffmpeg not available" }`, `500`.
+  - `quality` — string, optional. Id of the bitrate rung to pin the session to (see `lib/transcode-quality.ts`): `max` (default) | `high` | `medium` | `low` | `minimal`. An unknown or omitted id falls back to `max`.
+
+  A session encodes **one** rendition — the playlist carries no ABR ladder, so the player cannot adapt its way out of trouble. Passing a lower `quality` is therefore how a client on a weak link gets a stream that actually fits: it measures the link itself and asks for the best rung that fits. The rung is fixed for the life of the session, so **changing quality means starting a new session** (`DELETE` the old one, `POST` again with the new id, and resume at the current position via `startSec`). Every rung caps the picture height as well as the bitrate — a link that can't carry 8 Mbps can't carry watchable 1080p at any bitrate.
+
+  | id | label | max height | video kbps | audio kbps | total = `maxKbps` |
+  | --- | --- | --- | --- | --- | --- |
+  | `max` (default) | Best · 1080p | 1080 | 8000 | 160 | 8160 |
+  | `high` | 1080p · 4 Mbps | 1080 | 4000 | 128 | 4128 |
+  | `medium` | 720p · 2 Mbps | 720 | 2000 | 128 | 2128 |
+  | `low` | 480p · 1 Mbps | 480 | 1000 | 96 | 1096 |
+  | `minimal` | 360p · 0.5 Mbps | 360 | 500 | 64 | 564 |
+
+  `max` reproduces the long-standing encode — capped CRF (quality-targeted) with the bitrate only as a ceiling. Every lower rung encodes to a hard bitrate ceiling (VBV) instead, because the point of those rungs is fitting a known, small budget.
+- **Response:** `200` — `{ "sessionId": "…", "url": "/api/v1/transcode/{sessionId}/index.m3u8", "seekable": true, "durationSec": 6215, "quality": "max", "maxKbps": 8160 }`. `quality` echoes the rung actually in force and `maxKbps` is that rung's video + audio bitrate, so a client that asked for an unknown id (or omitted it) knows what it is getting. Errors: `400` `Invalid request body` (bad/failed Zod parse), `404` `Media not found`, `429` `{ error }` when the concurrent-session cap is reached, `503` `{ error: "ffmpeg not available" }`, `500`.
 
   `seekable: true` (the normal case) means the playlist spans the **whole runtime** — every segment listed up front, each transcoded on demand when requested — so the player's timeline is **absolute media time**: seek anywhere, and do **not** add `startSec` as an offset. `startSec` then only tells ffmpeg where to begin encoding (so playback starts quickly at the resume point); the client still positions its own playhead.
 
@@ -184,7 +197,7 @@ Start an on-the-fly HLS transcode session (used when a file can't be direct-play
   ```bash
   curl -sS -X POST "$MEDIABOX_URL/api/v1/transcode" \
     -H "x-api-key: $MEDIABOX_API_KEY" -H "content-type: application/json" \
-    -d '{"type":"movie","id":12,"startSec":0}'
+    -d '{"type":"movie","id":12,"startSec":0,"quality":"medium"}'
   ```
 
 ---
