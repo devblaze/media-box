@@ -8,16 +8,18 @@ import { describe, expect, test } from "vitest";
 import {
   DEFAULT_TRANSCODE_QUALITY,
   LOWEST_TRANSCODE_QUALITY,
+  STEP_UP_LINK_FRACTION,
   TRANSCODE_QUALITIES,
   USABLE_LINK_FRACTION,
+  canStepUpTo,
   formatKbps,
+  higherQuality,
   linkCanCarry,
   lowerQuality,
   qualityForLinkKbps,
   qualityRank,
   qualityTotalKbps,
   transcodeQuality,
-  worseQuality,
 } from "./transcode-quality";
 
 describe("transcodeQuality", () => {
@@ -67,13 +69,36 @@ describe("lowerQuality", () => {
   });
 });
 
-describe("worseQuality", () => {
-  test("returns the more conservative of two rungs, whichever order", () => {
-    const max = transcodeQuality("max");
-    const low = transcodeQuality("low");
-    expect(worseQuality(max, low)).toBe(low);
-    expect(worseQuality(low, max)).toBe(low);
-    expect(worseQuality(low, low)).toBe(low);
+describe("higherQuality", () => {
+  test("steps one rung up the ladder", () => {
+    expect(higherQuality("minimal")?.id).toBe("low");
+    expect(higherQuality("high")?.id).toBe("max");
+  });
+
+  test("the top rung has nowhere to go, and an unknown id goes nowhere either", () => {
+    expect(higherQuality(DEFAULT_TRANSCODE_QUALITY.id)).toBeNull();
+    expect(higherQuality("ultra")).toBeNull();
+  });
+});
+
+describe("canStepUpTo", () => {
+  const medium = transcodeQuality("medium"); // 2128 kbps total
+
+  test("needs more headroom than merely staying put would", () => {
+    // The gap between the two fractions IS the hysteresis: a link that can carry
+    // a rung is not yet a link auto will climb to it.
+    const justCarries = qualityTotalKbps(medium) / USABLE_LINK_FRACTION;
+    expect(linkCanCarry(qualityTotalKbps(medium), justCarries)).toBe(true);
+    expect(canStepUpTo(medium, justCarries)).toBe(false);
+
+    const comfortable = qualityTotalKbps(medium) / STEP_UP_LINK_FRACTION;
+    expect(canStepUpTo(medium, comfortable)).toBe(true);
+  });
+
+  test("an unmeasured link never justifies stepping up", () => {
+    // Unlike linkCanCarry, where "unknown" means don't interfere.
+    expect(canStepUpTo(medium, null)).toBe(false);
+    expect(canStepUpTo(medium, 0)).toBe(false);
   });
 });
 

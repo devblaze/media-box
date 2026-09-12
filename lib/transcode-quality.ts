@@ -59,16 +59,33 @@ export function qualityRank(id: string): number {
   return TRANSCODE_QUALITIES.findIndex((q) => q.id === id);
 }
 
+/**
+ * How much of the measured link a rung must fit inside before auto will step UP
+ * to it. Deliberately tighter than {@link USABLE_LINK_FRACTION}, which is what
+ * keeps auto where it is: the gap between the two is the hysteresis band that
+ * stops a connection wobbling across one threshold from restarting the stream
+ * over and over.
+ */
+export const STEP_UP_LINK_FRACTION = 0.5;
+
+/** The next rung up, or null when already at the top. */
+export function higherQuality(id: string): TranscodeQuality | null {
+  const i = qualityRank(id);
+  if (i <= 0) return null;
+  return TRANSCODE_QUALITIES[i - 1] ?? null;
+}
+
+/** Whether a link measured at `linkKbps` has the headroom to move up to `q`. */
+export function canStepUpTo(q: TranscodeQuality, linkKbps: number | null): boolean {
+  if (linkKbps == null || linkKbps <= 0) return false;
+  return qualityTotalKbps(q) <= linkKbps * STEP_UP_LINK_FRACTION;
+}
+
 /** The next rung down, or null when already at the bottom. */
 export function lowerQuality(id: string): TranscodeQuality | null {
   const i = qualityRank(id);
   if (i < 0) return TRANSCODE_QUALITIES[1] ?? null;
   return TRANSCODE_QUALITIES[i + 1] ?? null;
-}
-
-/** Whichever of two rungs is the more conservative (lower) one. */
-export function worseQuality(a: TranscodeQuality, b: TranscodeQuality): TranscodeQuality {
-  return qualityRank(a.id) >= qualityRank(b.id) ? a : b;
 }
 
 /** True when a stream of `streamKbps` fits down a link measured at `linkKbps`. */

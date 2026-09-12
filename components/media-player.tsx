@@ -29,12 +29,14 @@ import { cachedLinkKbps, measureLinkKbps, rememberLinkKbps } from "@/lib/bandwid
 import {
   DEFAULT_TRANSCODE_QUALITY,
   TRANSCODE_QUALITIES,
+  canStepUpTo,
   formatKbps,
+  higherQuality,
   linkCanCarry,
   lowerQuality,
   qualityForLinkKbps,
+  qualityTotalKbps,
   transcodeQuality,
-  worseQuality,
   type TranscodeQuality,
 } from "@/lib/transcode-quality";
 
@@ -283,6 +285,20 @@ function saveQualityPref(value: string): void {
     /* storage disabled — the choice just isn't remembered */
   }
 }
+
+/** Quiet period after any automatic rung change before auto may step back up. */
+const AUTO_STEP_UP_COOLDOWN_MS = 90_000;
+/** How often the transcode reports its measured throughput back to the player. */
+const LINK_REPORT_INTERVAL_MS = 5_000;
+/** A fragment smaller than this is too small a sample to divide by. */
+const LINK_SAMPLE_MIN_BYTES = 64 * 1024;
+/**
+ * Floor on the time a sample is divided by. A small segment down a fast link can
+ * land inside the clock's noise; clamping turns that into a LOWER BOUND on the
+ * speed rather than a discarded sample, so a connection that recovers while a
+ * low rung is playing still produces the readings that let auto climb back.
+ */
+const LINK_SAMPLE_FLOOR_MS = 80;
 
 /** The full `GET /api/v1/subtitles` payload: tracks + live-search context. */
 type SubtitlesResponse = {
@@ -611,8 +627,11 @@ export function VideoPlayerModal({
   const [linkKbps, setLinkKbps] = useState<number | null>(() => cachedLinkKbps());
   // "auto" (follow the link speed) or a rung id the viewer picked by hand.
   const [qualityPref, setQualityPref] = useState<string>(loadQualityPref);
-  // A rung forced by the stream failing to keep up, whatever the preference says.
-  const [qualityFloor, setQualityFloor] = useState<string | null>(null);
+  // The rung "auto" has committed to. Deliberately a decision rather than a
+  // reading off the live measurement: a number that wanders across a threshold
+  // twice a minute would restart the stream twice a minute.
+  const [autoQuality, setAutoQuality] = useState<TranscodeQuality>(DEFAULT_TRANSCODE_QUALITY);
+  const lastAutoChangeRef = useRef(0);
   // Where a restarted transcode session must pick up, set when the rung changes
   // mid-playback or direct play gives up part-way through.
   const [restartAt, setRestartAt] = useState<number | null>(null);
@@ -625,18 +644,62 @@ export function VideoPlayerModal({
   // Latest whole-second play position, for restarting a stream where it left off.
   const playedSecondsRef = useRef(0);
 
-  // The rung in force: the preference, never above whatever a stall has forced.
-  const preferredQuality =
-    qualityPref === AUTO_QUALITY ? qualityForLinkKbps(linkKbps) : transcodeQuality(qualityPref);
-  const activeQuality = qualityFloor
-    ? worseQuality(preferredQuality, transcodeQuality(qualityFloor))
-    : preferredQuality;
+  // The rung in force: whatever auto has settled on, or the viewer's own choice.
+  const activeQuality =
+    qualityPref === AUTO_QUALITY ? autoQuality : transcodeQuality(qualityPref);
+  // Mirror for the callbacks below, which must stay stable: rebuilding them on
+  // every rung change would restart the link probe along with them.
+  const autoQualityRef = useRef(autoQuality);
+  useEffect(() => {
+    autoQualityRef.current = autoQuality;
+  }, [autoQuality]);
+
+  // Anything that re-creates the stream — a new rung, a different version or audio
+  // track, switching between direct and transcoded — must record where playback
+  // had got to, or the freshly built stream inherits a stale position (or an older
+  // one from earlier in this sitting) and jumps backwards.
+  const resumeHere = useCallback(() => {
+    setRestartAt(playedSecondsRef.current > 0 ? playedSecondsRef.current : null);
+  }, []);
+
+  /**
+   * A fresh reading of the connection, from the initial probe or from the
+   * segments the transcode is already delivering. This is where "auto" actually
+   * adjusts: down the moment the current rung stops fitting, and back up once
+   * there is comfortable headroom and it has been a while since the last move.
+   *
+   * Moving is not free — one rendition per session means a new session and a
+   * couple of seconds of rebuffering — so going up is deliberately harder than
+   * staying: a wider margin, one rung at a time, and never inside the cooldown.
+   */
+  const applyLinkMeasurement = useCallback(
+    (kbps: number) => {
+      setLinkKbps(kbps);
+      rememberLinkKbps(kbps);
+      const current = autoQualityRef.current;
+      const now = Date.now();
+      let next: TranscodeQuality | null = null;
+      if (!linkCanCarry(qualityTotalKbps(current), kbps)) {
+        const fitting = qualityForLinkKbps(kbps);
+        if (fitting.id !== current.id) next = fitting;
+      } else if (now - lastAutoChangeRef.current >= AUTO_STEP_UP_COOLDOWN_MS) {
+        const up = higherQuality(current.id);
+        if (up && canStepUpTo(up, kbps)) next = up;
+      }
+      if (!next) return;
+      lastAutoChangeRef.current = now;
+      setAutoQuality(next);
+      resumeHere();
+    },
+    [resumeHere]
+  );
 
   // Measure the link against the very file about to play, once per title, reusing
   // a recent measurement from this tab. The probe runs ALONGSIDE playback rather
   // than gating it: a healthy connection finishes it in well under a second and
   // notices nothing, and it is only on a bad one — where the answer matters — that
-  // it costs a couple of seconds of bandwidth.
+  // it costs a couple of seconds of bandwidth. Once a transcode is running, its
+  // own segment timings take over as the live reading.
   useEffect(() => {
     if (cachedLinkKbps() != null) return; // a recent measurement still stands
     let cancelled = false;
@@ -645,13 +708,12 @@ export function VideoPlayerModal({
     }`;
     void measureLinkKbps(url).then((kbps) => {
       if (cancelled || kbps == null) return;
-      rememberLinkKbps(kbps);
-      setLinkKbps(kbps);
+      applyLinkMeasurement(kbps);
     });
     return () => {
       cancelled = true;
     };
-  }, [current.type, current.id, selectedFileId]);
+  }, [current.type, current.id, selectedFileId, applyLinkMeasurement]);
 
   // Bitrate of the file that would be direct-played, kbps. The version list gives
   // the file ACTUALLY playing (so it stays right after navigating to a neighbour
@@ -679,26 +741,23 @@ export function VideoPlayerModal({
     mode === "direct" && linkBlocksDirect ? "transcode" : mode;
   // Whether what's playing was cut down to fit the connection — drives the amber
   // treatment on the quality chip and the note in its menu.
-  const reducedForLink = linkBlocksDirect || directGaveUp || qualityFloor != null;
+  const reducedForLink =
+    linkBlocksDirect ||
+    directGaveUp ||
+    (qualityPref === AUTO_QUALITY && autoQuality.id !== DEFAULT_TRANSCODE_QUALITY.id);
 
-  // Anything that re-creates the stream — a new rung, a different version or audio
-  // track, switching between direct and transcoded — must record where playback
-  // had got to, or the freshly built stream inherits a stale position (or an older
-  // one from earlier in this sitting) and jumps backwards.
-  const resumeHere = useCallback(() => {
-    setRestartAt(playedSecondsRef.current > 0 ? playedSecondsRef.current : null);
-  }, []);
-
-  // Drop to the next rung down and resume there. Called when the stream keeps
-  // stalling, or when direct play never gets going. Returns false at the bottom
-  // of the ladder, where there is nothing further to give up.
+  // Drop a rung and resume there, when the stream keeps stalling or direct play
+  // never gets going. False when there is nothing left to give up — the bottom of
+  // the ladder, or a rung the viewer pinned by hand, which is theirs to change.
   const stepDownQuality = useCallback(() => {
-    const next = lowerQuality(activeQuality.id);
+    if (qualityPref !== AUTO_QUALITY) return false;
+    const next = lowerQuality(autoQualityRef.current.id);
     if (!next) return false;
-    setQualityFloor(next.id);
+    lastAutoChangeRef.current = Date.now();
+    setAutoQuality(next);
     resumeHere();
     return true;
-  }, [activeQuality.id, resumeHere]);
+  }, [qualityPref, resumeHere]);
 
   // The overlay is portaled to <body>. Without this, the player is a React child
   // of whatever card opened it, and clicks bubble (through the React tree) to that
@@ -857,9 +916,9 @@ export function VideoPlayerModal({
     setCurrent({ type: "episode", id: n.id });
     setCurrentTitle(neighborLabel(n));
     setMode(loadForceTranscode() ? "transcode" : "direct");
-    // A new title starts from the top of the ladder decision again: no resume
-    // offset, and the automatic mode choice is live once more. The rung floor is
-    // deliberately kept — the connection that forced it hasn't changed.
+    // A new title decides direct-vs-transcode afresh, with no resume offset. The
+    // rung auto has settled on is deliberately carried over: it describes the
+    // connection, which a change of episode does not alter.
     setRestartAt(null);
     setDirectGaveUp(false);
     setModeChosenByUser(false);
@@ -1147,9 +1206,12 @@ export function VideoPlayerModal({
     (id: string) => {
       setQualityPref(id);
       saveQualityPref(id);
-      setQualityFloor(null); // a deliberate choice clears any stall-forced drop
       setBitrateOpen(false);
       if (id === AUTO_QUALITY) {
+        // Re-decide from the latest reading rather than resuming whatever rung
+        // auto was last on, which may be minutes and a network ago.
+        setAutoQuality(qualityForLinkKbps(linkKbps));
+        lastAutoChangeRef.current = Date.now();
         setDirectGaveUp(false);
         setModeChosenByUser(false);
         setMode(loadForceTranscode() || !canDirectPlay(mediaInfo) ? "transcode" : "direct");
@@ -1160,7 +1222,7 @@ export function VideoPlayerModal({
       }
       showControls();
     },
-    [mediaInfo, resumeHere, showControls]
+    [linkKbps, mediaInfo, resumeHere, showControls]
   );
 
   const handleClose = useCallback(() => {
@@ -1447,6 +1509,12 @@ export function VideoPlayerModal({
           }
           quality={activeQuality}
           onTooSlow={stepDownQuality}
+          onLinkKbps={applyLinkMeasurement}
+          slowHint={
+            qualityPref === AUTO_QUALITY
+              ? "This is already the smallest stream the server makes."
+              : "Stream quality is pinned — switch it to Auto and it will find a size that fits."
+          }
         />
       )}
 
@@ -2388,6 +2456,8 @@ function TranscodePlayer({
   initialStartSec,
   quality,
   onTooSlow,
+  onLinkKbps,
+  slowHint,
 }: {
   target: PlaybackTarget;
   fileId: number | null;
@@ -2409,6 +2479,10 @@ function TranscodePlayer({
   quality: TranscodeQuality;
   /** Ask for the next rung down. False when there is none left to drop to. */
   onTooSlow: () => boolean;
+  /** Throughput measured off the segments this session is delivering, kbps. */
+  onLinkKbps: (kbps: number) => void;
+  /** What to tell the viewer when `onTooSlow` had nothing left to give up. */
+  slowHint: string;
 }) {
   const { type, id } = target;
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -2420,9 +2494,11 @@ function TranscodePlayer({
   // Held in a ref so the start effect doesn't restart the whole session just
   // because the parent re-rendered with a new callback identity.
   const tooSlowRef = useRef(onTooSlow);
+  const linkKbpsRef = useRef(onLinkKbps);
   useEffect(() => {
     tooSlowRef.current = onTooSlow;
-  }, [onTooSlow]);
+    linkKbpsRef.current = onLinkKbps;
+  }, [onTooSlow, onLinkKbps]);
   // Media-time of the stream's 0:00. null until known — an HLS event playlist
   // can't seek to unencoded time, so resume must happen server-side via
   // `startSec` (ffmpeg -ss), never by seeking the <video> after the fact.
@@ -2571,14 +2647,32 @@ function TranscodePlayer({
           let stalls = 0;
           let lastStallAt = 0;
           let steppedDown = false;
+          // Rolling throughput, smoothed across fragments and reported back so
+          // "auto" keeps tracking the connection for as long as playback lasts.
+          let ewmaKbps = 0;
+          let lastReportAt = 0;
           const activeHls = hls;
-          activeHls.on(Hls.Events.FRAG_BUFFERED, () => {
+          activeHls.on(Hls.Events.FRAG_BUFFERED, (_evt, data) => {
             consecutiveFatal = 0;
+            const now = Date.now();
             // A whole window of clean playback since the last stall: the link
             // recovered, so stop telling the viewer it hasn't.
-            if (lastStallAt > 0 && Date.now() - lastStallAt > STALL_WINDOW_MS) {
+            if (lastStallAt > 0 && now - lastStallAt > STALL_WINDOW_MS) {
               setLinkTooSlow(false);
             }
+            // Time from the FIRST byte, not from the request: a segment the
+            // encoder hasn't reached yet spends its wait before that, and
+            // charging the connection for ffmpeg's time would read as a slow
+            // link and shrink a stream that was never the problem.
+            const stats = data.stats;
+            if (!stats?.loading.first || !stats.loading.end) return;
+            if (stats.loaded < LINK_SAMPLE_MIN_BYTES) return;
+            const ms = Math.max(stats.loading.end - stats.loading.first, LINK_SAMPLE_FLOOR_MS);
+            const sample = (stats.loaded * 8) / ms;
+            ewmaKbps = ewmaKbps === 0 ? sample : ewmaKbps * 0.7 + sample * 0.3;
+            if (now - lastReportAt < LINK_REPORT_INTERVAL_MS) return;
+            lastReportAt = now;
+            linkKbpsRef.current(ewmaKbps);
           });
           activeHls.on(Hls.Events.ERROR, (_evt, data) => {
             if (cancelled || steppedDown) return;
@@ -2679,8 +2773,8 @@ function TranscodePlayer({
         <div className="pointer-events-none absolute inset-x-0 top-20 z-20 flex justify-center px-4">
           <Callout tone="warning" title="Connection too slow" className="max-w-md bg-zinc-900/90">
             <p>
-              Playback keeps pausing to buffer even at {quality.label}, the smallest stream this
-              server makes. The connection to the server is the limit here, not the file.
+              Playback keeps pausing to buffer at {quality.label}. The connection to the server is
+              the limit here, not the file. {slowHint}
             </p>
           </Callout>
         </div>
