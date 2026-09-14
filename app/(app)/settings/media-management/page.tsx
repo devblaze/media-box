@@ -459,36 +459,110 @@ function PathsSection() {
   );
 }
 
-interface NamingConfig {
-  renameEpisodes: boolean;
+type MultiEpisodeStyle = "extend" | "scene" | "repeat" | "range" | "prefixedRange";
+
+/** Editable naming fields — exactly what `PUT /naming` accepts. */
+interface NamingForm {
   standardEpisodeFormat: string;
+  animeEpisodeFormat: string;
   seriesFolderFormat: string;
   seasonFolderFormat: string;
+  specialsFolderFormat: string;
   movieFormat: string;
   movieFolderFormat: string;
+  multiEpisodeStyle: MultiEpisodeStyle;
 }
 
+/** `GET /naming` — the saved row plus the Sonarr/Radarr stock formats. */
+type NamingConfig = NamingForm & { renameEpisodes: boolean; defaults: NamingForm };
+
+const FORM_KEYS: (keyof NamingForm)[] = [
+  "standardEpisodeFormat",
+  "animeEpisodeFormat",
+  "seriesFolderFormat",
+  "seasonFolderFormat",
+  "specialsFolderFormat",
+  "movieFormat",
+  "movieFolderFormat",
+  "multiEpisodeStyle",
+];
+
+function pickForm(source: NamingForm): NamingForm {
+  return Object.fromEntries(FORM_KEYS.map((k) => [k, source[k]])) as unknown as NamingForm;
+}
+
+const MULTI_EPISODE_LABELS: Record<MultiEpisodeStyle, string> = {
+  extend: "Extend — S01E01-02-03 (Sonarr's default)",
+  scene: "Scene — S01E01-E02-E03",
+  repeat: "Repeat — S01E01E02E03",
+  range: "Range — S01E01-03",
+  prefixedRange: "Prefixed range — S01E01-E03",
+};
+
+const NAMING_FIELDS: {
+  key: keyof Omit<NamingForm, "multiEpisodeStyle">;
+  label: string;
+  description: string;
+}[] = [
+  {
+    key: "standardEpisodeFormat",
+    label: "Episode format",
+    description: "Bleach - S01E01 - The Day I Became a Shinigami WEBDL-1080p",
+  },
+  {
+    key: "animeEpisodeFormat",
+    label: "Anime episode format",
+    description:
+      "Used instead of the episode format for series marked as anime. Bleach - S01E01 - 001 - The Day I Became a Shinigami WEBDL-1080p",
+  },
+  { key: "seriesFolderFormat", label: "Series folder", description: "Bleach (2004)" },
+  { key: "seasonFolderFormat", label: "Season folder", description: "Season 01" },
+  {
+    key: "specialsFolderFormat",
+    label: "Specials folder",
+    description: "Folder name for season 0. Specials",
+  },
+  { key: "movieFormat", label: "Movie format", description: "Dune (2021) WEBDL-2160p" },
+  { key: "movieFolderFormat", label: "Movie folder", description: "Dune (2021)" },
+];
+
+/**
+ * Naming formats. The defaults shipped with a NEW install are Sonarr's and
+ * Radarr's, so a file written here is recognisable to them — but an existing
+ * install keeps whatever it already had, because writing a second scheme into a
+ * library that already uses the first is how files become orphans. The "Use
+ * Sonarr and Radarr defaults" button therefore only fills the fields in; nothing
+ * changes until Save is pressed.
+ */
 function NamingSection() {
   const { data, mutate } = useApi<NamingConfig>("/naming");
-  const [form, setForm] = useState<NamingConfig | null>(null);
+  const [form, setForm] = useState<NamingForm | null>(null);
   const [saving, setSaving] = useState(false);
   const toast = useToast();
+  const confirm = useConfirm();
 
   useEffect(() => {
-    if (data && !form) setForm(data);
+    if (data && !form) setForm(pickForm(data));
   }, [data, form]);
 
-  const fields: { key: keyof NamingConfig & string; label: string; example: string }[] = [
-    {
-      key: "standardEpisodeFormat",
-      label: "Episode format",
-      example: "{Series Title} - S{season:00}E{episode:00} - {Episode Title}",
-    },
-    { key: "seriesFolderFormat", label: "Series folder", example: "{Series Title} ({Year})" },
-    { key: "seasonFolderFormat", label: "Season folder", example: "Season {season:00}" },
-    { key: "movieFormat", label: "Movie format", example: "{Movie Title} ({Year}) {Quality}" },
-    { key: "movieFolderFormat", label: "Movie folder", example: "{Movie Title} ({Year})" },
-  ];
+  const defaults = data?.defaults;
+  const isDefault =
+    !!form && !!defaults && FORM_KEYS.every((k) => form[k] === defaults[k]);
+
+  async function applyDefaults() {
+    if (!defaults) return;
+    if (
+      !(await confirm({
+        title: "Fill in the Sonarr and Radarr defaults?",
+        message:
+          "The fields below are replaced with the formats Sonarr and Radarr ship with. Nothing is saved and no file is renamed until you press Save naming — and files already in your library keep the names they have, so review the result before saving if your library is already organised.",
+        confirmLabel: "Fill in defaults",
+      }))
+    )
+      return;
+    setForm(pickForm(defaults));
+    toast.success("Defaults filled in — review them, then press Save naming.");
+  }
 
   async function save() {
     if (!form) return;
@@ -506,15 +580,34 @@ function NamingSection() {
 
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="flex flex-wrap items-center justify-between gap-2">
         <CardTitle>Naming</CardTitle>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={applyDefaults}
+          disabled={!form || !defaults || isDefault}
+        >
+          Use Sonarr and Radarr defaults
+        </Button>
       </CardHeader>
       <CardBody className="space-y-4">
         <Callout tone="tip" title="Available tokens">
           <p>
             <code>{"{Series Title}"}</code> <code>{"{Movie Title}"}</code>{" "}
             <code>{"{Episode Title}"}</code> <code>{"{Year}"}</code> <code>{"{season:00}"}</code>{" "}
-            <code>{"{episode:00}"}</code> <code>{"{Quality}"}</code> <code>{"{Release Group}"}</code>
+            <code>{"{season}"}</code> <code>{"{episode:00}"}</code> <code>{"{episode}"}</code>{" "}
+            <code>{"{absolute:000}"}</code> <code>{"{absolute:00}"}</code> <code>{"{absolute}"}</code>{" "}
+            <code>{"{Quality Full}"}</code> <code>{"{Quality Title}"}</code> <code>{"{Quality}"}</code>{" "}
+            <code>{"{Release Group}"}</code>
+          </p>
+          <p className="mt-2">
+            <code>{"{absolute:000}"}</code> is the anime absolute episode number — it is what lets a
+            file still be matched after a series is re-numbered, so keep it in the anime format.{" "}
+            <code>{"{Quality Full}"}</code> spells the quality the way Sonarr does (
+            <code>WEBDL-1080p</code>); <code>{"{Quality}"}</code> keeps media-box&rsquo;s own
+            spelling (<code>WEB-DL-1080p</code>) for libraries already named that way. A token
+            media-box does not know is left in the filename as written.
           </p>
         </Callout>
 
@@ -526,16 +619,37 @@ function NamingSection() {
           </div>
         ) : (
           <>
-            {fields.map(({ key, label, example }) => (
-              <Field key={key} label={label} description={`e.g. ${example}`} htmlFor={key}>
+            {NAMING_FIELDS.map(({ key, label, description }) => (
+              <Field key={key} label={label} description={`e.g. ${description}`} htmlFor={key}>
                 <Input
                   id={key}
-                  value={String(form[key])}
+                  value={form[key]}
                   onChange={(e) => setForm({ ...form, [key]: e.target.value })}
                   className="font-mono text-xs"
                 />
               </Field>
             ))}
+
+            <Field
+              label="Multi-episode style"
+              htmlFor="multiEpisodeStyle"
+              description="How a single file covering several episodes numbers them. Matches Sonarr's setting of the same name."
+            >
+              <Select
+                id="multiEpisodeStyle"
+                value={form.multiEpisodeStyle}
+                onChange={(e) =>
+                  setForm({ ...form, multiEpisodeStyle: e.target.value as MultiEpisodeStyle })
+                }
+              >
+                {(Object.keys(MULTI_EPISODE_LABELS) as MultiEpisodeStyle[]).map((style) => (
+                  <option key={style} value={style}>
+                    {MULTI_EPISODE_LABELS[style]}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+
             <div>
               <Button onClick={save} loading={saving} disabled={saving}>
                 Save naming

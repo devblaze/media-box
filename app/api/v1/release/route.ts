@@ -3,8 +3,9 @@ import { z } from "zod";
 import { searchReleases } from "@/server/indexers/release-search";
 import { episodeTarget, movieTarget, seasonTarget } from "@/server/indexers/search-targets";
 import { grab } from "@/server/download/download-service";
+import { existingFileBlockingGrab } from "@/server/library/on-disk";
 import { requirePermission } from "@/server/auth/guards";
-import { badRequest, ok, serverError } from "@/lib/http";
+import { badRequest, conflict, ok, serverError } from "@/lib/http";
 
 function targetFromParams(params: URLSearchParams, interactive: boolean) {
   const episodeId = params.get("episodeId");
@@ -59,6 +60,21 @@ export async function POST(request: NextRequest) {
     const releases = await searchReleases(target.search);
     const release = releases.find((r) => r.guid === body.guid);
     if (!release) return badRequest("Release no longer available — search again");
+
+    // A manual grab is the one path with no guard at all: the search results say
+    // whether a release beats the file the DATABASE knows about, and nothing asked
+    // the disk. So a title whose pointer was dropped by a renumber looks missing
+    // here too, and grabbing it drops a second copy of the episode into the
+    // library. Override is the deliberate "I mean it" — the same checkbox that
+    // already bypasses the import's upgrade check — so it skips this as well.
+    if (!body.override) {
+      const blocked = await existingFileBlockingGrab(
+        target.grab,
+        target.search.profile,
+        release.parsed.quality
+      );
+      if (blocked) return conflict(blocked);
+    }
 
     const download = await grab(release, { ...target.grab, override: body.override ?? false });
     return ok(download, { status: 201 });

@@ -162,6 +162,13 @@
       "when": 1786614801660,
       "tag": "0022_smooth_wolfsbane",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1789412780956,
+      "tag": "0023_reflective_chamber",
+      "breakpoints": true
     }
   ]
 }

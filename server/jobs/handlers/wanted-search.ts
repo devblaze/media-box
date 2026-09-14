@@ -2,7 +2,12 @@ import { and, eq, isNull, lt } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { searchReleases } from "@/server/indexers/release-search";
 import { episodeTarget, movieTarget, seasonTarget } from "@/server/indexers/search-targets";
-import { episodesWithDownloadInFlight, grab } from "@/server/download/download-service";
+import {
+  episodesWithDownloadInFlight,
+  moviesWithDownloadInFlight,
+  grab,
+} from "@/server/download/download-service";
+import { episodeFilesOnDisk, movieFileOnDisk, type FileOnDisk } from "@/server/library/on-disk";
 import { getSettings } from "@/server/settings/settings-service";
 
 const INDEXER_DELAY_MS = 2_000;
@@ -46,7 +51,13 @@ export async function wantedSearchHandler(payload: unknown): Promise<string> {
       return m.status === "released";
     });
 
+  // A movie's file pointer is only set by the import, so nothing stopped a second
+  // run from grabbing a movie that is already downloading — nor one whose file is
+  // sitting in its folder with the pointer lost (see on-disk.ts).
+  const moviesInFlight = moviesWithDownloadInFlight();
   for (const movie of wantedMovies) {
+    if (moviesInFlight.has(movie.id)) continue;
+    if (await movieFileOnDisk(movie.id)) continue;
     searched++;
     try {
       if (await searchAndGrab(movieTarget(movie.id, false))) grabbed++;
@@ -81,9 +92,24 @@ export async function wantedSearchHandler(payload: unknown): Promise<string> {
     // the file it is missing is on its way (see episodesWithDownloadInFlight).
     .filter((e) => !inFlight.has(e.id));
 
+  // …and one whose file is already in the series folder isn't missing at all: a
+  // renumber dropped its pointer without moving anything. Grabbing it again is how
+  // the library ends up with two copies of the episode, so ask the disk first —
+  // once per series, since each answer costs a folder walk.
+  const diskBySeries = new Map<number, Map<number, FileOnDisk>>();
+  const stillMissing: typeof missingEpisodes = [];
+  for (const ep of missingEpisodes) {
+    let onDisk = diskBySeries.get(ep.seriesId);
+    if (!onDisk) {
+      onDisk = await episodeFilesOnDisk(ep.seriesId);
+      diskBySeries.set(ep.seriesId, onDisk);
+    }
+    if (!onDisk.has(ep.id)) stillMissing.push(ep);
+  }
+
   // group by series+season; use a season-pack search when >= half the season is missing
   const bySeason = new Map<string, { seriesId: number; seasonNumber: number; episodeIds: number[] }>();
-  for (const ep of missingEpisodes) {
+  for (const ep of stillMissing) {
     const key = `${ep.seriesId}:${ep.seasonNumber}`;
     const entry = bySeason.get(key) ?? {
       seriesId: ep.seriesId,

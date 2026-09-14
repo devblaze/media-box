@@ -368,7 +368,13 @@ Delete a root folder (only if no library item references it).
 Read the naming configuration (single row).
 
 - **Auth:** admin
-- **Response:** `200` — the naming config row. Errors: `401`/`403` (auth); `500`.
+- **Response:** `200` — the naming config row, plus a `defaults` object holding the
+  Sonarr/Radarr stock formats (`standardEpisodeFormat`, `animeEpisodeFormat`,
+  `seriesFolderFormat`, `seasonFolderFormat`, `specialsFolderFormat`, `movieFormat`,
+  `movieFolderFormat`, `multiEpisodeStyle`). `defaults` is what a **new** install is
+  created with; an existing install's saved row is never rewritten from it, which is
+  why the settings UI offers it as an explicit "use the Sonarr and Radarr defaults"
+  action instead of applying it. Errors: `401`/`403` (auth); `500`.
 - **Example:**
   ```bash
   curl -sS "$MEDIABOX_URL/api/v1/naming" -H "x-api-key: $MEDIABOX_API_KEY"
@@ -383,15 +389,33 @@ Update the naming configuration (row id 1).
 
   | field | type | required | default | notes |
   | --- | --- | --- | --- | --- |
-  | `renameEpisodes` | boolean | no | — | |
+  | `renameEpisodes` | boolean | no | — | false keeps the original release filename |
   | `replaceIllegalCharacters` | boolean | no | — | |
   | `standardEpisodeFormat` | string (min 1) | no | — | |
+  | `animeEpisodeFormat` | string (min 1) | no | — | used instead of `standardEpisodeFormat` for anime series |
   | `seriesFolderFormat` | string (min 1) | no | — | |
   | `seasonFolderFormat` | string (min 1) | no | — | |
+  | `specialsFolderFormat` | string (min 1) | no | — | folder name for season 0 |
   | `movieFormat` | string (min 1) | no | — | |
   | `movieFolderFormat` | string (min 1) | no | — | |
+  | `multiEpisodeStyle` | enum | no | — | `extend` \| `scene` \| `repeat` \| `range` \| `prefixedRange` |
 
-- **Response:** `200` — the updated naming config row. Errors: `400` (validation); `401`/`403` (auth); `500`.
+  **Format tokens.** Episode formats: `{Series Title}` `{Year}` `S{season:00}E{episode:00}`
+  `{season:00}` `{season}` `{episode:00}` `{episode}` `{absolute:000}` `{absolute:00}`
+  `{absolute}` `{Episode Title}` `{Quality Full}` `{Quality Title}` `{Quality}`
+  `{Release Group}`. Movie formats: `{Movie Title}` `{Year}` `{Quality Full}`
+  `{Quality Title}` `{Quality}` `{Release Group}`. Folder formats: `{Series Title}` /
+  `{Movie Title}` `{Year}`, and `{season:00}` / `{season}` for the season and specials
+  folders. `{Quality Full}` and `{Quality Title}` spell the quality the way Sonarr does
+  (`WEBDL-1080p`, with `{Quality Full}` adding ` Proper`); `{Quality}` keeps media-box's
+  own spelling (`WEB-DL-1080p`). An unknown token is left in the name verbatim.
+
+  **Multi-episode styles**, for a file covering episodes 1-3: `extend` → `S01E01-02-03`,
+  `scene` → `S01E01-E02-E03`, `repeat` → `S01E01E02E03`, `range` → `S01E01-03`,
+  `prefixedRange` → `S01E01-E03`. The style also applies to the bare `{episode}` and
+  `{absolute}` tokens.
+
+- **Response:** `200` — the updated naming config row plus `defaults` (see `GET` above). Errors: `400` (validation); `401`/`403` (auth); `500`.
 - **Example:**
   ```bash
   curl -sS -X PUT "$MEDIABOX_URL/api/v1/naming" -H "x-api-key: $MEDIABOX_API_KEY" \

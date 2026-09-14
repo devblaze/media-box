@@ -45,6 +45,23 @@ export function episodesWithDownloadInFlight(): Set<number> {
   return out;
 }
 
+/**
+ * Movie ids that already have a release in flight — the movie half of the guard
+ * above, which only ever covered episodes. A movie's file pointer is likewise set
+ * by the import, not by the grab, so every search between the two saw the movie as
+ * missing and grabbed it again.
+ */
+export function moviesWithDownloadInFlight(): Set<number> {
+  const rows = getDb()
+    .select({ movieId: schema.downloads.movieId })
+    .from(schema.downloads)
+    .where(inArray(schema.downloads.status, [...IN_FLIGHT]))
+    .all();
+  const out = new Set<number>();
+  for (const row of rows) if (row.movieId != null) out.add(row.movieId);
+  return out;
+}
+
 export async function grab(release: DecoratedRelease, target: GrabTarget) {
   const db = getDb();
   const clientRows = db

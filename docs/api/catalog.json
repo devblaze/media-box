@@ -499,13 +499,13 @@
       "method": "GET",
       "path": "/api/v1/naming",
       "auth": "admin",
-      "summary": ""
+      "summary": "Read and update the naming configuration (single row, id 1); responses carry the Sonarr/Radarr stock formats as `defaults`."
     },
     {
       "method": "PUT",
       "path": "/api/v1/naming",
       "auth": "admin",
-      "summary": ""
+      "summary": "Read and update the naming configuration (single row, id 1); responses carry the Sonarr/Radarr stock formats as `defaults`."
     },
     {
       "method": "GET",

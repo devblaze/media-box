@@ -6,7 +6,12 @@ import { evaluate, type ReleaseCandidate } from "@/server/parser/scoring";
 import type { ProfileLike } from "@/server/parser/scoring";
 import type { QualityModel } from "@/server/parser/quality";
 import { normalizeTitle } from "@/server/library/naming-utils";
-import { episodesWithDownloadInFlight, grab } from "@/server/download/download-service";
+import {
+  episodesWithDownloadInFlight,
+  moviesWithDownloadInFlight,
+  grab,
+} from "@/server/download/download-service";
+import { episodeFilesOnDisk, movieFileOnDisk, type FileOnDisk } from "@/server/library/on-disk";
 
 const TV_CATS = [5000, 5030, 5040];
 const MOVIE_CATS = [2000, 2010, 2020, 2030, 2040, 2045, 2060];
@@ -54,6 +59,14 @@ export async function rssSyncHandler(): Promise<string> {
   let seen = 0;
   // Snapshot once per run, then keep it current as this run grabs.
   const inFlight = episodesWithDownloadInFlight();
+  const moviesInFlight = moviesWithDownloadInFlight();
+  /**
+   * What each series/movie actually has in its folder, whatever its file pointer
+   * says (see on-disk.ts). Each answer costs a folder walk, so they are built at
+   * most once per run and only for the titles this feed actually matched.
+   */
+  const episodesOnDisk = new Map<number, Map<number, FileOnDisk>>();
+  const movieOnDisk = new Map<number, boolean>();
 
   for (const indexer of indexerRows) {
     let items;
@@ -124,6 +137,20 @@ export async function rssSyncHandler(): Promise<string> {
                 .where(eq(schema.episodeFiles.id, episode.episodeFileId))
                 .get()
             : null;
+          // No file record doesn't mean no file: a renumber drops the pointer and
+          // leaves the episode on disk. Feeding that file's quality in as the
+          // current one puts the stray copy through the same upgrade/cutoff rules
+          // a linked one gets — so a repeat of what's there is never re-grabbed,
+          // and a genuine upgrade still is.
+          let strayQuality: QualityModel | null = null;
+          if (!currentFile) {
+            let onDisk = episodesOnDisk.get(s.id);
+            if (!onDisk) {
+              onDisk = await episodeFilesOnDisk(s.id);
+              episodesOnDisk.set(s.id, onDisk);
+            }
+            strayQuality = onDisk.get(episode.id)?.quality ?? null;
+          }
           const profile = lib.profiles.get(s.qualityProfileId);
           if (!profile) continue;
           const evaluation = evaluate(candidate, {
@@ -134,7 +161,7 @@ export async function rssSyncHandler(): Promise<string> {
             episodeNumbers: [episode.episodeNumber],
             absoluteEpisodeNumbers:
               episode.absoluteNumber != null ? [episode.absoluteNumber] : [],
-            currentQuality: (currentFile?.quality as QualityModel) ?? null,
+            currentQuality: (currentFile?.quality as QualityModel) ?? strayQuality,
             minimumSeeders: indexer.minimumSeeders,
             mediaType: "series",
           });
@@ -149,6 +176,17 @@ export async function rssSyncHandler(): Promise<string> {
         } else {
           const m = lib.moviesByTitle.get(parsed.normalizedTitle);
           if (!m || m.movieFileId) continue;
+          // Same two blind spots the episode path had: a movie whose grab is still
+          // in flight (its pointer is only set by the import, so every feed item
+          // until then saw it as missing) and one whose file is in its folder with
+          // the pointer lost. Both already have the movie; neither wants another.
+          if (moviesInFlight.has(m.id)) continue;
+          let hasFile = movieOnDisk.get(m.id);
+          if (hasFile === undefined) {
+            hasFile = (await movieFileOnDisk(m.id)) !== null;
+            movieOnDisk.set(m.id, hasFile);
+          }
+          if (hasFile) continue;
           const profile = lib.profiles.get(m.qualityProfileId);
           if (!profile) continue;
           const evaluation = evaluate(candidate, {
@@ -161,6 +199,7 @@ export async function rssSyncHandler(): Promise<string> {
           });
           if (!evaluation.accepted) continue;
           await grab({ ...candidate, ...evaluation }, { mediaType: "movie", movieId: m.id });
+          moviesInFlight.add(m.id); // later items in this same feed must not re-grab it
           grabbed++;
         }
       } catch (err) {

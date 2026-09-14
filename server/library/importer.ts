@@ -5,12 +5,24 @@ import { getDb, schema } from "@/server/db";
 import { parseTitle } from "@/server/parser/release-parser";
 import { isUpgrade, type ProfileLike } from "@/server/parser/scoring";
 import { QUALITIES, type QualityModel } from "@/server/parser/quality";
-import { renderEpisodeFilename, renderMovieFilename, renderSeasonFolder } from "./naming";
+import {
+  renderEpisodeFilename,
+  renderMovieFilename,
+  renderSeasonFolder,
+  type MultiEpisodeStyle,
+} from "./naming";
 import { applyOwnership, freeSpace, mkdirp, placeFile, removeMedia, type ImportMode } from "./filesystem";
 import { fileOperationsEnabled, fileOperationsMode } from "./media-guard";
 import { recordPendingFileChange } from "./file-change-service";
 import { probeMediaInfo } from "./media-info";
 import { VIDEO_EXTENSIONS } from "./disk-scanner";
+import {
+  episodeFilesOnDisk,
+  movieFilesOnDisk,
+  namesAnEpisode,
+  resolveEpisodeRows,
+  type FileOnDisk,
+} from "./on-disk";
 import { emitEvent } from "@/server/events/bus";
 import { markRequestsAvailable } from "@/server/requests/request-service";
 import { getSettings } from "@/server/settings/settings-service";
@@ -129,6 +141,14 @@ async function importEpisodes(
   const codeOf = (ep: { seasonNumber: number; episodeNumber: number }) =>
     `S${String(ep.seasonNumber).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}`;
 
+  /**
+   * What is actually in the series folder, built at most once per import and only
+   * when an episode claims to have no file — a renumber drops the pointer without
+   * touching disk, so "episodeFileId is null" is not the same as "nothing is there".
+   */
+  let diskMap: Map<number, FileOnDisk> | null = null;
+  const filesOnDisk = async () => (diskMap ??= await episodeFilesOnDisk(s.id));
+
   let imported = 0;
   for (const file of files) {
     const name = path.basename(file.absPath);
@@ -137,64 +157,17 @@ async function importEpisodes(
     const effective =
       parsed.isTv && parsed.episodes.length > 0 ? parsed : parseTitle(download.title);
     // Anime fansub releases carry an absolute, whole-run number and no season
-    // ("[SubsPlease] Bleach - 409"); those map through `episodes.absoluteNumber`.
-    const isAbsolute = effective.isAbsolute === true;
-    const mappable =
-      effective.isTv &&
-      effective.episodes.length > 0 &&
-      (isAbsolute || effective.seasons.length === 1);
-    if (!mappable && !grabIsAuthoritative) {
+    // ("[SubsPlease] Bleach - 409"); those map through `episodes.absoluteNumber`,
+    // as does an absolute number filed under a season that doesn't reach it
+    // ("Bleach - S01E152"). `resolveEpisodeRows` owns both readings so the disk
+    // check in on-disk.ts lands on exactly the episodes an import would.
+    if (!namesAnEpisode(effective) && !grabIsAuthoritative) {
       skipped.push(`'${name}' doesn't name an episode`);
       if (files.length === 1) throw new ImportWarning(`Cannot map '${name}' to episodes`);
       continue;
     }
 
-    let episodeRows = !mappable
-      ? []
-      : db
-          .select()
-          .from(schema.episodes)
-          .where(
-            isAbsolute
-              ? and(
-                  eq(schema.episodes.seriesId, s.id),
-                  inArray(schema.episodes.absoluteNumber, effective.episodes)
-                )
-              : and(
-                  eq(schema.episodes.seriesId, s.id),
-                  eq(schema.episodes.seasonNumber, effective.seasons[0]),
-                  inArray(schema.episodes.episodeNumber, effective.episodes)
-                )
-          )
-          .all();
-    if (episodeRows.length === 0 && !isAbsolute && s.isAnime) {
-      // Anime scene names sometimes hang an absolute number off season 1
-      // ("Bleach - S01E152"). Past the end of that season it can only be absolute.
-      const inSeason = db
-        .select({ n: schema.episodes.episodeNumber })
-        .from(schema.episodes)
-        .where(
-          and(
-            eq(schema.episodes.seriesId, s.id),
-            eq(schema.episodes.seasonNumber, effective.seasons[0])
-          )
-        )
-        .all();
-      const seasonLength = inSeason.reduce((max, r) => Math.max(max, r.n), 0);
-      // Only when the series HAS that season — an unknown season says nothing.
-      if (inSeason.length > 0 && effective.episodes.every((n) => n > seasonLength)) {
-        episodeRows = db
-          .select()
-          .from(schema.episodes)
-          .where(
-            and(
-              eq(schema.episodes.seriesId, s.id),
-              inArray(schema.episodes.absoluteNumber, effective.episodes)
-            )
-          )
-          .all();
-      }
-    }
+    let episodeRows = resolveEpisodeRows(s.id, s.isAnime, effective);
     // The release's own numbering has to agree with what this grab was for.
     // When it doesn't — or names nothing we recognise — a single-file grab falls
     // back to the episodes it was made for rather than failing the import.
@@ -226,6 +199,9 @@ async function importEpisodes(
 
     // upgrade check against existing file (all mapped episodes share one file record)
     const existingFileId = episodeRows[0].episodeFileId;
+    /** A file already on disk for this episode that no database row points at. */
+    let orphan: FileOnDisk | null = null;
+    let orphanIndex: Map<number, FileOnDisk> | null = null;
     if (existingFileId) {
       const existing = db
         .select()
@@ -236,24 +212,53 @@ async function importEpisodes(
         if (files.length === 1) throw new ImportWarning("Not an upgrade over the existing file");
         continue;
       }
+    } else {
+      // No pointer is not the same as no file: a renumber drops the link and
+      // leaves the file where it was, so importing blind is what puts a second
+      // copy of the episode in the library. An upgrade still imports — and takes
+      // the stray file with it below — but a re-grab of the same thing stops here.
+      const disk = await filesOnDisk();
+      orphanIndex = disk;
+      orphan = episodeRows.map((e) => disk.get(e.id)).find((f) => f !== undefined) ?? null;
+      if (orphan && !download.override && !isUpgrade(profile, quality, orphan.quality)) {
+        const reason = `'${path.basename(orphan.absPath)}' is already on disk for ${episodeRows
+          .map(codeOf)
+          .join("/")} and '${name}' isn't an upgrade over it`;
+        if (files.length === 1) throw new ImportWarning(reason);
+        skipped.push(reason);
+        continue;
+      }
     }
 
     const seasonFolder = s.seasonFolder
-      ? renderSeasonFolder(naming.seasonFolderFormat, seasonNumber)
+      ? renderSeasonFolder(naming.seasonFolderFormat, seasonNumber, {
+          specialsFormat: naming.specialsFolderFormat,
+        })
       : "";
     const sceneName = path.basename(file.absPath, path.extname(file.absPath));
+    // Both arrays are read positionally by the renderer, so they are mapped from
+    // one sorted list rather than sorted independently — an absolute number
+    // against the wrong episode is exactly the kind of name that stops matching
+    // after an ordering change.
+    const orderedEpisodes = [...episodeRows].sort((a, b) => a.episodeNumber - b.episodeNumber);
     // renameEpisodes=false keeps the original release file name; otherwise render.
     const filename = naming.renameEpisodes
       ? renderEpisodeFilename(
-          naming.standardEpisodeFormat,
+          // Anime get their own format because the absolute number is what
+          // survives a renumbering; season/episode coordinates do not.
+          s.isAnime ? naming.animeEpisodeFormat : naming.standardEpisodeFormat,
           {
             seriesTitle: s.title,
             seriesYear: s.year,
             seasonNumber,
-            episodeNumbers: episodeRows.map((e) => e.episodeNumber).sort((a, b) => a - b),
+            episodeNumbers: orderedEpisodes.map((e) => e.episodeNumber),
+            absoluteNumbers: orderedEpisodes.map((e) => e.absoluteNumber),
             episodeTitle: episodeRows[0].title,
             quality,
             releaseGroup: effective.releaseGroup,
+            // The column is a plain text enum in SQLite; the renderer owns the
+            // set of valid styles and falls back safely on anything else.
+            multiEpisodeStyle: naming.multiEpisodeStyle as MultiEpisodeStyle,
           },
           { replaceIllegal: naming.replaceIllegalCharacters }
         )
@@ -286,6 +291,40 @@ async function importEpisodes(
       })
       .returning({ id: schema.episodeFiles.id })
       .get();
+
+    // The copy the database had lost track of, superseded by what we just placed.
+    // Same order and same guard as the replaced-file cleanup below: delete only
+    // once the successor exists, and never when it IS the successor (a rename can
+    // render the new file onto the stray one's exact path).
+    if (orphan && path.resolve(orphan.absPath) !== path.resolve(dest)) {
+      const record = db
+        .select()
+        .from(schema.episodeFiles)
+        .where(
+          and(
+            eq(schema.episodeFiles.seriesId, s.id),
+            eq(schema.episodeFiles.relativePath, path.relative(s.path, orphan.absPath))
+          )
+        )
+        .get();
+      // A file some OTHER episode still links is not ours to delete: a two-episode
+      // file whose second half lost its pointer is still the first half's only copy.
+      const stillLinked =
+        record !== undefined &&
+        db
+          .select({ id: schema.episodes.id })
+          .from(schema.episodes)
+          .where(eq(schema.episodes.episodeFileId, record.id))
+          .all().length > 0;
+      if (!stillLinked) {
+        await removeMedia(orphan.absPath);
+        // The record can outlive the link (a refresh deletes the episode, not always
+        // the row) — drop it too, so nothing is left pointing at a file that's gone.
+        if (record) db.delete(schema.episodeFiles).where(eq(schema.episodeFiles.id, record.id)).run();
+        // Keep the cached view honest for the rest of this (multi-file) import.
+        for (const ep of episodeRows) orphanIndex?.delete(ep.id);
+      }
+    }
 
     for (const ep of episodeRows) {
       // delete a replaced file only after its successor is in place
@@ -384,6 +423,35 @@ async function importMovie(
     }
   }
 
+  /**
+   * A file in the movie folder that no `movieFiles` row points at — a rolled-back
+   * import, a folder moved in under an existing movie — is invisible to the check
+   * above, so the grab that follows drops a second copy beside it.
+   *
+   * Only a file at the SAME resolution counts as that duplicate. The others are
+   * the multi-version library working as designed (a 4K kept next to a 1080p, see
+   * `addMovieFileVersion`), and nothing here may touch them.
+   */
+  const registered = new Set(
+    db
+      .select({ relativePath: schema.movieFiles.relativePath })
+      .from(schema.movieFiles)
+      .where(eq(schema.movieFiles.movieId, m.id))
+      .all()
+      .map((r) => path.resolve(m.path, r.relativePath))
+  );
+  const newResolution = resolutionOfQuality(quality);
+  const orphan =
+    (await movieFilesOnDisk(m.id)).find(
+      (f) =>
+        !registered.has(path.resolve(f.absPath)) && resolutionOfQuality(f.quality) === newResolution
+    ) ?? null;
+  if (orphan && !download.override && !isUpgrade(profile, quality, orphan.quality)) {
+    throw new ImportWarning(
+      `'${path.basename(orphan.absPath)}' is already on disk at the same resolution and this isn't an upgrade over it`
+    );
+  }
+
   const filename = renderMovieFilename(
     naming.movieFormat,
     {
@@ -437,6 +505,12 @@ async function importMovie(
       }
       db.delete(schema.movieFiles).where(eq(schema.movieFiles.id, oldFileId)).run();
     }
+  }
+
+  // The unregistered same-resolution copy this import supersedes — removed only
+  // now that its replacement is in place, and never when it IS the replacement.
+  if (orphan && path.resolve(orphan.absPath) !== path.resolve(dest)) {
+    await removeMedia(orphan.absPath);
   }
 
   db.insert(schema.history)

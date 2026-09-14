@@ -14,8 +14,8 @@ level each route additionally applies one of:
 
 **Response envelopes.** `ok` → 200 (unless a `status` is passed), validation
 failures → 400 `{ error: "Validation failed", issues }`, `badRequest` → 400,
-`notFound` → 404, read-only conflict (`MediaWritesDisabledError`) → 409, other
-errors → 500. All error bodies are `{ error }`.
+`notFound` → 404, `conflict` → 409 (read-only mode, or a state that refuses the
+request — see `POST /release`), other errors → 500. All error bodies are `{ error }`.
 
 ---
 
@@ -320,6 +320,13 @@ Grab a specific release. The server re-runs the interactive search for the given
 target and matches the chosen release by `guid` (results are not cached), then
 hands it to the download service.
 
+Before grabbing, the target's folder is checked **on disk**: an episode or movie
+whose file pointer was dropped (a renumber, a metadata refresh) still has its file
+sitting there, and grabbing again would land a second copy beside it. A release
+that is not an upgrade over that file is refused with `409`. `override: true`
+skips the check — it is the same "Grab anyway" flag that bypasses the import's
+upgrade guard.
+
 - **Auth:** permission `releases.search` (admins always; or a role granting it). `401`/`403` otherwise.
 - **Request body:**
 
@@ -332,7 +339,7 @@ hands it to the download service.
   | season | integer | no | — | pair with `seriesId` |
   | override | boolean | no | false | "Grab anyway" — import even if not an upgrade |
 
-- **Response:** `201` — the created download row (or `{ externalId }` fallback). `400` if no target is derivable or the release is no longer available. Grab failures (e.g. no enabled client) surface as `500`.
+- **Response:** `201` — the created download row (or `{ externalId }` fallback). `400` if no target is derivable or the release is no longer available. `409` when a file for the target is already on disk and the release isn't an upgrade over it (the body's `error` names the file; re-send with `override: true` to grab it anyway). Grab failures (e.g. no enabled client) surface as `500`.
 
 ---
 

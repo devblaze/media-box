@@ -241,6 +241,14 @@ export const remotePathMappings = sqliteTable("remote_path_mappings", {
   localPath: text("local_path").notNull(),
 });
 
+// Single row (id 1), seeded by `boot.ts` AFTER migrations run.
+//
+// The defaults below are Sonarr's and Radarr's stock formats, mirrored as
+// `SONARR_DEFAULTS` in `server/library/naming.ts` (naming.test.ts asserts the
+// two stay in step). They apply to NEW installs only: an existing install
+// already has its row, and migration 0023 explicitly backfills the columns
+// added there with the values that reproduce media-box's old output, so nobody
+// wakes up writing a second naming scheme into a library that already has one.
 export const namingConfig = sqliteTable("naming_config", {
   id: integer("id").primaryKey(),
   renameEpisodes: integer("rename_episodes", { mode: "boolean" }).notNull().default(true),
@@ -249,10 +257,20 @@ export const namingConfig = sqliteTable("naming_config", {
     .default(true),
   standardEpisodeFormat: text("standard_episode_format")
     .notNull()
-    .default("{Series Title} - S{season:00}E{episode:00} - {Episode Title} [{Quality}]"),
+    .default("{Series Title} - S{season:00}E{episode:00} - {Episode Title} {Quality Full}"),
+  /** Used instead of `standardEpisodeFormat` for anime series; carries the absolute number. */
+  animeEpisodeFormat: text("anime_episode_format")
+    .notNull()
+    .default(
+      "{Series Title} - S{season:00}E{episode:00} - {absolute:000} - {Episode Title} {Quality Full}"
+    ),
   seriesFolderFormat: text("series_folder_format").notNull().default("{Series Title} ({Year})"),
   seasonFolderFormat: text("season_folder_format").notNull().default("Season {season:00}"),
-  movieFormat: text("movie_format").notNull().default("{Movie Title} ({Year}) [{Quality}]"),
+  /** Season 0 folder name. Sonarr keeps this separate and defaults it to "Specials". */
+  specialsFolderFormat: text("specials_folder_format").notNull().default("Specials"),
+  /** One of MULTI_EPISODE_STYLES in server/library/naming.ts. */
+  multiEpisodeStyle: text("multi_episode_style").notNull().default("extend"),
+  movieFormat: text("movie_format").notNull().default("{Movie Title} ({Year}) {Quality Full}"),
   movieFolderFormat: text("movie_folder_format").notNull().default("{Movie Title} ({Year})"),
 });
 

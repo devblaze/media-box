@@ -13,6 +13,11 @@ export function notFound(message = "Not found") {
   return NextResponse.json({ error: message }, { status: 404 });
 }
 
+/** The request is well-formed but the current state refuses it (409). */
+export function conflict(message: string) {
+  return NextResponse.json({ error: message }, { status: 409 });
+}
+
 export function serverError(err: unknown) {
   if (err instanceof ZodError) {
     return NextResponse.json({ error: "Validation failed", issues: err.issues }, { status: 400 });
