@@ -14,6 +14,7 @@ import { renderSeriesFolder } from "./naming";
 import { removeMedia } from "./filesystem";
 import { assertFileOperationsEnabled } from "./media-guard";
 import { holdOrRun } from "./file-change-service";
+import { recordLog } from "@/server/logging/logger";
 import { emitEvent } from "@/server/events/bus";
 
 export interface AddSeriesInput {
@@ -278,8 +279,23 @@ export async function syncSeasonsAndEpisodes(
         .run();
       continue;
     }
+    // Drop the episode row, but KEEP its file record. The file is still on disk,
+    // and deleting the record was losing the only trace of it: every "do we
+    // already have this?" check reads the episode's pointer, so the episode read
+    // as missing, got downloaded again, and the new copy landed beside the old
+    // one under a different name. A surviving record leaves the file findable —
+    // by a rescan, and by GET /api/v1/library/integrity, which reports records
+    // nothing points at.
     if (row.episodeFileId != null) {
-      db.delete(schema.episodeFiles).where(eq(schema.episodeFiles.id, row.episodeFileId)).run();
+      recordLog("warn", "Episode ordering no longer covers a file that is still on disk", {
+        source: "library",
+        context: {
+          seriesId,
+          season: row.seasonNumber,
+          episode: row.episodeNumber,
+          episodeFileId: row.episodeFileId,
+        },
+      });
     }
     db.delete(schema.episodes).where(eq(schema.episodes.id, row.id)).run();
   }

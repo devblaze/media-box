@@ -23,8 +23,8 @@ Every "do we already have this?" decision in media-box reads one pointer, `movie
 
 - **Auth:** admin.
 - **Query params:** `orphans` — `true` to also sweep every series folder for video files no row points at. That sweep reads every library folder, so it is off by default.
-- **Response:** `200` — `{ checkedAt, movies: { linked, missing: [...] }, episodes: { linked, missing: [...] }, orphans: [...], orphansPartial }`.
-  `missing` entries are `{ kind, id, title, absPath }`, where `absPath` is where the database believes the file is. `orphans` entries are `{ absPath, sizeBytes, belongsTo }`. Both lists are capped at 500; `orphansPartial` is true when the sweep was skipped or hit that cap.
+- **Response:** `200` — `{ checkedAt, movies: { linked, missing: [...] }, episodes: { linked, missing: [...] }, unlinkedFiles: [...], orphans: [...], orphansPartial }`.
+  `missing` entries are `{ kind, id, title, absPath }`, where `absPath` is where the database believes the file is. `unlinkedFiles` entries are `{ fileId, absPath, belongsTo }` — file records no episode points at, which is the state that produces duplicate episodes. `orphans` entries are `{ absPath, sizeBytes, belongsTo }` — files on disk that no record names at all. Every list is capped at 500; `orphansPartial` is true when the sweep was skipped or hit that cap.
 - **Example:**
 
   ```bash

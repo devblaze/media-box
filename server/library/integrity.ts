@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { eq, isNotNull } from "drizzle-orm";
+import { eq, isNotNull, isNull } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { walkVideoFiles } from "./disk-scanner";
 
@@ -38,10 +38,23 @@ export interface OrphanFile {
   belongsTo: string;
 }
 
+export interface UnlinkedFile {
+  fileId: number;
+  absPath: string;
+  belongsTo: string;
+}
+
 export interface IntegrityReport {
   checkedAt: string;
   movies: { linked: number; missing: BrokenLink[] };
   episodes: { linked: number; missing: BrokenLink[] };
+  /**
+   * File records no episode points at. The file is known and usually still on
+   * disk, but every "do we already have this?" check reads the episode's
+   * pointer, so the episode reads as missing and gets downloaded again. This is
+   * the state that produces duplicate episodes.
+   */
+  unlinkedFiles: UnlinkedFile[];
   /** Video files sitting in a library folder that no database row points at. */
   orphans: OrphanFile[];
   /** True when the orphan sweep was skipped or hit its cap. */
@@ -76,6 +89,7 @@ export async function checkLibraryIntegrity(
     checkedAt: new Date().toISOString(),
     movies: { linked: 0, missing: [] },
     episodes: { linked: 0, missing: [] },
+    unlinkedFiles: [],
     orphans: [],
     orphansPartial: !opts.includeOrphans,
   };
@@ -133,6 +147,28 @@ export async function checkLibraryIntegrity(
         absPath,
       });
     }
+  }
+
+  // --- file records nothing points at ---
+  const unlinked = db
+    .select({
+      fileId: schema.episodeFiles.id,
+      relativePath: schema.episodeFiles.relativePath,
+      seriesTitle: schema.series.title,
+      seriesPath: schema.series.path,
+    })
+    .from(schema.episodeFiles)
+    .leftJoin(schema.episodes, eq(schema.episodes.episodeFileId, schema.episodeFiles.id))
+    .innerJoin(schema.series, eq(schema.episodeFiles.seriesId, schema.series.id))
+    .where(isNull(schema.episodes.id))
+    .limit(MAX_REPORTED)
+    .all();
+  for (const row of unlinked) {
+    report.unlinkedFiles.push({
+      fileId: row.fileId,
+      absPath: path.join(row.seriesPath, row.relativePath),
+      belongsTo: row.seriesTitle,
+    });
   }
 
   if (!opts.includeOrphans) return report;
