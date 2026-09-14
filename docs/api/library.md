@@ -15,6 +15,24 @@ Set `MEDIABOX_URL` and `MEDIABOX_API_KEY` for the examples below.
 
 ---
 
+## `GET /api/v1/library/integrity`
+
+Compare the library the database describes against the library on disk. Read-only: it reports, it never re-links, moves or deletes anything.
+
+Every "do we already have this?" decision in media-box reads one pointer, `movies.movieFileId` or `episodes.episodeFileId`. Nothing stats the disk, so the two drift apart in both directions and each direction breaks something different. A pointer with no file makes playback return `404` and makes a title claim to be available. A file with no pointer makes the episode read as missing, so it is grabbed again and lands beside the copy already there under a different name.
+
+- **Auth:** admin.
+- **Query params:** `orphans` — `true` to also sweep every series folder for video files no row points at. That sweep reads every library folder, so it is off by default.
+- **Response:** `200` — `{ checkedAt, movies: { linked, missing: [...] }, episodes: { linked, missing: [...] }, orphans: [...], orphansPartial }`.
+  `missing` entries are `{ kind, id, title, absPath }`, where `absPath` is where the database believes the file is. `orphans` entries are `{ absPath, sizeBytes, belongsTo }`. Both lists are capped at 500; `orphansPartial` is true when the sweep was skipped or hit that cap.
+- **Example:**
+
+  ```bash
+  curl -sS "$MEDIABOX_URL/api/v1/library/integrity?orphans=true" -H "x-api-key: $MEDIABOX_API_KEY"
+  ```
+
+---
+
 ## `GET /api/v1/movies`
 
 List all movies (summary fields), sorted by sort title.
