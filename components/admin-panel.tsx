@@ -30,6 +30,7 @@ const NAV: { label: string; href: string; permission?: PermissionKey }[] = [
   { label: "Organizer", href: "/settings/organizer", permission: "organizer.access" },
   { label: "Jellyfin", href: "/settings/jellyfin" },
   { label: "Migrate", href: "/settings/migrate" },
+  { label: "App Installs", href: "/settings/apps" },
   { label: "General", href: "/settings/general" },
   { label: "Failures", href: "/settings/failures" },
   { label: "Logs", href: "/settings/logs" },

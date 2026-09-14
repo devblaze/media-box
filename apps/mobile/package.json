@@ -39,6 +39,11 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
+    "build-apk": "eas build --platform android --profile selfhosted",
+    "build-apk-local": "eas build --platform android --profile selfhosted --local --output ./build/media-box.apk",
+    "build-dev": "eas build --profile development",
+    "build-android": "eas build --platform android --profile production",
+    "build-ios": "eas build --platform ios --profile production",
     "lint": "expo lint"
   },
   "private": true

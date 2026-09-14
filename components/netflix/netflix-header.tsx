@@ -252,6 +252,13 @@ export function NetflixHeader() {
                   >
                     Account
                   </Link>
+                  <Link
+                    href="/apps"
+                    onClick={() => setMenuOpen(false)}
+                    className="block w-full px-3 py-1.5 text-left text-zinc-200 hover:bg-white/10"
+                  >
+                    Get the app
+                  </Link>
                   <button
                     type="button"
                     onClick={logout}

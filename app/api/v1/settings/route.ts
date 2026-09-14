@@ -28,6 +28,8 @@ const patchSchema = z.object({
   transcodeHwAccel: z.enum(["none", "vaapi", "qsv", "nvenc"]).optional(),
   transcodeVaapiDevice: z.string().optional(),
   maxTranscodeSessions: z.coerce.number().int().min(1).max(10).optional(),
+  appDownloadBaseUrl: z.string().optional(),
+  appTestflightUrl: z.string().optional(),
   streamRamCacheMb: z.coerce.number().int().min(0).max(262144).optional(),
   ramUsageMode: z.enum(["capped", "unlimited"]).optional(),
   maxBacklogGrabsPerRun: z.coerce.number().int().min(0).max(50).optional(),

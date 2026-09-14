@@ -5,7 +5,10 @@ import { SESSION_COOKIE } from "@/server/auth/session-cookie";
 const PUBLIC_API = ["/api/v1/health", "/api/v1/auth/login", "/api/v1/auth/setup", "/api/v1/auth/kiosk"];
 // /tv/* is the kiosk/cast surface: the page loads unauthenticated, then exchanges
 // its ?key= token for a session (which authorizes the channel/stream requests).
-const PUBLIC_PAGES = ["/login", "/setup", "/tv"];
+// /get/* and /apk/* are the app-install surface: a phone that scans the QR code
+// has no account yet, so the landing page and the short-code redirect must load
+// without one. Both carry a signed token that the handler validates.
+const PUBLIC_PAGES = ["/login", "/setup", "/tv", "/get", "/apk"];
 // Static assets served on the pre-auth login/setup screens (the decorative
 // browse showcase artwork under public/showcase/).
 const PUBLIC_ASSETS = ["/showcase/"];
@@ -25,11 +28,16 @@ export async function proxy(request: NextRequest) {
   const hasCastKey =
     request.nextUrl.searchParams.has("key") &&
     (pathname.startsWith("/api/v1/stream") || pathname.startsWith("/api/v1/transcode"));
+  // App downloads work the same way: the device installing the app has no
+  // session yet, so it presents a signed `?token=` instead. The route verifies
+  // the signature and that the token names the build being asked for.
+  const hasInstallToken =
+    request.nextUrl.searchParams.has("token") && pathname.startsWith("/api/v1/apps/");
 
   if (pathname.startsWith("/api/")) {
     // Route handlers validate the session/api key themselves where it matters;
     // this gate just rejects anonymous API traffic outright.
-    if (!hasSession && !hasApiKey && !hasCastKey) {
+    if (!hasSession && !hasApiKey && !hasCastKey && !hasInstallToken) {
       return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
     return NextResponse.next();

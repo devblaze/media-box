@@ -20,10 +20,13 @@ FROM node:24-bookworm-slim
 WORKDIR /app
 
 # Core: ffmpeg (built with vaapi + nvenc), gosu (privilege drop), tzdata, wget
-# (healthcheck), and the free VAAPI runtime (AMD via mesa, generic libva).
+# (healthcheck), the free VAAPI runtime (AMD via mesa, generic libva), and adb.
+# adb is what lets the server push its own Android build onto an Android TV or
+# Fire TV over the network; without it that install falls back to typing a short
+# URL into the TV by hand.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ffmpeg gosu tzdata wget \
+        ffmpeg gosu tzdata wget adb \
         libva2 libva-drm2 vainfo mesa-va-drivers \
     && rm -rf /var/lib/apt/lists/*
 

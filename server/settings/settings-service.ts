@@ -45,6 +45,15 @@ export const appSettingsSchema = z.object({
   // "unlimited" grows on demand into whatever RAM the system has free (a safety
   // headroom is always kept). A container memory limit still caps the process.
   ramUsageMode: z.enum(["capped", "unlimited"]).default("capped"),
+  // App distribution: the origin a QR code should point at. Normally left blank,
+  // in which case the address the admin is browsing on is used — that, by
+  // definition, is an address that works from another machine on this network.
+  // Set it when the server sits behind a reverse proxy or when iOS installs need
+  // a public HTTPS origin.
+  appDownloadBaseUrl: z.string().default(""),
+  // Optional TestFlight (or other Apple beta) link, shown to iPhone and Apple TV
+  // users — the only routes Apple leaves open when there is no signed IPA to host.
+  appTestflightUrl: z.string().default(""),
   // Max releases the 24h backlog search grabs per run (slow backfill; 0 = unlimited).
   maxBacklogGrabsPerRun: z.coerce.number().int().min(0).max(50).default(3),
   // Subtitles (Bazarr-style). Wanted languages = comma-separated ISO 639-1 codes ("en,es").
