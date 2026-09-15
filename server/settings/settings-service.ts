@@ -45,6 +45,11 @@ export const appSettingsSchema = z.object({
   // "unlimited" grows on demand into whatever RAM the system has free (a safety
   // headroom is always kept). A container memory limit still caps the process.
   ramUsageMode: z.enum(["capped", "unlimited"]).default("capped"),
+  // After the organizer copies or hardlinks a file into the library, delete the
+  // file it came from. Off by default because it is destructive and because it
+  // breaks seeding: a torrent client cannot seed a file that is no longer there.
+  // Irrelevant when importMode is "move", which never leaves a source behind.
+  organizerDeleteSource: z.coerce.boolean().default(false),
   // App distribution: the origin a QR code should point at. Normally left blank,
   // in which case the address the admin is browsing on is used — that, by
   // definition, is an address that works from another machine on this network.

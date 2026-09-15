@@ -36,6 +36,7 @@ Update app-wide settings (admin). Only the fields below are accepted; unknown ke
   | `transcodeVaapiDevice` | string | `/dev/dri/renderD128` | VAAPI/QSV render device node. |
   | `maxTranscodeSessions` | number (coerced int, 1–10) | `3` | Concurrent transcode session cap. |
   | `streamRamCacheMb` | number (coerced int, 0–262144) | `2048` | RAM budget (MiB) for the direct-play read-ahead cache; the prefetcher stays a full budget ahead of playback (budget ≥ file size keeps whole movies in RAM). `0` disables it. Ignored while `ramUsageMode` is `unlimited`. |
+  | `organizerDeleteSource` | boolean (coerced) | `false` | After the organizer hardlinks or copies a file into the library, delete the file it came from. Off by default: it is irreversible, and it stops a torrent client seeding, since the file it was seeding is gone. Ignored when `importMode` is `move`, which leaves no source behind. The source is only ever removed once the destination is confirmed present and non-empty, and never while file operations are read-only. |
   | `ramUsageMode` | enum `capped` \| `unlimited` | `capped` | How the stream cache sizes itself: `capped` honours `streamRamCacheMb`; `unlimited` grows on demand into all free system RAM, always keeping a headroom of max(1 GiB, 10% of total). A container memory limit still caps the process. |
   | `appDownloadBaseUrl` | string | `""` | App distribution: the origin QR codes and install links point at (see [app-distribution.md](./app-distribution.md)). Blank means "use the address the admin is browsing on", which is by definition reachable from another machine on that network. Set it when the server sits behind a reverse proxy, when it runs in Docker's default bridge network (where the container's own `172.x` address is useless to a phone), or when iOS installs need a public HTTPS origin. |
   | `appTestflightUrl` | string | `""` | App distribution: an optional TestFlight (or other Apple beta) link shown to iPhone and Apple TV users — the only routes Apple leaves open when there is no signed IPA to host. Echoed as `testflightUrl` by `GET /apps`. |
@@ -491,7 +492,9 @@ Organize a single loose file into the library at an explicit target: place file 
   | `id` | int > 0 | yes | Target library item id. |
   | `seasonNumber` | int ≥ 0 | no | Series/anime only. |
   | `episodeNumbers` | array of int > 0 | no | Series/anime only. |
-  | `onExisting` | enum `replace` \| `skip` | no | When the target movie/episode **already has a file**: `replace` (default) swaps in the new file and deletes the old one; `skip` leaves the existing file untouched. |
+  | `onExisting` | enum `replace` \| `skip` | no | When the target movie/episode **already has a file**: `replace` (default) swaps in the new file and deletes the old one; `skip` leaves the existing file untouched. Note this reads the database pointer, not the disk, so a file present on disk that no row points at is not seen by it. |
+
+  The result carries `sourceDeleted`, which is true only when the `organizerDeleteSource` setting is on, the placement left a source behind (so never for `move`), and the destination was confirmed present and non-empty afterwards.
 
 - **Response:** `200` — the organize result `{ status: "organized", destPath, detail, ... }`, or `{ skipped: true, reason }` when `onExisting: "skip"` matched an existing file, or `{ held: true, id }` in Ask mode. Errors: `400` — `"Invalid request body"`; `409` — `"already in the library"` / `"not in the library"` conflicts, or `MediaWritesDisabledError` when read-only mode is on; `500`.
 - **Example:**

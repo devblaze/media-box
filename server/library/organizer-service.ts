@@ -13,6 +13,7 @@ import { walkVideoFiles } from "./disk-scanner";
 import { emitEvent } from "@/server/events/bus";
 import { markRequestsAvailable } from "@/server/requests/request-service";
 import { getSettings } from "@/server/settings/settings-service";
+import { recordLog } from "@/server/logging/logger";
 
 // ---------- types ----------
 
@@ -57,6 +58,8 @@ export interface OrganizeResult {
   mediaType: "movie" | "series" | "anime";
   title: string;
   detail: string | null;
+  /** Whether the file it came from was deleted afterwards. */
+  sourceDeleted: boolean;
 }
 
 export interface OrganizeLogFilter {
@@ -210,6 +213,48 @@ export async function scanDownloads(): Promise<OrganizeItem[]> {
  * episode(s) / set the movie file, emit an update event, and record a log row.
  * Non-destructive by default; only importMode "move" removes the source.
  */
+/**
+ * Delete the file the organizer just placed FROM, when the setting asks for it.
+ *
+ * Deliberately paranoid, because this is the one step that destroys data. It
+ * confirms the destination is really there and non-empty first, never touches
+ * anything when the placement was a move (the source is already gone) and never
+ * when source and destination resolve to the same path. `removeMedia` carries
+ * the read-only master switch, so a library in read-only mode deletes nothing.
+ *
+ * A failure here is logged and swallowed. The library copy is in place and
+ * correct by this point; losing the organize over a stubborn source file would
+ * be the worse outcome.
+ *
+ * Worth knowing: after a hardlink the two paths are one file, so deleting the
+ * source frees no space at all. What it does do is remove the name a torrent
+ * client is seeding from.
+ *
+ * Exported so the safety rules above can be asserted directly rather than
+ * inferred from the outcome of a whole organize.
+ */
+export async function deleteSourceIfEnabled(
+  sourcePath: string,
+  destPath: string,
+  method: OrganizeAction
+): Promise<boolean> {
+  if (!getSettings().organizerDeleteSource) return false;
+  if (method === "move") return false; // nothing left to delete
+  if (path.resolve(sourcePath) === path.resolve(destPath)) return false;
+  try {
+    const placed = await fs.stat(destPath);
+    if (!placed.isFile() || placed.size === 0) return false;
+    await removeMedia(sourcePath);
+    return true;
+  } catch (err) {
+    recordLog("warn", "Organized the file but could not delete what it came from", {
+      source: "organizer",
+      context: { sourcePath, destPath, error: err instanceof Error ? err.message : String(err) },
+    });
+    return false;
+  }
+}
+
 export async function organizeFile(
   sourcePath: string,
   target: OrganizeTarget,
@@ -351,6 +396,7 @@ export async function organizeFile(
         mediaType: "movie",
         title: m.title,
         detail,
+        sourceDeleted: await deleteSourceIfEnabled(sourcePath, dest, method),
       };
     }
 
@@ -498,6 +544,7 @@ export async function organizeFile(
       mediaType,
       title: s.title,
       detail,
+      sourceDeleted: await deleteSourceIfEnabled(sourcePath, dest, method),
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

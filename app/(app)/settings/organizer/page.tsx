@@ -8,12 +8,15 @@ import {
   Badge,
   Button,
   Callout,
+  Card,
+  CardBody,
   Checkbox,
   EmptyState,
   Input,
   Modal,
   Select,
   Spinner,
+  Switch,
   Table,
   THead,
   TBody,
@@ -136,6 +139,8 @@ export default function OrganizerPage() {
           your naming convention. Non-destructive by default (hardlink/copy) — your download is kept.
         </p>
       </div>
+
+      <DeleteSourceSetting />
 
       <div className="flex gap-1 border-b border-zinc-800">
         {(["files", "log"] as const).map((t) => (
@@ -991,4 +996,65 @@ function LogTab() {
 function basename(p: string): string {
   const parts = p.split(/[/\\]/);
   return parts[parts.length - 1] || p;
+}
+
+/**
+ * Opt-in: delete the downloaded file once it is safely in the library.
+ *
+ * Off by default, and deliberately sited here rather than buried in general
+ * settings, because the consequence is local to organizing and is irreversible.
+ * The seeding warning is the part people get caught by: after a hardlink the two
+ * paths are the same file, so deleting the source frees nothing and only removes
+ * the name the torrent client is seeding from.
+ */
+function DeleteSourceSetting() {
+  const { data, mutate } = useApi<{ organizerDeleteSource?: boolean }>("/settings");
+  const toast = useToast();
+  const [saving, setSaving] = useState(false);
+  const [draft, setDraft] = useState<boolean | null>(null);
+  const enabled = draft ?? data?.organizerDeleteSource ?? false;
+
+  async function set(next: boolean) {
+    setDraft(next);
+    setSaving(true);
+    try {
+      await apiFetch("/settings", {
+        method: "PUT",
+        body: JSON.stringify({ organizerDeleteSource: next }),
+      });
+      await mutate();
+      setDraft(null);
+      toast.success(next ? "Downloads will be deleted after organizing" : "Downloads will be kept");
+    } catch (err) {
+      setDraft(null);
+      toast.error(err instanceof ApiError ? err.message : "Could not save that");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardBody className="space-y-3">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-zinc-100">Delete the download after organizing</p>
+            <p className="text-sm text-zinc-400">
+              Once the file is in the library and confirmed there, remove the copy it came from. The
+              source is never removed unless the destination really landed.
+            </p>
+          </div>
+          <Switch checked={enabled} onChange={set} disabled={saving} id="organizer-delete-source" />
+        </div>
+        {enabled && (
+          <Callout tone="warning" title="This stops you seeding">
+            A torrent client cannot seed a file that is no longer there. If your downloads and
+            library are on the same filesystem you are already getting hardlinks, where both names
+            point at one file and the second costs no space — so leaving this off usually costs you
+            nothing.
+          </Callout>
+        )}
+      </CardBody>
+    </Card>
+  );
 }
