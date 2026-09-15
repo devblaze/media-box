@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { requirePermission } from "@/server/auth/guards";
 import { organizeFile } from "@/server/library/organizer-service";
-import { ok, badRequest } from "@/lib/http";
+import { ok, invalidBody } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,7 +12,10 @@ const itemSchema = z.object({
   kind: z.enum(["series", "anime", "movie"]),
   id: z.number().int().positive(),
   seasonNumber: z.number().int().min(0).optional(),
-  episodeNumbers: z.array(z.number().int().positive()).optional(),
+  // min(0), not positive(): season 0 is already allowed, and specials are
+  // numbered from 0 under some conventions. Rejecting E00 here failed the whole
+  // request with nothing to say which field was at fault.
+  episodeNumbers: z.array(z.number().int().min(0)).optional(),
 });
 const bulkSchema = z.object({
   items: z.array(itemSchema).min(1).max(500),
@@ -33,8 +36,10 @@ export async function POST(request: NextRequest) {
   let input: z.infer<typeof bulkSchema>;
   try {
     input = bulkSchema.parse(await request.json());
-  } catch {
-    return badRequest("Invalid request body");
+  } catch (err) {
+    // Name the field AND the item index, since a bulk run of 200 files that
+    // trips on one bad row is otherwise impossible to diagnose from the UI.
+    return invalidBody(err);
   }
 
   const results: Array<{

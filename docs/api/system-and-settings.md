@@ -496,7 +496,7 @@ Organize a single loose file into the library at an explicit target: place file 
 
   The result carries `sourceDeleted`, which is true only when the `organizerDeleteSource` setting is on, the placement left a source behind (so never for `move`), and the destination was confirmed present and non-empty afterwards.
 
-- **Response:** `200` — the organize result `{ status: "organized", destPath, detail, ... }`, or `{ skipped: true, reason }` when `onExisting: "skip"` matched an existing file, or `{ held: true, id }` in Ask mode. Errors: `400` — `"Invalid request body"`; `409` — `"already in the library"` / `"not in the library"` conflicts, or `MediaWritesDisabledError` when read-only mode is on; `500`.
+- **Response:** `200` — the organize result `{ status: "organized", destPath, detail, ... }`, or `{ skipped: true, reason }` when `onExisting: "skip"` matched an existing file, or `{ held: true, id }` in Ask mode. Errors: `400` — `"Invalid request body: <field> (<reason>)"`, naming the fields that failed and carrying the raw Zod `issues` alongside; `409` — `"already in the library"` / `"not in the library"` conflicts, or `MediaWritesDisabledError` when read-only mode is on; `500`.
 - **Example:**
   ```bash
   curl -sS -X POST "$MEDIABOX_URL/api/v1/organizer/organize" -H "x-api-key: $MEDIABOX_API_KEY" \
@@ -516,7 +516,7 @@ Organize many files in one request (e.g. a batch of episodes into a series). Eac
   | `items` | array of organize items | yes | 1–500 entries; each item has the same shape as the single-file `POST` body (`sourcePath`, `kind`, `id`, optional `seasonNumber`, `episodeNumbers`). |
   | `onExisting` | enum `replace` \| `skip` | no | Applied to every item: when a target movie/episode **already has a file**, `replace` (default) swaps it; `skip` leaves it untouched and counts the item as `skipped`. |
 
-- **Response:** `200` — `{ organized: number, failed: number, skipped: number, held: number, results: [{ sourcePath, status: "organized"|"failed"|"skipped"|"held", detail?, destPath?, error?, id? }] }`. Already-/not-in-library conflicts and `onExisting: "skip"` matches count as `skipped`. Errors: `400` — `"Invalid request body"`.
+- **Response:** `200` — `{ organized: number, failed: number, skipped: number, held: number, results: [{ sourcePath, status: "organized"|"failed"|"skipped"|"held", detail?, destPath?, error?, id? }] }`. Already-/not-in-library conflicts and `onExisting: "skip"` matches count as `skipped`. Errors: `400` — `"Invalid request body: <field> (<reason>)"`, where an array field names the offending index (e.g. `items.7.episodeNumbers.0`), plus the raw Zod `issues`.
 - **Example:**
   ```bash
   curl -sS -X POST "$MEDIABOX_URL/api/v1/organizer/organize/bulk" -H "x-api-key: $MEDIABOX_API_KEY" \

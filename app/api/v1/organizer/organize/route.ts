@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requirePermission } from "@/server/auth/guards";
 import { organizeFile } from "@/server/library/organizer-service";
-import { ok, badRequest, serverError } from "@/lib/http";
+import { ok, invalidBody, serverError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,7 +13,10 @@ const organizeSchema = z.object({
   kind: z.enum(["series", "anime", "movie"]),
   id: z.number().int().positive(),
   seasonNumber: z.number().int().min(0).optional(),
-  episodeNumbers: z.array(z.number().int().positive()).optional(),
+  // min(0), not positive(): season 0 is already allowed, and specials are
+  // numbered from 0 under some conventions. Rejecting E00 here failed the whole
+  // request with nothing to say which field was at fault.
+  episodeNumbers: z.array(z.number().int().min(0)).optional(),
   // When the target movie/episode already has a file: replace it (default) or
   // skip this file and leave the existing one untouched.
   onExisting: z.enum(["replace", "skip"]).optional(),
@@ -30,8 +33,10 @@ export async function POST(request: NextRequest) {
   let input: z.infer<typeof organizeSchema>;
   try {
     input = organizeSchema.parse(await request.json());
-  } catch {
-    return badRequest("Invalid request body");
+  } catch (err) {
+    // Name the field: a bare "Invalid request body" left no way to tell which
+    // of six fields was at fault.
+    return invalidBody(err);
   }
 
   try {
