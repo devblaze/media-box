@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, apiFetch, useApi } from "@/lib/api";
 import { formatBytes, type MovieSummary, type SeriesSummary } from "@/lib/types";
-import type { OrganizeItem } from "@/server/library/organizer-service";
+import type { OnExisting, OrganizeItem } from "@/server/library/organizer-service";
 import {
   Badge,
   Button,
@@ -63,6 +63,8 @@ interface BulkResponse {
   organized: number;
   failed: number;
   skipped: number;
+  /** Downloads reclaimed, when the run asked for skipAndDelete. */
+  sourcesDeleted?: number;
   results: BulkResultRow[];
 }
 
@@ -294,17 +296,23 @@ function FilesTab() {
     });
   }
 
-  async function runBulk(bulkItems: BulkItem[], notSent = 0, onExisting?: "replace" | "skip") {
+  async function runBulk(bulkItems: BulkItem[], notSent = 0, onExisting?: OnExisting) {
     if (bulkItems.length === 0) return;
     setBulkRunning(true);
     setBulkProgress({ done: 0, total: bulkItems.length });
-    const totals = { organized: 0, skipped: 0, failed: 0 };
+    const totals = { organized: 0, skipped: 0, failed: 0, sourcesDeleted: 0 };
     const errs: { sourcePath: string; error: string }[] = [];
     // Organized (and "already in the library" / "already has a file" skips) drop
     // out of the list — they're resolved, not problems.
     const skipText = (r: BulkResultRow) => r.error ?? r.detail ?? "";
+    // A skip whose download was KEPT because the library copy turned out to be
+    // missing is not resolved — it is the database pointing at a file that is
+    // not there, which is worth seeing rather than quietly dropping off the list.
     const resolved = (r: BulkResultRow) =>
-      r.status === "organized" || (r.status === "skipped" && /already/i.test(skipText(r)));
+      r.status === "organized" ||
+      (r.status === "skipped" &&
+        /already/i.test(skipText(r)) &&
+        !/library copy is missing/i.test(skipText(r)));
 
     try {
       for (let i = 0; i < bulkItems.length; i += BULK_CHUNK) {
@@ -316,6 +324,7 @@ function FilesTab() {
         totals.organized += res.organized;
         totals.skipped += res.skipped;
         totals.failed += res.failed;
+        totals.sourcesDeleted += res.sourcesDeleted ?? 0;
         // Applied per chunk, so the list shrinks as it goes and a failure part
         // way through doesn't discard the work already done.
         markOrganizedMany(res.results.filter(resolved).map((r) => r.sourcePath));
@@ -329,6 +338,7 @@ function FilesTab() {
       }
 
       let msg = `Organized ${totals.organized} · skipped ${totals.skipped} · failed ${totals.failed}`;
+      if (totals.sourcesDeleted > 0) msg += ` · ${totals.sourcesDeleted} downloads deleted`;
       if (notSent > 0) msg += ` · ${notSent} not mappable`;
       if (totals.failed > 0) toast.error(msg);
       else toast.success(msg);
@@ -389,7 +399,7 @@ function FilesTab() {
   );
 
   /** One-click organize of every matched file. Asks replace-vs-skip first. */
-  function organizeAllMatched(onExisting: "replace" | "skip") {
+  function organizeAllMatched(onExisting: OnExisting) {
     setAskExisting(false);
     const bulkItems: BulkItem[] = allMatched.map((f) => ({
       sourcePath: f.sourcePath,
@@ -645,15 +655,38 @@ function FilesTab() {
             <Button variant="secondary" onClick={() => organizeAllMatched("skip")}>
               Skip existing
             </Button>
+            <Button variant="danger" onClick={() => organizeAllMatched("skipAndDelete")}>
+              Skip and delete download
+            </Button>
             <Button onClick={() => organizeAllMatched("replace")}>Replace existing</Button>
           </>
         }
       >
-        <p className="text-sm text-zinc-300">
-          Each file is organized into its matched movie/series. If a title{" "}
-          <strong>already has a file</strong>, should the new file replace it (the old file is
-          deleted) or be skipped (the existing file is kept)?
-        </p>
+        <div className="space-y-3 text-sm text-zinc-300">
+          <p>
+            Each file is organized into its matched movie/series. If a title{" "}
+            <strong>already has a file</strong>:
+          </p>
+          <ul className="space-y-1 text-zinc-400">
+            <li>
+              <strong className="text-zinc-300">Skip existing</strong> leaves both alone — the
+              library keeps its file and the download stays where it is.
+            </li>
+            <li>
+              <strong className="text-zinc-300">Skip and delete download</strong> keeps the library
+              file and deletes the redundant download, to reclaim the space.
+            </li>
+            <li>
+              <strong className="text-zinc-300">Replace existing</strong> files the new copy and
+              deletes the library&apos;s old one.
+            </li>
+          </ul>
+          <Callout tone="tip" title="Deleting is checked first">
+            A download is only deleted once the library copy has been confirmed present on disk.
+            Where the record points at a file that is not there, the download is kept and the row
+            says so.
+          </Callout>
+        </div>
       </Modal>
     </div>
   );

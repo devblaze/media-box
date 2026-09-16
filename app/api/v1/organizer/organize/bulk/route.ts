@@ -19,9 +19,10 @@ const itemSchema = z.object({
 });
 const bulkSchema = z.object({
   items: z.array(itemSchema).min(1).max(500),
-  // When a target movie/episode already has a file: replace it (default) or
-  // skip that item and leave the existing file untouched.
-  onExisting: z.enum(["replace", "skip"]).optional(),
+  // When a target movie/episode already has a file: replace it (default), skip
+  // and leave everything alone, or skip and delete the now-redundant download —
+  // the last only once the library copy is confirmed on disk.
+  onExisting: z.enum(["replace", "skip", "skipAndDelete"]).optional(),
 });
 
 /**
@@ -54,6 +55,9 @@ export async function POST(request: NextRequest) {
   let failed = 0;
   let skipped = 0;
   let held = 0;
+  // Counted separately: on a big run "deleted 412 downloads" is the number the
+  // person who asked for skipAndDelete actually wants to see.
+  let sourcesDeleted = 0;
 
   for (const it of input.items) {
     try {
@@ -76,10 +80,12 @@ export async function POST(request: NextRequest) {
       // Skip mode: target already had a file — nothing touched.
       if (r.status === "skipped") {
         skipped++;
+        if (r.sourceDeleted) sourcesDeleted++;
         results.push({ sourcePath: it.sourcePath, status: "skipped", detail: r.reason });
         continue;
       }
       organized++;
+      if (r.sourceDeleted) sourcesDeleted++;
       results.push({ sourcePath: it.sourcePath, status: "organized", detail: r.detail, destPath: r.destPath });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -94,5 +100,5 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  return ok({ organized, failed, skipped, held, results });
+  return ok({ organized, failed, skipped, held, sourcesDeleted, results });
 }

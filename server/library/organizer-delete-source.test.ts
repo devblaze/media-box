@@ -26,7 +26,7 @@ vi.mock("./media-guard", () => ({
 }));
 vi.mock("@/server/logging/logger", () => ({ recordLog: () => {} }));
 
-import { deleteSourceIfEnabled } from "./organizer-service";
+import { deleteRedundantSource, deleteSourceIfEnabled } from "./organizer-service";
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "mediabox-organize-"));
 
@@ -99,5 +99,80 @@ describe("deleteSourceIfEnabled", () => {
     const dest = write("library/Movie (2024).mkv");
     await expect(deleteSourceIfEnabled(src, dest, "hardlink")).resolves.toBe(false);
     expect(fs.existsSync(src)).toBe(true);
+  });
+});
+
+/**
+ * Deleting a download because "we already have it" rests entirely on that being
+ * true. The pointer saying so is not enough: an ordering change drops the link
+ * while the file stays, and a stale pointer names a file deleted outside
+ * media-box. In the second case the download is the only copy left, and
+ * deleting it on the pointer's word destroys the title.
+ */
+describe("deleteRedundantSource", () => {
+  test("deletes the download once the library copy is confirmed present", async () => {
+    const src = write("downloads/bleach-046.mkv");
+    const lib = write("library/Bleach - S01E46.mkv");
+    const res = await deleteRedundantSource(src, [lib]);
+    expect(res.deleted).toBe(true);
+    expect(fs.existsSync(src)).toBe(false);
+    expect(fs.existsSync(lib)).toBe(true);
+  });
+
+  test("keeps the download when the library copy is not actually there", async () => {
+    // The pointer is stale. This download is the only copy left.
+    const src = write("downloads/bleach-046.mkv");
+    const res = await deleteRedundantSource(src, [path.join(TMP, "library/gone.mkv")]);
+    expect(res.deleted).toBe(false);
+    expect(res.note).toContain("library copy is missing");
+    expect(fs.existsSync(src)).toBe(true);
+  });
+
+  test("keeps the download when the library copy is an empty stub", async () => {
+    const src = write("downloads/bleach-046.mkv");
+    const res = await deleteRedundantSource(src, [write("library/Bleach - S01E46.mkv", 0)]);
+    expect(res.deleted).toBe(false);
+    expect(fs.existsSync(src)).toBe(true);
+  });
+
+  test("a multi-episode file needs EVERY copy present, not just one", async () => {
+    // A file covering 46 and 47 where only 46 is in the library is still the
+    // only source of 47.
+    const src = write("downloads/bleach-046-047.mkv");
+    const present = write("library/Bleach - S01E46.mkv");
+    const missing = path.join(TMP, "library/Bleach - S01E47.mkv");
+    const res = await deleteRedundantSource(src, [present, missing]);
+    expect(res.deleted).toBe(false);
+    expect(fs.existsSync(src)).toBe(true);
+  });
+
+  test("keeps the download when there is nothing recorded to compare against", async () => {
+    const src = write("downloads/bleach-046.mkv");
+    const res = await deleteRedundantSource(src, []);
+    expect(res.deleted).toBe(false);
+    expect(fs.existsSync(src)).toBe(true);
+  });
+
+  test("never deletes when the library copy IS the file being organized", async () => {
+    const abs = write("library/Bleach - S01E46.mkv");
+    const res = await deleteRedundantSource(abs, [abs]);
+    expect(res.deleted).toBe(false);
+    expect(fs.existsSync(abs)).toBe(true);
+  });
+
+  test("read-only mode deletes nothing", async () => {
+    fileOperationsEnabled = false;
+    const src = write("downloads/bleach-046.mkv");
+    const res = await deleteRedundantSource(src, [write("library/Bleach - S01E46.mkv")]);
+    expect(res.deleted).toBe(false);
+    expect(fs.existsSync(src)).toBe(true);
+  });
+
+  test("the setting for deleting after organizing does not govern this", async () => {
+    // Different action, different consent: skipAndDelete is chosen per run.
+    organizerDeleteSource = false;
+    const src = write("downloads/bleach-046.mkv");
+    const res = await deleteRedundantSource(src, [write("library/Bleach - S01E46.mkv")]);
+    expect(res.deleted).toBe(true);
   });
 });

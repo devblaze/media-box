@@ -17,9 +17,10 @@ const organizeSchema = z.object({
   // numbered from 0 under some conventions. Rejecting E00 here failed the whole
   // request with nothing to say which field was at fault.
   episodeNumbers: z.array(z.number().int().min(0)).optional(),
-  // When the target movie/episode already has a file: replace it (default) or
-  // skip this file and leave the existing one untouched.
-  onExisting: z.enum(["replace", "skip"]).optional(),
+  // When the target movie/episode already has a file: replace it (default),
+  // skip and leave everything alone, or skip and delete the now-redundant
+  // download — the last only once the library copy is confirmed on disk.
+  onExisting: z.enum(["replace", "skip", "skipAndDelete"]).optional(),
 });
 
 /**
@@ -53,7 +54,9 @@ export async function POST(request: NextRequest) {
     // Ask mode: the organize was held for approval rather than performed now.
     if (result.status === "held") return ok({ held: true, id: result.id });
     // Skip mode: the target already had a file — nothing was touched.
-    if (result.status === "skipped") return ok({ skipped: true, reason: result.reason });
+    if (result.status === "skipped") {
+      return ok({ skipped: true, reason: result.reason, sourceDeleted: result.sourceDeleted });
+    }
     return ok(result);
   } catch (err) {
     // Conflicts (already in library / not-in-library) surface as 409 so the UI

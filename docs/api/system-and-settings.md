@@ -492,11 +492,13 @@ Organize a single loose file into the library at an explicit target: place file 
   | `id` | int > 0 | yes | Target library item id. |
   | `seasonNumber` | int ≥ 0 | no | Series/anime only. |
   | `episodeNumbers` | array of int > 0 | no | Series/anime only. |
-  | `onExisting` | enum `replace` \| `skip` | no | When the target movie/episode **already has a file**: `replace` (default) swaps in the new file and deletes the old one; `skip` leaves the existing file untouched. Note this reads the database pointer, not the disk, so a file present on disk that no row points at is not seen by it. |
+  | `onExisting` | enum `replace` \| `skip` \| `skipAndDelete` | no | When the target movie/episode **already has a file**: `replace` (default) swaps in the new file and deletes the old one; `skip` leaves both the library file and the download untouched; `skipAndDelete` keeps the library file and deletes the now-redundant download. Note the "already has a file" test reads the database pointer, not the disk, so a file present on disk that no row points at is not seen by it. |
 
-  The result carries `sourceDeleted`, which is true only when the `organizerDeleteSource` setting is on, the placement left a source behind (so never for `move`), and the destination was confirmed present and non-empty afterwards.
+  `skipAndDelete` stats the library copy before deleting anything, and keeps the download when that copy is missing, empty, resolves to the source itself, or — for a multi-episode file — when any one of the episodes it covers is not present. The reason string says which of those happened, and the result's `sourceDeleted` says whether the download actually went.
 
-- **Response:** `200` — the organize result `{ status: "organized", destPath, detail, ... }`, or `{ skipped: true, reason }` when `onExisting: "skip"` matched an existing file, or `{ held: true, id }` in Ask mode. Errors: `400` — `"Invalid request body: <field> (<reason>)"`, naming the fields that failed and carrying the raw Zod `issues` alongside; `409` — `"already in the library"` / `"not in the library"` conflicts, or `MediaWritesDisabledError` when read-only mode is on; `500`.
+  The result carries `sourceDeleted` on both the organized and the skipped shapes. On an organize it is true only when the `organizerDeleteSource` setting is on, the placement left a source behind (so never for `move`), and the destination was confirmed present and non-empty afterwards. On a skip it is true only under `skipAndDelete`, with the checks above.
+
+- **Response:** `200` — the organize result `{ status: "organized", destPath, detail, ... }`, or `{ skipped: true, reason, sourceDeleted }` when `onExisting` was `skip` or `skipAndDelete` and the target already had a file, or `{ held: true, id }` in Ask mode. Errors: `400` — `"Invalid request body: <field> (<reason>)"`, naming the fields that failed and carrying the raw Zod `issues` alongside; `409` — `"already in the library"` / `"not in the library"` conflicts, or `MediaWritesDisabledError` when read-only mode is on; `500`.
 - **Example:**
   ```bash
   curl -sS -X POST "$MEDIABOX_URL/api/v1/organizer/organize" -H "x-api-key: $MEDIABOX_API_KEY" \
@@ -514,9 +516,9 @@ Organize many files in one request (e.g. a batch of episodes into a series). Eac
   | field | type | required | notes |
   | --- | --- | --- | --- |
   | `items` | array of organize items | yes | 1–500 entries. The cap is deliberate: every item does real filesystem work, so an unbounded batch would be a long-running request a reverse proxy may time out. A client with more to do sends successive batches — the Organizer page sends 200 at a time and reports progress across them. Each item has the same shape as the single-file `POST` body (`sourcePath`, `kind`, `id`, optional `seasonNumber`, `episodeNumbers`). |
-  | `onExisting` | enum `replace` \| `skip` | no | Applied to every item: when a target movie/episode **already has a file**, `replace` (default) swaps it; `skip` leaves it untouched and counts the item as `skipped`. |
+  | `onExisting` | enum `replace` \| `skip` \| `skipAndDelete` | no | Applied to every item: when a target movie/episode **already has a file**, `replace` (default) swaps it; `skip` leaves both it and the download untouched; `skipAndDelete` keeps the library file and reclaims the download, after confirming the library copy is really on disk. All three count the item as `skipped` unless it was organized. |
 
-- **Response:** `200` — `{ organized: number, failed: number, skipped: number, held: number, results: [{ sourcePath, status: "organized"|"failed"|"skipped"|"held", detail?, destPath?, error?, id? }] }`. Already-/not-in-library conflicts and `onExisting: "skip"` matches count as `skipped`. Errors: `400` — `"Invalid request body: <field> (<reason>)"`, where an array field names the offending index (e.g. `items.7.episodeNumbers.0`), plus the raw Zod `issues`.
+- **Response:** `200` — `{ organized: number, failed: number, skipped: number, held: number, sourcesDeleted: number, results: [{ sourcePath, status: "organized"|"failed"|"skipped"|"held", detail?, destPath?, error?, id? }] }`. Already-/not-in-library conflicts and `onExisting: "skip"` matches count as `skipped`. Errors: `400` — `"Invalid request body: <field> (<reason>)"`, where an array field names the offending index (e.g. `items.7.episodeNumbers.0`), plus the raw Zod `issues`.
 - **Example:**
   ```bash
   curl -sS -X POST "$MEDIABOX_URL/api/v1/organizer/organize/bulk" -H "x-api-key: $MEDIABOX_API_KEY" \

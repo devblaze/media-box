@@ -214,6 +214,61 @@ export async function scanDownloads(): Promise<OrganizeItem[]> {
  * Non-destructive by default; only importMode "move" removes the source.
  */
 /**
+ * What to do when the target movie or episode already has a file.
+ *
+ * `skipAndDelete` exists for a library that is already complete: there is
+ * nothing to file, and the download is redundant, so reclaim it.
+ */
+export type OnExisting = "replace" | "skip" | "skipAndDelete";
+
+/**
+ * Delete a download the library already has.
+ *
+ * The test that matters here is NOT "the database says this already has a
+ * file". It is "that file is actually on disk". Those two come apart routinely:
+ * an ordering change drops the link while the file stays put, and a stale
+ * pointer names a file deleted outside media-box. Deleting a download on the
+ * strength of a pointer alone would destroy the only remaining copy in exactly
+ * the case where the pointer is the thing that is wrong.
+ *
+ * So every file the library claims to have is stat'd first, and the download is
+ * kept unless all of them are really there and non-empty. The note it returns is
+ * shown to the user, because "skipped but kept the download" and "skipped and
+ * deleted it" are very different outcomes to be told apart.
+ *
+ * Exported so those rules can be asserted directly, rather than inferred from
+ * the outcome of a whole organize.
+ */
+export async function deleteRedundantSource(
+  sourcePath: string,
+  existing: string[]
+): Promise<{ deleted: boolean; note: string }> {
+  if (existing.length === 0) return { deleted: false, note: "nothing recorded to compare against" };
+  for (const abs of existing) {
+    if (path.resolve(abs) === path.resolve(sourcePath)) {
+      return { deleted: false, note: "the library copy IS this file" };
+    }
+    const st = await fs.stat(abs).catch(() => null);
+    if (!st?.isFile() || st.size === 0) {
+      return {
+        deleted: false,
+        note: `kept the download — the library copy is missing (${path.basename(abs)})`,
+      };
+    }
+  }
+  try {
+    await removeMedia(sourcePath);
+    return { deleted: true, note: "deleted the download" };
+  } catch (err) {
+    recordLog("warn", "Skipped the file but could not delete the redundant download", {
+      source: "organizer",
+      context: { sourcePath, error: err instanceof Error ? err.message : String(err) },
+    });
+    return { deleted: false, note: "could not delete the download" };
+  }
+}
+
+/**
  * Delete the file the organizer just placed FROM, when the setting asks for it.
  *
  * Deliberately paranoid, because this is the one step that destroys data. It
@@ -258,9 +313,11 @@ export async function deleteSourceIfEnabled(
 export async function organizeFile(
   sourcePath: string,
   target: OrganizeTarget,
-  opts: { bypassHold?: boolean; onExisting?: "replace" | "skip" } = {}
+  opts: { bypassHold?: boolean; onExisting?: OnExisting } = {}
 ): Promise<
-  OrganizeResult | { status: "held"; id: number } | { status: "skipped"; reason: string }
+  | OrganizeResult
+  | { status: "held"; id: number }
+  | { status: "skipped"; reason: string; sourceDeleted: boolean }
 > {
   // Ask mode: hold the organize for an approver instead of placing the file now.
   // `bypassHold` is set when an approval re-runs this to actually organize.
@@ -295,10 +352,29 @@ export async function organizeFile(
       const m = db.select().from(schema.movies).where(eq(schema.movies.id, target.id)).get();
       if (!m) throw new Error("Movie is not in the library");
 
-      // Skip mode: the movie already has a file → leave everything untouched
+      // Skip mode: the movie already has a file → leave the library untouched
       // (default is replace, which swaps the file and deletes the old one).
-      if (opts.onExisting === "skip" && m.movieFileId != null) {
-        return { status: "skipped", reason: `'${m.title}' already has a file — skipped` };
+      // skipAndDelete additionally reclaims the now-redundant download, but only
+      // once the library copy has been confirmed present.
+      if (opts.onExisting !== "replace" && opts.onExisting != null && m.movieFileId != null) {
+        let sourceDeleted = false;
+        let note = "";
+        if (opts.onExisting === "skipAndDelete") {
+          const existing = db
+            .select()
+            .from(schema.movieFiles)
+            .where(eq(schema.movieFiles.id, m.movieFileId))
+            .get();
+          ({ deleted: sourceDeleted, note } = await deleteRedundantSource(
+            sourcePath,
+            existing ? [path.join(m.path, existing.relativePath)] : []
+          ));
+        }
+        return {
+          status: "skipped",
+          reason: `'${m.title}' already has a file — skipped${note ? `, ${note}` : ""}`,
+          sourceDeleted,
+        };
       }
 
       const quality: QualityModel = parsed.quality;
@@ -428,11 +504,37 @@ export async function organizeFile(
     }
 
     // Skip mode: any of the target episodes already has a file → leave untouched.
-    if (opts.onExisting === "skip" && episodeRows.some((e) => e.episodeFileId != null)) {
+    if (opts.onExisting !== "replace" && opts.onExisting != null && episodeRows.some((e) => e.episodeFileId != null)) {
       const label = `S${pad2(seasonNumber)}E${episodeRows
         .map((e) => pad2(e.episodeNumber))
         .join("-")}`;
-      return { status: "skipped", reason: `'${s.title}' ${label} already has a file — skipped` };
+      let sourceDeleted = false;
+      let note = "";
+      if (opts.onExisting === "skipAndDelete") {
+        // EVERY episode this file would supply must already be covered. A
+        // two-episode file where only one of the pair is present is still the
+        // only source of the other one, so it is kept.
+        const covered = episodeRows.every((e) => e.episodeFileId != null);
+        if (!covered) {
+          note = "kept the download — it also covers an episode the library lacks";
+        } else {
+          const fileIds = episodeRows.map((e) => e.episodeFileId!) as number[];
+          const existing = db
+            .select()
+            .from(schema.episodeFiles)
+            .where(inArray(schema.episodeFiles.id, fileIds))
+            .all();
+          ({ deleted: sourceDeleted, note } = await deleteRedundantSource(
+            sourcePath,
+            existing.map((f) => path.join(s.path, f.relativePath))
+          ));
+        }
+      }
+      return {
+        status: "skipped",
+        reason: `'${s.title}' ${label} already has a file — skipped${note ? `, ${note}` : ""}`,
+        sourceDeleted,
+      };
     }
 
     const quality: QualityModel = parsed.quality;
