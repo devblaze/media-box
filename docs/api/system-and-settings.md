@@ -513,7 +513,7 @@ Organize many files in one request (e.g. a batch of episodes into a series). Eac
 
   | field | type | required | notes |
   | --- | --- | --- | --- |
-  | `items` | array of organize items | yes | 1–500 entries; each item has the same shape as the single-file `POST` body (`sourcePath`, `kind`, `id`, optional `seasonNumber`, `episodeNumbers`). |
+  | `items` | array of organize items | yes | 1–500 entries. The cap is deliberate: every item does real filesystem work, so an unbounded batch would be a long-running request a reverse proxy may time out. A client with more to do sends successive batches — the Organizer page sends 200 at a time and reports progress across them. Each item has the same shape as the single-file `POST` body (`sourcePath`, `kind`, `id`, optional `seasonNumber`, `episodeNumbers`). |
   | `onExisting` | enum `replace` \| `skip` | no | Applied to every item: when a target movie/episode **already has a file**, `replace` (default) swaps it; `skip` leaves it untouched and counts the item as `skipped`. |
 
 - **Response:** `200` — `{ organized: number, failed: number, skipped: number, held: number, results: [{ sourcePath, status: "organized"|"failed"|"skipped"|"held", detail?, destPath?, error?, id? }] }`. Already-/not-in-library conflicts and `onExisting: "skip"` matches count as `skipped`. Errors: `400` — `"Invalid request body: <field> (<reason>)"`, where an array field names the offending index (e.g. `items.7.episodeNumbers.0`), plus the raw Zod `issues`.

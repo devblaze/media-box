@@ -43,6 +43,15 @@ interface BulkItem {
   episodeNumbers?: number[];
 }
 
+/**
+ * Files per bulk request. The endpoint caps a batch at 500, and "organize all
+ * matched" on a real library is easily thousands — so the page batches rather
+ * than sending one request that the server would refuse outright. Kept well
+ * under the cap because each item does real filesystem work, and one enormous
+ * request is a long-running one that a reverse proxy may time out.
+ */
+const BULK_CHUNK = 200;
+
 interface BulkResultRow {
   sourcePath: string;
   status: "organized" | "failed" | "skipped";
@@ -182,6 +191,7 @@ function FilesTab() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkSeriesId, setBulkSeriesId] = useState<number | null>(null);
   const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
   const [bulkErrors, setBulkErrors] = useState<{ sourcePath: string; error: string }[]>([]);
   // "Organize all matched" replace-vs-skip prompt.
   const [askExisting, setAskExisting] = useState(false);
@@ -287,34 +297,52 @@ function FilesTab() {
   async function runBulk(bulkItems: BulkItem[], notSent = 0, onExisting?: "replace" | "skip") {
     if (bulkItems.length === 0) return;
     setBulkRunning(true);
-    try {
-      const res = await apiFetch<BulkResponse>("/organizer/organize/bulk", {
-        method: "POST",
-        body: JSON.stringify({ items: bulkItems, ...(onExisting ? { onExisting } : {}) }),
-      });
-      // Organized (and "already in the library" / "already has a file" skips)
-      // drop out of the list — they're resolved, not problems.
-      const skipText = (r: BulkResultRow) => r.error ?? r.detail ?? "";
-      const donePaths = res.results
-        .filter((r) => r.status === "organized" || (r.status === "skipped" && /already/i.test(skipText(r))))
-        .map((r) => r.sourcePath);
-      markOrganizedMany(donePaths);
-      // Real problems (failures + "not in the library" skips) get surfaced.
-      const errs = res.results
-        .filter((r) => r.status === "failed" || (r.status === "skipped" && !/already/i.test(skipText(r))))
-        .map((r) => ({ sourcePath: r.sourcePath, error: r.error ?? r.detail ?? "Unknown error" }));
-      setBulkErrors(errs);
+    setBulkProgress({ done: 0, total: bulkItems.length });
+    const totals = { organized: 0, skipped: 0, failed: 0 };
+    const errs: { sourcePath: string; error: string }[] = [];
+    // Organized (and "already in the library" / "already has a file" skips) drop
+    // out of the list — they're resolved, not problems.
+    const skipText = (r: BulkResultRow) => r.error ?? r.detail ?? "";
+    const resolved = (r: BulkResultRow) =>
+      r.status === "organized" || (r.status === "skipped" && /already/i.test(skipText(r)));
 
-      let msg = `Organized ${res.organized} · skipped ${res.skipped} · failed ${res.failed}`;
+    try {
+      for (let i = 0; i < bulkItems.length; i += BULK_CHUNK) {
+        const chunk = bulkItems.slice(i, i + BULK_CHUNK);
+        const res = await apiFetch<BulkResponse>("/organizer/organize/bulk", {
+          method: "POST",
+          body: JSON.stringify({ items: chunk, ...(onExisting ? { onExisting } : {}) }),
+        });
+        totals.organized += res.organized;
+        totals.skipped += res.skipped;
+        totals.failed += res.failed;
+        // Applied per chunk, so the list shrinks as it goes and a failure part
+        // way through doesn't discard the work already done.
+        markOrganizedMany(res.results.filter(resolved).map((r) => r.sourcePath));
+        for (const r of res.results) {
+          if (!resolved(r)) {
+            errs.push({ sourcePath: r.sourcePath, error: r.error ?? r.detail ?? "Unknown error" });
+          }
+        }
+        setBulkErrors([...errs]);
+        setBulkProgress({ done: Math.min(i + chunk.length, bulkItems.length), total: bulkItems.length });
+      }
+
+      let msg = `Organized ${totals.organized} · skipped ${totals.skipped} · failed ${totals.failed}`;
       if (notSent > 0) msg += ` · ${notSent} not mappable`;
-      if (res.failed > 0) toast.error(msg);
+      if (totals.failed > 0) toast.error(msg);
       else toast.success(msg);
 
       clearSelection();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Bulk organize failed");
+      // Whatever completed before this point is already reflected in the list
+      // and the counts, so say how far it got rather than implying none of it ran.
+      const done = totals.organized + totals.skipped + totals.failed;
+      const reason = err instanceof Error ? err.message : "Bulk organize failed";
+      toast.error(done > 0 ? `${reason} — stopped after ${done} of ${bulkItems.length}` : reason);
     } finally {
       setBulkRunning(false);
+      setBulkProgress(null);
     }
   }
 
@@ -448,7 +476,11 @@ function FilesTab() {
               loading={bulkRunning}
               className="sm:ml-auto"
             >
-              Organize all matched ({allMatched.length})
+              {/* A few thousand files go over in batches, so the count is the
+                  only sign that anything is still happening. */}
+              {bulkProgress
+                ? `Organizing ${bulkProgress.done} of ${bulkProgress.total}…`
+                : `Organize all matched (${allMatched.length})`}
             </Button>
           </div>
 
