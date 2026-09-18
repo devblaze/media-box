@@ -7,6 +7,7 @@ import { CONFIG_DIR } from "@/server/config/paths";
 import { getSettings } from "@/server/settings/settings-service";
 import { probeAudioTracks, probeMediaInfo } from "@/server/library/media-info";
 import { recordLog } from "@/server/logging/logger";
+import { FFMPEG_BIN } from "./ffmpeg-path";
 import {
   DEFAULT_TRANSCODE_QUALITY,
   transcodeQuality,
@@ -308,7 +309,7 @@ function activeCount(): number {
 /** Cheap feature-detect: does `ffmpeg -version` run? Never throws. */
 async function ffmpegAvailable(): Promise<boolean> {
   try {
-    await execFileAsync("ffmpeg", ["-version"], { timeout: 5_000 });
+    await execFileAsync(FFMPEG_BIN, ["-version"], { timeout: 5_000 });
     return true;
   } catch {
     return false;
@@ -377,6 +378,55 @@ export interface TranscodeTestResult {
   message: string;
 }
 
+/**
+ * Say what actually went wrong with a hardware encode, rather than guessing.
+ *
+ * The old message blamed GPU passthrough for every failure. On an Arc A380 that
+ * sent people hunting a passthrough problem they did not have: the card was
+ * mapped in correctly and VAAPI was encoding fine, while QSV failed because
+ * Debian 12's ffmpeg links Intel's old Media SDK, which stops at 12th-generation
+ * integrated graphics. The fix there is a newer ffmpeg, not a different
+ * `--device` flag, and the message needs to say so.
+ *
+ * Matching on ffmpeg's own words, most specific first.
+ */
+export function diagnoseHwFailure(mode: HwAccel, stderr: string): string {
+  const detail = summarizeFfmpegError(stderr);
+  const label = HW_LABELS[mode];
+
+  // Intel's Media SDK refusing to start. Almost always a card newer than the
+  // ffmpeg build, which is the whole Arc story.
+  if (/MFX|libmfx|oneVPL|VPL/i.test(stderr)) {
+    return (
+      `${label} failed to start a session, which usually means this ffmpeg build is older than the GPU. ` +
+      "Intel's Media SDK stops at 12th-generation integrated graphics; Arc cards need a build with oneVPL. " +
+      "VAAPI drives the same card through the graphics driver and is the working option in the meantime. " +
+      `(${detail})`
+    );
+  }
+  // Present but unreadable: a permissions problem, not a missing device.
+  if (/Permission denied|EACCES/i.test(stderr)) {
+    return (
+      `${label} found the GPU device but was not allowed to open it. The container user needs access ` +
+      "to the render node — on Unraid that usually means adding it to the render group. " +
+      `(${detail})`
+    );
+  }
+  // The render node is genuinely absent — this IS a passthrough problem.
+  if (/No such file or directory|Failed to open.*(dri|renderD)|No VA display|cannot open display/i.test(stderr)) {
+    return (
+      `${label} could not open the GPU device. Check the render node is passed into the container ` +
+      "(a /dev/dri device mapping) and that the device setting names one that exists. " +
+      `(${detail})`
+    );
+  }
+  // The encoder simply isn't compiled in.
+  if (/Unknown encoder|Unrecognized option|Cannot load/i.test(stderr)) {
+    return `${label} is not available in this ffmpeg build. (${detail})`;
+  }
+  return `${label} did not work. (${detail})`;
+}
+
 /** Pull the most useful line out of ffmpeg's stderr for a failed self-test. */
 function summarizeFfmpegError(stderr: string): string {
   const lines = stderr
@@ -407,7 +457,7 @@ export async function testTranscode(
     };
   }
   try {
-    await execFileAsync("ffmpeg", buildHwTestArgs(mode, vaapiDevice), { timeout: 25_000 });
+    await execFileAsync(FFMPEG_BIN, buildHwTestArgs(mode, vaapiDevice), { timeout: 25_000 });
     return {
       ok: true,
       ffmpegAvailable: true,
@@ -428,9 +478,7 @@ export async function testTranscode(
       mode,
       label,
       message:
-        mode === "none"
-          ? `Software encoding failed: ${detail}`
-          : `${label} is not working — check the GPU is passed through to the container. (${detail})`,
+        mode === "none" ? `Software encoding failed: ${detail}` : diagnoseHwFailure(mode, stderr),
     };
   }
 }
@@ -488,7 +536,7 @@ function spawnEncoder(session: Session, startSegment: number): void {
     session.quality
   );
 
-  const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+  const proc = spawn(FFMPEG_BIN, args, { stdio: ["ignore", "ignore", "pipe"] });
   session.proc = proc;
   session.encoderStart = startSegment;
   session.status = "running";

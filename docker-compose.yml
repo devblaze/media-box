@@ -12,6 +12,10 @@ services:
     ports:
       - "7878:7878"
     environment:
+      # Point at a different ffmpeg/ffprobe when the bundled one cannot drive
+      # your GPU (e.g. a jellyfin-ffmpeg build). Unset uses the image's own.
+      # FFMPEG_PATH: "/usr/lib/jellyfin-ffmpeg/ffmpeg"
+      # FFPROBE_PATH: "/usr/lib/jellyfin-ffmpeg/ffprobe"
       PUID: "99"
       PGID: "100"
       UMASK: "022"
@@ -23,6 +27,11 @@ services:
       - /srv/tv:/tv # series (TV) library
     # GPU transcoding — Intel QuickSync / AMD VAAPI: pass the render device.
     # (Set Transcoding > Hardware acceleration in Settings to vaapi/qsv.)
+    # On an Intel Arc card, prefer VAAPI: it drives the card through the graphics
+    # driver and supports Arc's H.264, HEVC and VP9 encoders. QSV needs an ffmpeg
+    # built against oneVPL, which this image has from Debian 13 onwards; if you
+    # run your own build and QSV reports an MFX session error, that build is the
+    # reason and FFMPEG_PATH below can point at a newer one.
     devices:
       - /dev/dri:/dev/dri
     # For NVIDIA NVENC instead: remove the devices block above, install the

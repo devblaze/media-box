@@ -32,7 +32,7 @@ Update app-wide settings (admin). Only the fields below are accepted; unknown ke
   | `seriesPath` | string | `""` | Series library share. |
   | `animePath` | string | `""` | Anime library share. |
   | `importMode` | enum `auto` \| `hardlink` \| `copy` \| `move` | `auto` | How imports place files into the library. |
-  | `transcodeHwAccel` | enum `none` \| `vaapi` \| `qsv` \| `nvenc` | `none` | HLS transcoding hardware-accel path. |
+  | `transcodeHwAccel` | enum `none` \| `vaapi` \| `qsv` \| `nvenc` | `none` | HLS transcoding hardware-accel path. On Intel Arc prefer `vaapi`: `qsv` needs an ffmpeg built against oneVPL, and a build linking Intel's older Media SDK fails on Arc with an MFX session error even though the card is passed through correctly. `POST /settings/transcode-test` names that case specifically rather than blaming passthrough. The `FFMPEG_PATH` and `FFPROBE_PATH` environment variables point the app at a different build when the bundled one cannot drive the GPU. |
   | `transcodeVaapiDevice` | string | `/dev/dri/renderD128` | VAAPI/QSV render device node. |
   | `maxTranscodeSessions` | number (coerced int, 1–10) | `3` | Concurrent transcode session cap. |
   | `streamRamCacheMb` | number (coerced int, 0–262144) | `2048` | RAM budget (MiB) for the direct-play read-ahead cache; the prefetcher stays a full budget ahead of playback (budget ≥ file size keeps whole movies in RAM). `0` disables it. Ignored while `ramUsageMode` is `unlimited`. |

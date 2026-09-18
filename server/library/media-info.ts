@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
+import { FFPROBE_BIN } from "@/server/transcode/ffmpeg-path";
 
 const execFileAsync = promisify(execFile);
 
@@ -144,7 +145,7 @@ export interface MediaChapter {
 export async function probeChapters(absPath: string): Promise<MediaChapter[]> {
   try {
     const { stdout } = await execFileAsync(
-      "ffprobe",
+      FFPROBE_BIN,
       ["-v", "quiet", "-print_format", "json", "-show_chapters", absPath],
       { timeout: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BUFFER }
     );
@@ -188,7 +189,7 @@ interface FfprobeAudioStream {
 export async function probeAudioTracks(absPath: string): Promise<AudioStream[]> {
   try {
     const { stdout } = await execFileAsync(
-      "ffprobe",
+      FFPROBE_BIN,
       ["-v", "quiet", "-print_format", "json", "-show_streams", "-select_streams", "a", absPath],
       { timeout: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BUFFER }
     );
@@ -209,7 +210,7 @@ export async function probeAudioTracks(absPath: string): Promise<AudioStream[]> 
 export async function probeMediaInfo(absPath: string): Promise<MediaInfo | null> {
   try {
     const { stdout } = await execFileAsync(
-      "ffprobe",
+      FFPROBE_BIN,
       ["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", absPath],
       { timeout: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BUFFER }
     );
