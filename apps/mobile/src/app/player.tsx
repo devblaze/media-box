@@ -96,7 +96,8 @@ export default function Player() {
   const [seeking, setSeeking] = useState(false);
   const seekingRef = useRef(false);
   const [controlsVisible, setControlsVisible] = useState(true);
-  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bumped on every interaction, so the hide countdown starts over.
+  const [controlsPoke, setControlsPoke] = useState(0);
 
   // What the viewer wants, as opposed to what AVPlayer is doing: while it waits
   // for data it reports "not playing", and the button shouldn't flip to ▶ (nor
@@ -150,18 +151,18 @@ export default function Player() {
   const statusRef = useRef(status);
   statusRef.current = status;
 
-  // Auto-hide the controls a few seconds after they're shown (only while playing).
+  // The controls (✕ and title included) hide a few seconds after the last touch,
+  // but only while the picture is actually moving: they stay up while it loads,
+  // while it's paused, and while the bar is being dragged.
   const showControls = useCallback(() => {
     setControlsVisible(true);
-    if (hideTimer.current) clearTimeout(hideTimer.current);
-    hideTimer.current = setTimeout(() => setControlsVisible(false), CONTROLS_HIDE_MS);
+    setControlsPoke((n) => n + 1);
   }, []);
   useEffect(() => {
-    showControls();
-    return () => {
-      if (hideTimer.current) clearTimeout(hideTimer.current);
-    };
-  }, [showControls]);
+    if (!controlsVisible || !playing || scrubPreview != null) return;
+    const timer = setTimeout(() => setControlsVisible(false), CONTROLS_HIDE_MS);
+    return () => clearTimeout(timer);
+  }, [controlsVisible, playing, scrubPreview, controlsPoke]);
 
   // Boot: token + resume point + probed duration, then the direct stream.
   useEffect(() => {
@@ -418,6 +419,8 @@ export default function Player() {
       lastTapRef.current = { at: now, side };
       const toggle = () => (controlsVisible ? setControlsVisible(false) : showControls());
       if (side === "center") {
+        // The second tap of a double tap would only take back the first.
+        if (last?.side === "center" && now - last.at < DOUBLE_TAP_MS) return;
         toggle();
         return;
       }
@@ -469,7 +472,9 @@ export default function Player() {
       {(status === "loading" || seeking) && !error && (
         <View style={styles.loadingOverlay} pointerEvents="none">
           <ActivityIndicator size="large" color={theme.accent} />
-          {!!title && !hasPlayedRef.current && <Text style={styles.loadingTitle}>{title}</Text>}
+          {!!title && !hasPlayedRef.current && !controlsVisible && (
+            <Text style={styles.loadingTitle}>{title}</Text>
+          )}
         </View>
       )}
 
@@ -484,14 +489,18 @@ export default function Player() {
         </View>
       )}
 
-      {/* Close (always available). */}
-      <Pressable
-        onPress={() => router.back()}
-        hitSlop={12}
-        style={[styles.close, { top: insets.top + 8 }]}
-      >
-        <Text style={styles.closeText}>✕</Text>
-      </Pressable>
+      {/* Close comes and goes with the controls; after an error there's no
+          picture to tap, so it stays. */}
+      {(controlsVisible || !!error) && (
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={12}
+          style={[styles.close, { top: insets.top + 8 }]}
+          accessibilityLabel="Close player"
+        >
+          <Text style={styles.closeText}>✕</Text>
+        </Pressable>
+      )}
 
       {controlsVisible && !error && (
         <>
