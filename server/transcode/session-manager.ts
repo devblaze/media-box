@@ -33,6 +33,10 @@ const AHEAD_SEGMENTS = 12;
 /** How long a segment request waits for its file before giving up. */
 const SEGMENT_WAIT_MS = 20_000;
 const SEGMENT_POLL_MS = 120;
+/** A restart asked for within this long of another replaces it, so a burst of
+ *  seeks (quick taps on skip, a held arrow key) spawns ffmpeg once, at the last
+ *  target, instead of killing and respawning it for every step on the way. */
+const RESTART_DEBOUNCE_MS = 250;
 
 export type TranscodeStatus = "starting" | "running" | "done" | "error";
 
@@ -54,9 +58,18 @@ export interface Session {
   audioTrack: number | null;
   /** Segment index the CURRENT ffmpeg run started at (its `-start_number`). */
   encoderStart: number;
+  /** ms epoch the current run was spawned. A segment written before it is left
+   *  over from an earlier run and says nothing about where this one has got to. */
+  runStartedAt: number;
+  /** Last segment the current run is known to have written (walk cache for
+   *  {@link producedFrontier}; `encoderStart - 1` until it writes one). */
+  runFrontier: number;
   /** Bitrate rung this session encodes to. Fixed for the session's life — a
    *  different rung means a different session (the playlist has no ABR ladder). */
   quality: TranscodeQuality;
+  /** A seek restart waiting out {@link RESTART_DEBOUNCE_MS}: where ffmpeg will
+   *  start, and how many live requests still want it there. */
+  pendingRestart?: { segIndex: number; wanted: number; timer: ReturnType<typeof setTimeout> } | null;
 }
 
 export interface StartOpts {
@@ -502,21 +515,28 @@ async function fileExists(p: string): Promise<boolean> {
   }
 }
 
-/** Highest segment index currently on disk for a session, or -1 if none. */
+/**
+ * The last segment the current ffmpeg run has written: the unbroken stretch from
+ * its start, counting only files written since it was spawned. Segments left by
+ * earlier runs stay on disk (see {@link restartEncoderAt}), so neither "the
+ * highest index present" nor "the contiguous block from the start" says where the
+ * encoder is: after a seek back, the run re-encodes straight into a block an
+ * earlier run already wrote, and is nowhere near that block's end.
+ */
 function producedFrontier(session: Session): number {
-  let max = -1;
-  try {
-    for (const name of fs.readdirSync(session.dir)) {
-      const m = /^seg(\d{5})\.ts$/.exec(name);
-      if (m) {
-        const n = Number(m[1]);
-        if (n > max) max = n;
-      }
+  // Files only ever get added during a run, so the walk resumes where it stopped.
+  // A second of slack, for filesystems that keep whole-second mtimes.
+  const since = session.runStartedAt - 1_000;
+  let i = Math.max(session.encoderStart, session.runFrontier + 1);
+  for (;; i++) {
+    try {
+      if (fs.statSync(path.join(session.dir, segName(i))).mtimeMs < since) break;
+    } catch {
+      break; // not written yet
     }
-  } catch {
-    // dir may not exist yet
   }
-  return max;
+  session.runFrontier = i - 1;
+  return session.runFrontier;
 }
 
 /**
@@ -539,6 +559,8 @@ function spawnEncoder(session: Session, startSegment: number): void {
   const proc = spawn(FFMPEG_BIN, args, { stdio: ["ignore", "ignore", "pipe"] });
   session.proc = proc;
   session.encoderStart = startSegment;
+  session.runStartedAt = Date.now();
+  session.runFrontier = startSegment - 1;
   session.status = "running";
 
   let stderrTail = "";
@@ -568,10 +590,14 @@ function spawnEncoder(session: Session, startSegment: number): void {
   });
 }
 
-/** Kill the current run, drop its segments, and restart ffmpeg at `startSegment`.
- *  Clearing the dir keeps {@link producedFrontier} reflecting ONLY the new run, so
- *  the wait/restart decision stays unambiguous (a re-transcode on a backward seek
- *  is cheap next to getting that decision wrong). */
+/**
+ * Kill the current run and restart ffmpeg at `startSegment`. Segments already on
+ * disk stay: every run numbers them by absolute position on one `-copyts`
+ * timeline, so any of them is valid whichever run wrote it, and `temp_file`
+ * means none is ever half-written. Keeping them is what makes a seek BACK to
+ * something already watched instant, rather than another ffmpeg restart, and it
+ * leaves a late request for the old position nothing to restart over.
+ */
 function restartEncoderAt(session: Session, startSegment: number): void {
   const old = session.proc;
   session.proc = null;
@@ -580,43 +606,92 @@ function restartEncoderAt(session: Session, startSegment: number): void {
   } catch {
     // already gone
   }
-  try {
-    for (const name of fs.readdirSync(session.dir)) {
-      if (/^seg\d{5}\.ts$/.test(name) || name === "index.m3u8") {
-        fs.rmSync(path.join(session.dir, name), { force: true });
-      }
-    }
-  } catch {
-    // best-effort
-  }
+  // The event playlist describes the old run only; the VOD playlist is built.
+  fs.rmSync(path.join(session.dir, "index.m3u8"), { force: true });
   spawnEncoder(session, startSegment);
+}
+
+/**
+ * Ask for ffmpeg to restart at `segIndex`, after {@link RESTART_DEBOUNCE_MS}. A
+ * newer target replaces a pending one; the same target just gains a requester.
+ */
+function requestRestart(session: Session, segIndex: number): void {
+  const pending = session.pendingRestart;
+  if (pending?.segIndex === segIndex) {
+    pending.wanted += 1;
+    return;
+  }
+  if (pending) clearTimeout(pending.timer);
+  const timer = setTimeout(() => {
+    if (session.pendingRestart?.timer !== timer) return;
+    session.pendingRestart = null;
+    // Stopped while the restart was pending: spawning now would orphan ffmpeg.
+    if (sessions().get(session.id) !== session) return;
+    restartEncoderAt(session, segIndex);
+  }, RESTART_DEBOUNCE_MS);
+  session.pendingRestart = { segIndex, wanted: 1, timer };
+}
+
+/** A requester of a pending restart went away; the last one out cancels it. */
+function dropRestartRequest(session: Session, segIndex: number): void {
+  const pending = session.pendingRestart;
+  if (pending?.segIndex !== segIndex) return;
+  pending.wanted -= 1;
+  if (pending.wanted > 0) return;
+  clearTimeout(pending.timer);
+  session.pendingRestart = null;
 }
 
 /**
  * Ensure segment `segIndex` exists (transcoded), then resolve true. If the current
  * encoder is producing toward it, wait; if it's a seek away from the encoder's
  * frontier (far ahead, or before its start), restart ffmpeg there. Resolves false
- * if the segment can't be produced before the deadline (or the encoder errored).
+ * if the segment can't be produced before the deadline, the encoder errored, or
+ * the client went away (`signal`): the player abandons a segment it seeked past,
+ * and a request nobody is waiting for shouldn't decide where ffmpeg runs.
  */
-export async function ensureSegment(session: Session, segIndex: number): Promise<boolean> {
+export async function ensureSegment(
+  session: Session,
+  segIndex: number,
+  signal?: AbortSignal
+): Promise<boolean> {
   const file = path.join(session.dir, segName(segIndex));
-  if (await fileExists(file)) return true;
+  // Synchronous from here to the decision, so two requests arriving together
+  // can't both read the same state and both restart ffmpeg.
+  if (fs.existsSync(file)) return true;
 
-  const frontier = producedFrontier(session);
-  const effFrontier = Math.max(frontier, session.encoderStart - 1);
-  const running = session.status === "running" || session.status === "starting";
-  // The current run will reach segIndex "soon" only if it's ahead of (or at) the
-  // encoder's start AND within a small window of the produced frontier.
-  const reachesSoon =
-    running && segIndex >= session.encoderStart && segIndex - effFrontier <= AHEAD_SEGMENTS;
-  if (!reachesSoon) restartEncoderAt(session, segIndex);
-
-  const deadline = Date.now() + SEGMENT_WAIT_MS;
-  while (!(await fileExists(file))) {
-    if (session.status === "error" || Date.now() >= deadline) return false;
-    await sleep(SEGMENT_POLL_MS);
+  // Where the encoder is (or is about to be, once a pending restart fires).
+  const pending = session.pendingRestart;
+  const start = pending ? pending.segIndex : session.encoderStart;
+  const frontier = pending ? start - 1 : producedFrontier(session);
+  const running = pending != null || session.status === "running" || session.status === "starting";
+  // That run will reach segIndex "soon" only if it's ahead of (or at) the run's
+  // start AND within a small window of its produced frontier.
+  const reachesSoon = running && segIndex >= start && segIndex - frontier <= AHEAD_SEGMENTS;
+  // The pending restart this request is counting on, if any. Joining one it can
+  // ride (the segment just after a seek target) keeps it alive should the
+  // request that asked for it go away first.
+  let counting: number | null = null;
+  if (!reachesSoon) {
+    requestRestart(session, segIndex);
+    counting = segIndex;
+  } else if (pending) {
+    pending.wanted += 1;
+    counting = pending.segIndex;
   }
-  return true;
+
+  try {
+    const deadline = Date.now() + SEGMENT_WAIT_MS;
+    while (!(await fileExists(file))) {
+      if (signal?.aborted || Date.now() >= deadline) return false;
+      // The run errored, and no restart is coming to replace it.
+      if (session.status === "error" && !session.pendingRestart) return false;
+      await sleep(SEGMENT_POLL_MS);
+    }
+    return true;
+  } finally {
+    if (counting != null) dropRestartRequest(session, counting);
+  }
 }
 
 /** The VOD playlist: every segment of the WHOLE runtime listed up front, so the
@@ -681,6 +756,8 @@ export async function startSession(absPath: string, opts: StartOpts = {}): Promi
     segmentCount: durationSec > 0 ? Math.ceil(durationSec / SEG_DUR) : 0,
     audioTrack,
     encoderStart: startSegment,
+    runStartedAt: Date.now(),
+    runFrontier: startSegment - 1,
     quality: transcodeQuality(opts.quality),
   };
   sessions().set(id, session);
@@ -713,6 +790,8 @@ export function stopSession(id: string): void {
   const s = sessions().get(id);
   if (!s) return;
   sessions().delete(id);
+  if (s.pendingRestart) clearTimeout(s.pendingRestart.timer);
+  s.pendingRestart = null;
   try {
     s.proc?.kill("SIGKILL");
   } catch {

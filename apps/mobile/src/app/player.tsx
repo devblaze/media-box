@@ -9,6 +9,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useEvent } from "expo";
@@ -28,6 +29,21 @@ import { theme } from "@/lib/theme";
 
 const PROGRESS_SAVE_STEP_S = 15; // persist the playhead at most this often
 const CONTROLS_HIDE_MS = 3500;
+/** Skip steps, as Jellyfin's players default them. */
+const SKIP_BACK_S = 10;
+const SKIP_FORWARD_S = 30;
+/** Quick skips add up on screen and go out as ONE seek once the taps stop, so a
+ *  burst of them doesn't make the server restart its transcode for every step. */
+const SKIP_COMMIT_MS = 450;
+/** Two taps on the same side of the picture within this window skip. */
+const DOUBLE_TAP_MS = 280;
+/** A playhead that should be moving and hasn't for this long is re-seeked where it
+ *  stands, which makes AVPlayer re-request what it's waiting for; if that doesn't
+ *  get it going either, the stream is rebuilt there. */
+const STUCK_RECOVER_MS = 8_000;
+/** Seeks may land this far either side of the target: on a long-GOP file an exact
+ *  seek decodes from the previous keyframe, which is what made skipping crawl. */
+const SEEK_TOLERANCE_S = 1;
 
 /** Seconds → "m:ss" (or "h:mm:ss"). */
 function fmt(s: number): string {
@@ -53,6 +69,7 @@ function fmt(s: number): string {
 export default function Player() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
   const params = useLocalSearchParams<{ type: string; id: string; title?: string }>();
   const type: PlayableType = params.type === "episode" ? "episode" : "movie";
   const id = Number(params.id);
@@ -76,14 +93,36 @@ export default function Player() {
   const [duration, setDuration] = useState(0); // probed runtime (seek-bar range)
   const [displayTime, setDisplayTime] = useState(0); // absolute playhead
   const [scrubPreview, setScrubPreview] = useState<number | null>(null);
-  const [isPlaying, setIsPlaying] = useState(true);
   const [seeking, setSeeking] = useState(false);
+  const seekingRef = useRef(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // What the viewer wants, as opposed to what AVPlayer is doing: while it waits
+  // for data it reports "not playing", and the button shouldn't flip to ▶ (nor
+  // the watchdog think the viewer paused) every time it buffers.
+  const [wantPlay, setWantPlay] = useState(true);
+  const wantPlayRef = useRef(true);
+  const intendPlay = useCallback((on: boolean) => {
+    wantPlayRef.current = on;
+    setWantPlay(on);
+  }, []);
+
+  // A burst of skips in progress: where it started and where it has got to.
+  const pendingSeekRef = useRef<number | null>(null);
+  const burstOriginRef = useRef(0);
+  const skipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const osdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [skipOsd, setSkipOsd] = useState<number | null>(null); // seconds, signed
+
+  // Double-tap detection on the picture.
+  const lastTapRef = useRef<{ at: number; side: "back" | "forward" | "center" } | null>(null);
+  const singleTapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const player = useVideoPlayer(null, (p) => {
     p.timeUpdateEventInterval = 1; // 1 s → a responsive seek bar
     p.staysActiveInBackground = true; // keep playing when the app is backgrounded
+    p.seekTolerance = { toleranceBefore: SEEK_TOLERANCE_S, toleranceAfter: SEEK_TOLERANCE_S };
   });
 
   const { status, error: playerError } = useEvent(player, "statusChange", {
@@ -98,7 +137,18 @@ export default function Player() {
   const { isPlaying: playing } = useEvent(player, "playingChange", {
     isPlaying: player.playing,
   });
-  useEffect(() => setIsPlaying(playing), [playing]);
+  // Follow pauses and plays that come from elsewhere (lock screen, PiP, the end of
+  // the file). Not playing while ready means paused; not playing while loading is
+  // only buffering, and says nothing about what the viewer wants.
+  const hasPlayedRef = useRef(false);
+  useEffect(() => {
+    if (playing) {
+      hasPlayedRef.current = true;
+      intendPlay(true);
+    } else if (status === "readyToPlay") intendPlay(false);
+  }, [playing, status, intendPlay]);
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
   // Auto-hide the controls a few seconds after they're shown (only while playing).
   const showControls = useCallback(() => {
@@ -150,6 +200,32 @@ export default function Player() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [type, id]);
 
+  /**
+   * Start a transcode session at `startSec` and play it, retiring the previous
+   * session. A seekable transcode's playlist covers the whole runtime, so its
+   * timeline is absolute: no base offset, and the playhead is placed once it's
+   * ready (resumeRef). Only the legacy event-playlist fallback starts AT
+   * `startSec` (base offset = startSec, already positioned).
+   */
+  const openTranscode = useCallback(
+    async (startSec: number) => {
+      const token = tokenRef.current;
+      if (!token) throw new Error("Not signed in");
+      const start = Math.max(0, Math.floor(startSec));
+      const old = sessionRef.current;
+      const session = await startTranscode(type, id, start);
+      sessionRef.current = session.sessionId;
+      modeRef.current = "hls";
+      hlsBaseRef.current = session.seekable ? 0 : start;
+      resumeRef.current = session.seekable ? start : 0;
+      positionRef.current = start;
+      player.replace({ uri: transcodePlaylistUrl(session.url, token), contentType: "hls" });
+      player.play();
+      if (old && old !== session.sessionId) stopTranscode(old).catch(() => {});
+    },
+    [type, id, player]
+  );
+
   // Direct play failed (unsupported container) → HLS transcode from the current spot.
   useEffect(() => {
     if (status !== "error") return;
@@ -158,27 +234,9 @@ export default function Player() {
       return;
     }
     fellBackRef.current = true;
-    (async () => {
-      try {
-        const startSec = Math.max(positionRef.current, resumeRef.current);
-        const session = await startTranscode(type, id, startSec);
-        sessionRef.current = session.sessionId;
-        modeRef.current = "hls";
-        // A seekable transcode's playlist covers the whole runtime, so its
-        // timeline is absolute — no base offset, and we seek to the resume
-        // point ourselves. Only the legacy event-playlist fallback starts AT
-        // `startSec` (base offset = startSec, already positioned).
-        hlsBaseRef.current = session.seekable ? 0 : startSec;
-        if (session.seekable && startSec > 0) resumeRef.current = startSec;
-        player.replace({
-          uri: transcodePlaylistUrl(session.url, tokenRef.current!),
-          contentType: "hls",
-        });
-        player.play();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Playback failed");
-      }
-    })();
+    openTranscode(Math.max(positionRef.current, resumeRef.current)).catch((err) =>
+      setError(err instanceof Error ? err.message : "Playback failed")
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 
@@ -204,7 +262,7 @@ export default function Player() {
     const position = modeRef.current === "hls" ? hlsBaseRef.current + currentTime : currentTime;
     if (!Number.isFinite(position) || position < 0) return;
     positionRef.current = position;
-    if (scrubPreview == null) setDisplayTime(position);
+    if (scrubPreview == null && pendingSeekRef.current == null) setDisplayTime(position);
     if (durationRef.current > 0 && Math.abs(position - lastSaveRef.current) >= PROGRESS_SAVE_STEP_S) {
       lastSaveRef.current = position;
       saveWatchProgress(type, id, position, durationRef.current).catch(() => {});
@@ -225,8 +283,6 @@ export default function Player() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Seek to an ABSOLUTE time. Direct play seeks natively (HTTP Range); a transcode
-  // can't seek to unencoded time, so it restarts ffmpeg at the target offset.
   /**
    * Seek to an ABSOLUTE time. Direct play seeks over HTTP Range; a seekable
    * transcode seeks the same way (its playlist covers the whole runtime and the
@@ -237,43 +293,151 @@ export default function Player() {
   const seekTo = useCallback(
     async (target: number) => {
       const t = Math.max(0, durationRef.current > 0 ? Math.min(target, durationRef.current) : target);
-      showControls();
       if (modeRef.current === "direct" || hlsBaseRef.current === 0) {
         player.currentTime = t;
         positionRef.current = t;
         setDisplayTime(t);
         return;
       }
-      const token = tokenRef.current;
-      if (!token) return;
+      seekingRef.current = true;
       setSeeking(true);
       setDisplayTime(t);
-      const old = sessionRef.current;
       try {
-        const session = await startTranscode(type, id, Math.floor(t));
-        sessionRef.current = session.sessionId;
-        hlsBaseRef.current = session.seekable ? 0 : Math.floor(t);
-        positionRef.current = t;
-        player.replace({
-          uri: transcodePlaylistUrl(session.url, token),
-          contentType: "hls",
-        });
-        player.play();
+        await openTranscode(t);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Seek failed");
       } finally {
+        seekingRef.current = false;
         setSeeking(false);
-        if (old && old !== sessionRef.current) stopTranscode(old).catch(() => {});
       }
     },
-    [type, id, player, showControls]
+    [player, openTranscode]
+  );
+
+  /**
+   * Skip by `delta` seconds. Quick skips add up: the bar and the bubble move at
+   * once, and the seek itself goes out SKIP_COMMIT_MS after the last tap, from
+   * where the burst started — one seek however many taps.
+   */
+  const skip = useCallback(
+    (delta: number) => {
+      if (pendingSeekRef.current == null) burstOriginRef.current = positionRef.current;
+      const from = pendingSeekRef.current ?? positionRef.current;
+      const max = durationRef.current > 0 ? durationRef.current : Number.POSITIVE_INFINITY;
+      const target = Math.max(0, Math.min(from + delta, max));
+      pendingSeekRef.current = target;
+      setDisplayTime(target);
+      setSkipOsd(Math.round(target - burstOriginRef.current));
+      if (osdTimer.current) clearTimeout(osdTimer.current);
+      if (skipTimer.current) clearTimeout(skipTimer.current);
+      skipTimer.current = setTimeout(() => {
+        const t = pendingSeekRef.current;
+        pendingSeekRef.current = null;
+        if (t != null) void seekTo(t);
+        osdTimer.current = setTimeout(() => setSkipOsd(null), 600);
+      }, SKIP_COMMIT_MS);
+    },
+    [seekTo]
+  );
+  useEffect(
+    () => () => {
+      if (skipTimer.current) clearTimeout(skipTimer.current);
+      if (osdTimer.current) clearTimeout(osdTimer.current);
+      if (singleTapTimer.current) clearTimeout(singleTapTimer.current);
+    },
+    []
   );
 
   const togglePlay = useCallback(() => {
-    if (player.playing) player.pause();
-    else player.play();
+    if (wantPlayRef.current) {
+      intendPlay(false);
+      player.pause();
+    } else {
+      intendPlay(true);
+      player.play();
+    }
     showControls();
-  }, [player, showControls]);
+  }, [player, showControls, intendPlay]);
+
+  // Watchdog. A playhead that should be moving and hasn't is waiting on data that
+  // isn't coming: a segment request lost across a run of seeks, or a transcode
+  // session the server has since reaped. Re-seek where it stands first (AVPlayer
+  // re-requests); if it's still stuck, rebuild the stream at that spot.
+  useEffect(() => {
+    let last = -1;
+    let stuckSince = Date.now();
+    let reseeked = false;
+    const tick = setInterval(() => {
+      const now = Date.now();
+      // Not before playback has ever started: a slow first segment is the
+      // initial load's business (it falls back on its own), not a stall.
+      const busy =
+        !hasPlayedRef.current ||
+        !wantPlayRef.current ||
+        seekingRef.current ||
+        pendingSeekRef.current != null ||
+        statusRef.current === "error" ||
+        statusRef.current === "idle";
+      const t = player.currentTime;
+      if (busy || t !== last) {
+        last = t;
+        stuckSince = now;
+        reseeked = false;
+        return;
+      }
+      if (now - stuckSince < STUCK_RECOVER_MS) return;
+      stuckSince = now;
+      if (!reseeked) {
+        reseeked = true;
+        player.currentTime = t;
+        player.play();
+        return;
+      }
+      reseeked = false;
+      const at = positionRef.current;
+      if (modeRef.current === "hls") {
+        openTranscode(at).catch(() => {});
+      } else if (tokenRef.current) {
+        resumeRef.current = at;
+        player.replace({ uri: streamUrl(type, id, tokenRef.current) });
+        player.play();
+      }
+    }, 1_000);
+    return () => clearInterval(tick);
+  }, [player, openTranscode, type, id]);
+
+  // Taps on the picture: once toggles the controls; twice on the left or right
+  // third skips back or forward, and every further tap on that side while the
+  // skip is still adding up skips again (as Jellyfin's and YouTube's players do).
+  const onSurfacePress = useCallback(
+    (e: GestureResponderEvent) => {
+      const x = e.nativeEvent.locationX;
+      const side = x < width * 0.35 ? "back" : x > width * 0.65 ? "forward" : "center";
+      const now = Date.now();
+      const last = lastTapRef.current;
+      lastTapRef.current = { at: now, side };
+      const toggle = () => (controlsVisible ? setControlsVisible(false) : showControls());
+      if (side === "center") {
+        toggle();
+        return;
+      }
+      const doubled = last?.side === side && now - last.at < DOUBLE_TAP_MS;
+      const continuing = pendingSeekRef.current != null && last?.side === side;
+      if (doubled || continuing) {
+        if (singleTapTimer.current) clearTimeout(singleTapTimer.current);
+        singleTapTimer.current = null;
+        skip(side === "back" ? -SKIP_BACK_S : SKIP_FORWARD_S);
+        return;
+      }
+      // Maybe the first of a double tap: wait before treating it as a single one.
+      if (singleTapTimer.current) clearTimeout(singleTapTimer.current);
+      singleTapTimer.current = setTimeout(() => {
+        singleTapTimer.current = null;
+        toggle();
+      }, DOUBLE_TAP_MS);
+    },
+    [width, controlsVisible, showControls, skip]
+  );
 
   const barValue = scrubPreview != null ? scrubPreview : displayTime;
 
@@ -297,18 +461,26 @@ export default function Player() {
             // for it there.
             startsPictureInPictureAutomatically={Platform.OS === "ios"}
           />
-          {/* Tap anywhere to toggle the controls. */}
-          <Pressable
-            style={StyleSheet.absoluteFill}
-            onPress={() => (controlsVisible ? setControlsVisible(false) : showControls())}
-          />
+          {/* Tap to toggle the controls; double-tap a side to skip. */}
+          <Pressable style={StyleSheet.absoluteFill} onPress={onSurfacePress} />
         </>
       )}
 
       {(status === "loading" || seeking) && !error && (
         <View style={styles.loadingOverlay} pointerEvents="none">
           <ActivityIndicator size="large" color={theme.accent} />
-          {!!title && <Text style={styles.loadingTitle}>{title}</Text>}
+          {!!title && !hasPlayedRef.current && <Text style={styles.loadingTitle}>{title}</Text>}
+        </View>
+      )}
+
+      {skipOsd != null && skipOsd !== 0 && !error && (
+        <View
+          pointerEvents="none"
+          style={[styles.skipOsd, skipOsd < 0 ? styles.skipOsdBack : styles.skipOsdForward]}
+        >
+          <Text style={styles.skipOsdText}>
+            {skipOsd < 0 ? `« ${-skipOsd}s` : `${skipOsd}s »`}
+          </Text>
         </View>
       )}
 
@@ -328,16 +500,45 @@ export default function Player() {
               {title}
             </Text>
           )}
-          <Pressable style={styles.playBtn} onPress={togglePlay} hitSlop={16}>
-            <Text style={styles.playIcon}>{isPlaying ? "❚❚" : "▶"}</Text>
-          </Pressable>
+          <View style={styles.transport} pointerEvents="box-none">
+            <Pressable
+              style={styles.skipBtn}
+              onPress={() => {
+                showControls();
+                skip(-SKIP_BACK_S);
+              }}
+              hitSlop={12}
+              accessibilityLabel={`Back ${SKIP_BACK_S} seconds`}
+            >
+              <Text style={styles.skipIcon}>↺</Text>
+              <Text style={styles.skipLabel}>{SKIP_BACK_S}</Text>
+            </Pressable>
+            <Pressable style={styles.playBtn} onPress={togglePlay} hitSlop={16}>
+              <Text style={styles.playIcon}>{wantPlay ? "❚❚" : "▶"}</Text>
+            </Pressable>
+            <Pressable
+              style={styles.skipBtn}
+              onPress={() => {
+                showControls();
+                skip(SKIP_FORWARD_S);
+              }}
+              hitSlop={12}
+              accessibilityLabel={`Forward ${SKIP_FORWARD_S} seconds`}
+            >
+              <Text style={styles.skipIcon}>↻</Text>
+              <Text style={styles.skipLabel}>{SKIP_FORWARD_S}</Text>
+            </Pressable>
+          </View>
           <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 10 }]}>
             <Text style={styles.time}>{fmt(barValue)}</Text>
             <Scrubber
               duration={duration}
               value={barValue}
               onScrub={setScrubPreview}
-              onSeek={seekTo}
+              onSeek={(t) => {
+                showControls();
+                void seekTo(t);
+              }}
             />
             <Text style={styles.time}>{fmt(duration)}</Text>
           </View>
@@ -448,10 +649,18 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "600",
   },
-  playBtn: {
+  transport: {
     position: "absolute",
-    alignSelf: "center",
-    top: "48%",
+    left: 0,
+    right: 0,
+    top: "50%",
+    marginTop: -34,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 44,
+  },
+  playBtn: {
     width: 68,
     height: 68,
     borderRadius: 34,
@@ -460,6 +669,28 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   playIcon: { color: theme.text, fontSize: 24, fontWeight: "800" },
+  skipBtn: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  skipIcon: { color: theme.text, fontSize: 26, lineHeight: 28 },
+  skipLabel: { color: theme.text, fontSize: 10, fontWeight: "700", marginTop: -2 },
+  skipOsd: {
+    position: "absolute",
+    top: "50%",
+    marginTop: -22,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 22,
+    backgroundColor: "rgba(0,0,0,0.6)",
+  },
+  skipOsdBack: { left: "10%" },
+  skipOsdForward: { right: "10%" },
+  skipOsdText: { color: theme.text, fontSize: 16, fontWeight: "700", fontVariant: ["tabular-nums"] },
   bottomBar: {
     position: "absolute",
     left: 0,

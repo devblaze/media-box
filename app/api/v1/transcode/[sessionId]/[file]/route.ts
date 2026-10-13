@@ -94,10 +94,11 @@ export async function GET(request: NextRequest, ctx: Ctx): Promise<Response> {
   }
 
   // Segment: make sure it's transcoded (waiting, or restarting ffmpeg at the seek
-  // target), then stream it.
+  // target), then stream it. The request's signal lets a segment the player has
+  // already seeked past stop waiting, and stop asking for ffmpeg to move.
   const segMatch = /^seg(\d{5})\.ts$/.exec(file);
   if (segMatch) {
-    const ready = await ensureSegment(session, Number(segMatch[1]));
+    const ready = await ensureSegment(session, Number(segMatch[1]), request.signal);
     if (!ready) return new Response("Segment unavailable", { status: 503 });
   }
 

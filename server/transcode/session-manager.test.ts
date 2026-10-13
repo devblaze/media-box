@@ -174,6 +174,8 @@ describe("buildVodPlaylist", () => {
     segmentCount: 0,
     audioTrack: null,
     encoderStart: 0,
+    runStartedAt: 0,
+    runFrontier: -1,
     quality: DEFAULT_TRANSCODE_QUALITY,
     ...over,
   });
@@ -249,6 +251,8 @@ describe("seekable playlists are absolute, regardless of where ffmpeg started", 
     audioTrack: null,
     // ffmpeg was started 20 minutes in…
     encoderStart: 300,
+    runStartedAt: 0,
+    runFrontier: 299,
     quality: DEFAULT_TRANSCODE_QUALITY,
   };
 

@@ -2298,6 +2298,18 @@ const SLOW_HANDOVER_MS = 20_000;
 const STALL_WINDOW_MS = 60_000;
 /** Stalls in that window before the transcode drops to a smaller rung. */
 const STALLS_BEFORE_STEP_DOWN = 3;
+/**
+ * Stalls this soon after a seek aren't counted against the link. A seek into time
+ * the encoder hasn't reached waits for ffmpeg to restart there, which says nothing
+ * about the connection, and a few quick skips used to add up to a rung drop.
+ */
+const SEEK_STALL_GRACE_MS = 15_000;
+/**
+ * How long a transcode's playhead may sit still, when it should be playing, before
+ * the player re-requests what it is waiting for. A load lost across a quick run of
+ * seeks otherwise leaves hls.js on its retry schedule, with the picture frozen.
+ */
+const STUCK_RELOAD_MS = 10_000;
 
 /** Native direct play with a "Try transcoding" fallback on <video> error, and a
  *  watchdog that hands over to a transcode when the bytes can't keep up. */
@@ -2489,6 +2501,8 @@ function TranscodePlayer({
   const subtitleSinkRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<"starting" | "playing" | "error">("starting");
   const [error, setError] = useState<string | null>(null);
+  // The element is waiting for data (after a seek, or the encoder fell behind).
+  const [buffering, setBuffering] = useState(false);
   // Set when the stream keeps stalling and there is no lower rung left to try.
   const [linkTooSlow, setLinkTooSlow] = useState(false);
   // Held in a ref so the start effect doesn't restart the whole session just
@@ -2516,6 +2530,46 @@ function TranscodePlayer({
     let cancelled = false;
     let hls: HlsInstance | null = null;
     let sessionId: string | null = null;
+    // When the viewer last seeked: stalls right after one are the encoder catching
+    // up to the new spot, not the link (see SEEK_STALL_GRACE_MS).
+    let lastSeekAt = 0;
+    const onSeeking = () => {
+      lastSeekAt = Date.now();
+    };
+    videoRef.current?.addEventListener("seeking", onSeeking);
+
+    // Watchdog: a playhead that should be moving and hasn't for STUCK_RELOAD_MS is
+    // waiting on a load that isn't coming. With data buffered ahead it's a stuck
+    // decoder or a gap at a seam between ffmpeg runs, which a small nudge clears;
+    // with none, re-request from where the playhead is.
+    let lastPos = -1;
+    let stuckSince = Date.now();
+    const watchdog = window.setInterval(() => {
+      const v = videoRef.current;
+      if (!v) return;
+      const now = Date.now();
+      if (v.paused || v.ended || v.currentTime !== lastPos) {
+        lastPos = v.currentTime;
+        stuckSince = now;
+        return;
+      }
+      if (now - stuckSince < STUCK_RELOAD_MS) return;
+      stuckSince = now;
+      const t = v.currentTime;
+      let ahead = 0;
+      for (let i = 0; i < v.buffered.length; i++) {
+        if (v.buffered.start(i) <= t + 0.1 && v.buffered.end(i) > t) ahead = v.buffered.end(i) - t;
+      }
+      if (ahead > 0.5) {
+        v.currentTime = t + 0.1;
+      } else if (hls) {
+        hls.stopLoad();
+        hls.startLoad(t);
+      } else {
+        // Native HLS (Safari): seeking to where it already is makes it re-request.
+        v.currentTime = t;
+      }
+    }, 1_000);
 
     async function start() {
       try {
@@ -2678,6 +2732,7 @@ function TranscodePlayer({
             if (cancelled || steppedDown) return;
             if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) {
               const now = Date.now();
+              if (now - lastSeekAt < SEEK_STALL_GRACE_MS) return;
               stalls = now - lastStallAt > STALL_WINDOW_MS ? 1 : stalls + 1;
               lastStallAt = now;
               if (stalls < STALLS_BEFORE_STEP_DOWN) return;
@@ -2736,8 +2791,11 @@ function TranscodePlayer({
 
     void start();
 
+    const video = videoRef.current;
     return () => {
       cancelled = true;
+      window.clearInterval(watchdog);
+      video?.removeEventListener("seeking", onSeeking);
       hls?.destroy();
       if (sessionId) {
         // Raw fetch (204, no JSON body) with keepalive so it survives teardown.
@@ -2756,10 +2814,21 @@ function TranscodePlayer({
         className="h-full w-full bg-black object-contain"
         onTimeUpdate={(e) => onTime?.(e.currentTarget.currentTime, e.currentTarget.duration)}
         onEnded={() => onEnded?.()}
+        onWaiting={() => setBuffering(true)}
+        onSeeking={() => setBuffering(true)}
+        onPlaying={() => setBuffering(false)}
+        onSeeked={(e) => setBuffering(e.currentTarget.readyState < 3)}
+        onCanPlay={() => setBuffering(false)}
+        onPause={() => setBuffering(false)}
       >
         <SubtitleTracks tracks={tracks} />
       </video>
       <SubtitleOverlay sinkRef={subtitleSinkRef} style={subtitleStyle} />
+      {buffering && status === "playing" && (
+        <div className="pointer-events-none absolute inset-0 z-0 flex items-center justify-center">
+          <Spinner className="size-8 text-zinc-200" />
+        </div>
+      )}
       {status === "starting" && (
         <div className="absolute inset-0 z-0 flex flex-col items-center justify-center gap-2 bg-black/70 text-sm text-zinc-300">
           <Spinner className="size-6" />
