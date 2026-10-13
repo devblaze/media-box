@@ -28,6 +28,13 @@ src/
   lib/            api (REST client), config (server + auth context), storage, theme
 ```
 
+### Icons
+
+The app icon, Android's adaptive and themed layers, the splash logo and the web
+favicon are all rendered from the web app's [`app/icon.svg`](../../app/icon.svg), so
+the phone shows the same mark as the browser. After changing that SVG, run
+`node apps/mobile/scripts/make-icons.mjs` from the repo root and commit the PNGs.
+
 ## Run it
 
 Prerequisites: Node 20+, and the [Expo Go](https://expo.dev/go) app on your phone
