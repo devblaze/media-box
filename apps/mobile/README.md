@@ -143,6 +143,54 @@ restricted membership — not something a self-hoster should plan around.
 App Store or TestFlight, and tvOS needs its own provisioning profiles, separate from
 the iOS ones. The media-box server will never be able to hand out an Apple TV build.
 
+### TestFlight, automatically from `main`
+
+[`scripts/testflight.mjs`](scripts/testflight.mjs) builds the iPhone app on the
+owner's Mac and uploads it to TestFlight. It doesn't use EAS. A LaunchAgent runs it
+every 10 minutes: when `main` on GitHub has moved and something under `apps/mobile/`
+changed (docs aside), it builds that commit. Server-only commits never trigger a build.
+Internal testers with automatic distribution get each build about 10 minutes after
+the upload.
+
+```bash
+node apps/mobile/scripts/testflight.mjs build       # build origin/main now
+node apps/mobile/scripts/testflight.mjs status      # last build, last failure, newest uploads
+node apps/mobile/scripts/testflight.mjs install     # start the clock (copies itself to ~/.mediabox-testflight)
+node apps/mobile/scripts/testflight.mjs uninstall   # stop it
+```
+
+It works in its own clone, `~/.mediabox-testflight/repo`, never in your checkout:
+
+- `npm ci` (only when the lock file changed);
+- `expo prebuild` with the TestFlight settings written into the clone's `app.json`;
+- `pod install`, then an Xcode archive signed automatically through the team's App
+  Store Connect API key;
+- upload, then "What to test" written from the `apps/mobile` commits since the last
+  build.
+
+Logs are in `~/.mediabox-testflight/logs`, and a macOS notification says whether a
+build made it. After editing the script, run `install` again to copy it over.
+
+TestFlight ships under the bundle ID **`org.ncatechsolutions.mediabox`** (App Store
+Connect app "NCA Media Box"). `app.json` keeps `org.mediabox.app`, which the Android
+APK is already signed and installed under. The app's internal TestFlight group
+**Owner** gets every build automatically. To add a tester, invite them to the App Store
+Connect team first, then add them to that group. The script also answers the export
+compliance question ("no non-exempt encryption"), so builds don't wait on it. To start
+a new version (e.g. once 1.0.0 is on the App Store), raise `expo.version` in
+`app.json` on `main`.
+
+Three Xcode 27 issues the build works around:
+
+- Xcode 27 refuses pod targets below iOS 15.0. AsyncStorage's privacy-manifest bundle
+  still declares 13.4, so the script raises such targets in the generated Podfile.
+- `expo-modules-jsi` before 56.0.13 doesn't compile under Swift 6.4. The lock file
+  pins 56.0.14.
+- `expo-modules-jsi` compiles itself in a nested `xcodebuild` from a build phase. That
+  build succeeds but prints `error: … failed with exit code 0`, and Xcode fails the
+  archive on any `error:` line a script prints. The script builds that slice first,
+  outside Xcode, so the phase finds it up to date and skips.
+
 ### Android TV: the config is not ready
 
 The `selfhosted` APK will `adb install` onto an Android TV box, but this is **not an
