@@ -47,7 +47,6 @@ const eslintConfig = defineConfig([
       "components/admin-panel.tsx",
       "components/channel-player.tsx",
       "components/library-import-row.tsx",
-      "components/media-player.tsx",
       "components/netflix/hero-billboard.tsx",
       "components/netflix/search-context.tsx",
       "components/subtitle-search.tsx",

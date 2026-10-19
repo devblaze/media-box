@@ -142,6 +142,40 @@ describe("ensureSegment under seeking", () => {
     await p;
   });
 
+  test("a near seek restarts when the encoder is too slow to get there soon", async () => {
+    // Ten segments in twenty seconds: 2× realtime. Segment 20 is eleven ahead —
+    // 22 s of waiting at that pace, against a couple of seconds for a restart.
+    const s = session({ runStartedAt: Date.now() - 20_000 });
+    for (let i = 0; i <= 9; i++) write(i);
+    const gone = new AbortController();
+    const p = ensureSegment(s, 20, gone.signal);
+    await sleep(SETTLE_MS);
+    expect(restarts()).toEqual(["20"]);
+    gone.abort();
+    await p;
+  });
+
+  test("a near seek waits for an encoder that will get there soon", async () => {
+    // Ten segments in two seconds: 20× realtime, so three ahead is well under a second.
+    const s = session({ runStartedAt: Date.now() - 2_000 });
+    for (let i = 0; i <= 9; i++) write(i);
+    const p = ensureSegment(s, 12);
+    await sleep(SETTLE_MS);
+    expect(spawned).toHaveLength(0);
+    write(12);
+    expect(await p).toBe(true);
+  });
+
+  test("a run that has only just started isn't judged on its pace", async () => {
+    const s = session({ runStartedAt: Date.now() - 10_000 });
+    write(0);
+    const p = ensureSegment(s, 8);
+    await sleep(SETTLE_MS);
+    expect(spawned).toHaveLength(0);
+    write(8);
+    expect(await p).toBe(true);
+  });
+
   test("a session stopped while a restart is pending never spawns ffmpeg", async () => {
     const s = session();
     const gone = new AbortController();

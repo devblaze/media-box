@@ -30,6 +30,14 @@ const SEG_DUR = 4;
 /** A requested segment this many past the produced frontier is treated as a
  *  forward seek → ffmpeg is restarted there instead of waiting the encode out. */
 const AHEAD_SEGMENTS = 12;
+/**
+ * Inside that window, still restart when the running encoder would take longer
+ * than this to get there. A fresh run's first segment lands in a couple of
+ * seconds; a software encode crawling at 1× would make a 30 s skip wait 30 s.
+ */
+const MAX_CATCH_UP_SEC = 4;
+/** Segments a run must have written before its pace is trusted for that guess. */
+const PACE_MIN_SEGMENTS = 3;
 /** How long a segment request waits for its file before giving up. */
 const SEGMENT_WAIT_MS = 20_000;
 const SEGMENT_POLL_MS = 120;
@@ -540,6 +548,19 @@ function producedFrontier(session: Session): number {
 }
 
 /**
+ * How long the current run should take to write `segmentsAhead` more segments,
+ * at the pace it has kept so far. 0 until it has written enough to judge by: a
+ * run that has only just started is still opening the file, and restarting it
+ * over that would only start the wait again.
+ */
+function catchUpSeconds(session: Session, segmentsAhead: number): number {
+  const written = session.runFrontier - session.encoderStart + 1;
+  const elapsedSec = (Date.now() - session.runStartedAt) / 1000;
+  if (written < PACE_MIN_SEGMENTS || elapsedSec <= 0) return 0;
+  return segmentsAhead / (written / elapsedSec);
+}
+
+/**
  * (Re)spawn the ffmpeg encoder for a session starting at `startSegment`, wiring the
  * stderr/exit handlers. Guards every callback on `session.proc === proc` so the
  * kill of a superseded run (on a seek restart) can't flip the session to error.
@@ -666,8 +687,13 @@ export async function ensureSegment(
   const frontier = pending ? start - 1 : producedFrontier(session);
   const running = pending != null || session.status === "running" || session.status === "starting";
   // That run will reach segIndex "soon" only if it's ahead of (or at) the run's
-  // start AND within a small window of its produced frontier.
-  const reachesSoon = running && segIndex >= start && segIndex - frontier <= AHEAD_SEGMENTS;
+  // start, within a small window of its produced frontier, and encoding fast
+  // enough to cover that window sooner than a restart would.
+  const reachesSoon =
+    running &&
+    segIndex >= start &&
+    segIndex - frontier <= AHEAD_SEGMENTS &&
+    (pending != null || catchUpSeconds(session, segIndex - frontier) <= MAX_CATCH_UP_SEC);
   // The pending restart this request is counting on, if any. Joining one it can
   // ride (the segment just after a seek target) keeps it alive should the
   // request that asked for it go away first.

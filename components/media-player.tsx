@@ -1,522 +1,152 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { apiFetch, useApi, ApiError } from "@/lib/api";
-import { resumeStartSeconds } from "@/lib/resume";
-import { useEvents } from "@/lib/use-events";
-import { Badge, Button, Callout, Spinner } from "@/components/ui";
-import { PlayOnTvButton } from "@/components/play-on-tv-button";
+import { apiFetch, useApi } from "@/lib/api";
+import { cachedLinkKbps, measureLinkKbps } from "@/lib/bandwidth";
 import { cn } from "@/lib/cn";
-// Type-only: the runtime lives in a server module (node:events); erased at build.
-import type { WatchCommand } from "@/server/events/bus";
 import {
-  loadSubtitleStyle,
-  type SubtitleStyle,
   loadSubtitlePref,
-  saveSubtitlePref,
+  loadSubtitleStyle,
   matchSubtitlePref,
+  saveSubtitlePref,
   type SubtitlePref,
+  type SubtitleStyle,
 } from "@/lib/subtitle-style";
-import {
-  SubtitleTracks,
-  SubtitleOverlay,
-  useStyledSubtitles,
-  type SubtitleTrack,
-} from "@/components/subtitle-overlay";
-import type { MediaInfo } from "@/server/library/media-info";
-import { cachedLinkKbps, measureLinkKbps, rememberLinkKbps } from "@/lib/bandwidth";
 import {
   DEFAULT_TRANSCODE_QUALITY,
   TRANSCODE_QUALITIES,
-  canStepUpTo,
   formatKbps,
-  higherQuality,
   linkCanCarry,
-  lowerQuality,
-  qualityForLinkKbps,
-  qualityTotalKbps,
-  transcodeQuality,
-  type TranscodeQuality,
 } from "@/lib/transcode-quality";
+import { useEvents } from "@/lib/use-events";
+import type { MediaInfo } from "@/server/library/media-info";
+// Type-only: the runtime lives in a server module (node:events); erased at build.
+import type { WatchCommand } from "@/server/events/bus";
+import { Button, Spinner } from "@/components/ui";
+import { PlayOnTvButton } from "@/components/play-on-tv-button";
+import type { SubtitleTrack } from "@/components/subtitle-overlay";
+import { DirectPlayer } from "@/components/player/direct-player";
+import { TranscodePlayer } from "@/components/player/transcode-player";
+import { SeekBar } from "@/components/player/seek-bar";
+import {
+  SubtitleMenu,
+  SUBTITLE_OFFSET_STEP,
+  useSubtitleSearch,
+} from "@/components/player/subtitle-menu";
+import { MenuHeading, MenuItem, MenuPanel, chipClass } from "@/components/player/menu";
+import { useMediaState, useSeeker } from "@/components/player/media-hooks";
+import { useStreamQuality, type StreamQuality } from "@/components/player/use-stream-quality";
+import { useTitleData } from "@/components/player/use-title-data";
+import { canDirectPlay } from "@/components/player/playback-support";
+import { enterFullscreen, exitFullscreen, useIsFullscreen } from "@/components/player/fullscreen";
+import {
+  AUTO_QUALITY,
+  loadForceTranscode,
+  loadVolumePref,
+  saveForceTranscode,
+  saveVolumePref,
+} from "@/components/player/preferences";
+import {
+  fmtClock,
+  formatOffset,
+  formatSkip,
+  neighborLabel,
+  qualityTagFromHeight,
+} from "@/components/player/format";
+import {
+  AudioTrackIcon,
+  BackIcon,
+  FullscreenIcon,
+  NextEpisodeIcon,
+  PauseIcon,
+  PipIcon,
+  PlayIcon,
+  PrevEpisodeIcon,
+  SkipIcon,
+  SkipToIcon,
+  SpeedIcon,
+  VersionsIcon,
+  VolumeIcon,
+} from "@/components/player/icons";
+import type { Neighbor, PlaybackMode, PlaybackTarget, WatchSync } from "@/components/player/types";
 
-// Type-only import of the hls.js instance type. The runtime class is loaded via
-// a dynamic `import("hls.js")` inside the player effect so it is code-split out
-// of the main bundle and never evaluated during SSR.
-type HlsInstance = InstanceType<(typeof import("hls.js"))["default"]>;
-
-// ---- pretty-printing helpers ----
-
-const VIDEO_CODEC_LABELS: Record<string, string> = {
-  h264: "H.264",
-  avc: "H.264",
-  hevc: "HEVC",
-  h265: "HEVC",
-  av1: "AV1",
-  vp9: "VP9",
-  vp8: "VP8",
-  mpeg4: "MPEG-4",
-  mpeg2video: "MPEG-2",
-  vc1: "VC-1",
-};
-
-const AUDIO_CODEC_LABELS: Record<string, string> = {
-  aac: "AAC",
-  ac3: "AC3",
-  eac3: "EAC3",
-  dts: "DTS",
-  truehd: "TrueHD",
-  flac: "FLAC",
-  opus: "Opus",
-  vorbis: "Vorbis",
-  mp3: "MP3",
-  pcm_s16le: "PCM",
-};
-
-function labelCodec(codec: string, map: Record<string, string>): string {
-  const key = codec.toLowerCase();
-  return map[key] ?? codec.toUpperCase();
-}
-
-function resolutionLabel(width: number | null, height: number | null): string | null {
-  const p = height ?? (width ? Math.round((width * 9) / 16) : null);
-  if (!p) return null;
-  if (p >= 4320) return "8K";
-  if (p >= 2160) return "4K";
-  if (p >= 1440) return "1440p";
-  if (p >= 1080) return "1080p";
-  if (p >= 720) return "720p";
-  if (p >= 480) return "480p";
-  return `${p}p`;
-}
-
-function channelLabel(channels: number | null): string | null {
-  if (channels == null) return null;
-  if (channels === 1) return "1.0";
-  if (channels === 2) return "2.0";
-  if (channels === 6) return "5.1";
-  if (channels === 8) return "7.1";
-  return `${channels}ch`;
-}
-
-/** Compact media-technical badges (codec / resolution / audio / HDR / subs). */
-export function MediaInfoBadges({
-  info,
-  className,
-}: {
-  info: MediaInfo | null | undefined;
-  className?: string;
-}) {
-  if (!info) return null;
-
-  const res = info.video ? resolutionLabel(info.video.width, info.video.height) : null;
-  const audioCh = info.audio ? channelLabel(info.audio.channels) : null;
-
-  return (
-    <div className={className ?? "flex flex-wrap items-center gap-1.5"}>
-      {info.video && (
-        <Badge tone="neutral">
-          {labelCodec(info.video.codec, VIDEO_CODEC_LABELS)}
-          {res ? ` · ${res}` : ""}
-        </Badge>
-      )}
-      {info.video?.hdr && <Badge tone="accent">{info.video.hdr}</Badge>}
-      {info.audio && (
-        <Badge tone="neutral">
-          {labelCodec(info.audio.codec, AUDIO_CODEC_LABELS)}
-          {audioCh ? ` ${audioCh}` : ""}
-        </Badge>
-      )}
-      {info.subtitles.length > 0 && (
-        <Badge tone="neutral">
-          {info.subtitles.length} sub{info.subtitles.length > 1 ? "s" : ""}
-        </Badge>
-      )}
-    </div>
-  );
-}
-
-export type PlaybackTarget = { type: "movie" | "episode"; id: number };
-
-/**
- * Watch-together wiring for a player instance.
- *   host   → mirror this player's play/pause/seek/episode-change OUT to joiners.
- *   joiner → apply incoming sync commands (and skip saving own watch-progress).
- * `startPositionSeconds` (joiner) is the host's position at join time.
- */
-export type WatchSync =
-  | { role: "host"; hostUserId?: number }
-  | { role: "joiner"; hostUserId?: number; startPositionSeconds?: number };
-
-/** Two-digit zero-padded number, e.g. 3 → "03". */
-function pad2(n: number): string {
-  return String(n).padStart(2, "0");
-}
-
-/** Playback clock, e.g. 75 → "1:15", 3675 → "1:01:15". */
-function fmtClock(totalSeconds: number): string {
-  const s = Math.max(0, Math.floor(totalSeconds));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  return h > 0 ? `${h}:${pad2(m)}:${pad2(sec)}` : `${m}:${pad2(sec)}`;
-}
-
-/**
- * The previous / next PLAYABLE episode relative to the one now playing, as served
- * by `GET /api/v1/episodes/{id}/neighbors`. `null` when there is no such neighbor.
- */
-type Neighbor = {
-  id: number;
-  seasonNumber: number;
-  episodeNumber: number;
-  title: string | null;
-  seriesTitle: string;
-};
-
-/** Human label for a neighbor, e.g. "Show · S01E02 · The Title". */
-function neighborLabel(n: Neighbor): string {
-  return `${n.seriesTitle} · S${pad2(n.seasonNumber)}E${pad2(n.episodeNumber)}${
-    n.title ? ` · ${n.title}` : ""
-  }`;
-}
+export { MediaInfoBadges } from "@/components/player/media-info-badges";
+export type { PlaybackTarget, WatchSync } from "@/components/player/types";
 
 /** How early (seconds before the end) the auto-advance "Up next" card appears. */
 const UP_NEXT_LEAD_SECONDS = 25;
 /** Seconds the "Up next" auto-advance countdown starts from. */
 const UP_NEXT_COUNTDOWN = 10;
-
-// Containers a browser can demux natively (MKV/AVI/TS always need transcoding).
-const NATIVE_CONTAINERS = new Set(["mp4", "m4v", "mov", "webm"]);
-// Audio codecs browsers can decode (AC3/EAC3/DTS/TrueHD can't → transcode).
-const WEB_AUDIO = new Set(["aac", "mp4a", "mp3", "opus", "vorbis", "flac"]);
-// SSR fallback baseline (no DOM to probe): the near-universal H.264/AAC set.
-const DIRECT_VIDEO = new Set(["h264", "avc", "avc1"]);
-const DIRECT_AUDIO = new Set(["aac", "mp4a"]);
-
-/** RFC-6381 codecs MIME for `canPlayType`, from probed codec names (best-effort). */
-function directMime(info: MediaInfo): string | null {
-  const c = info.container.toLowerCase();
-  const mime = c === "webm" ? "video/webm" : NATIVE_CONTAINERS.has(c) ? "video/mp4" : null;
-  if (!mime) return null;
-  const codecs: string[] = [];
-  const v = (info.video?.codec ?? "").toLowerCase();
-  if (["h264", "avc", "avc1"].includes(v)) codecs.push("avc1.640029");
-  else if (["hevc", "h265", "hvc1", "hev1"].includes(v)) codecs.push("hvc1.1.6.L120.90");
-  else if (v === "av1") codecs.push("av01.0.08M.08");
-  else if (["vp9", "vp09"].includes(v)) codecs.push("vp09.00.10.08");
-  else if (v) return null; // unknown video codec — don't risk direct play
-  const a = (info.audio?.codec ?? "").toLowerCase();
-  if (a === "aac" || a === "mp4a") codecs.push("mp4a.40.2");
-  else if (a === "mp3") codecs.push("mp4a.69");
-  else if (a === "opus") codecs.push("opus");
-  else if (a === "vorbis") codecs.push("vorbis");
-  else if (a === "flac") codecs.push("flac");
-  return `${mime}; codecs="${codecs.join(",")}"`;
-}
-
-/**
- * Decide whether THIS device can play the file natively. Container must be
- * browser-demuxable and audio web-decodable; then we ask the real `<video>`
- * element (`canPlayType`) about the codecs — so a Mac that decodes HEVC direct-
- * plays it while a device that can't gets transcoded. No MediaInfo → optimistic
- * direct with the transcode fallback on error.
- */
-function canDirectPlay(info: MediaInfo | null | undefined): boolean {
-  if (!info) return true;
-  const container = info.container.toLowerCase();
-  if (!NATIVE_CONTAINERS.has(container)) return false;
-  const acodec = (info.audio?.codec ?? "").toLowerCase();
-  if (acodec && !WEB_AUDIO.has(acodec)) return false;
-  if (typeof document === "undefined") {
-    // Server render — no element to probe; use the safe H.264/AAC baseline.
-    const vcodec = (info.video?.codec ?? "").toLowerCase();
-    return DIRECT_VIDEO.has(vcodec) && (!acodec || DIRECT_AUDIO.has(acodec));
-  }
-  const mime = directMime(info);
-  if (!mime) return false;
-  const support = document.createElement("video").canPlayType(mime);
-  return support === "probably" || support === "maybe";
-}
-
-// Persisted "always transcode" escape hatch. Direct play can be silent when a
-// file's audio codec (e.g. AC3/DTS) isn't decodable by this browser — which isn't
-// an <video> error, so it can't auto-recover. Forcing transcode re-encodes audio
-// to stereo AAC (universally playable). Remembered per-browser for the device.
-const FORCE_TRANSCODE_KEY = "mediabox.forceTranscode";
-function loadForceTranscode(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(FORCE_TRANSCODE_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-function saveForceTranscode(on: boolean): void {
-  if (typeof window === "undefined") return;
-  try {
-    if (on) window.localStorage.setItem(FORCE_TRANSCODE_KEY, "1");
-    else window.localStorage.removeItem(FORCE_TRANSCODE_KEY);
-  } catch {
-    /* storage disabled — non-fatal, the choice just isn't remembered */
-  }
-}
-
-// Persisted stream-quality choice: "auto" (follow the measured link speed) or a
-// rung id from the ladder. Remembered per browser, because the thing it really
-// describes — how good this device's connection to the server is — doesn't change
-// between titles.
-const QUALITY_PREF_KEY = "mediabox.streamQuality";
-const AUTO_QUALITY = "auto";
-function loadQualityPref(): string {
-  if (typeof window === "undefined") return AUTO_QUALITY;
-  try {
-    return window.localStorage.getItem(QUALITY_PREF_KEY) || AUTO_QUALITY;
-  } catch {
-    return AUTO_QUALITY;
-  }
-}
-function saveQualityPref(value: string): void {
-  if (typeof window === "undefined") return;
-  try {
-    if (value === AUTO_QUALITY) window.localStorage.removeItem(QUALITY_PREF_KEY);
-    else window.localStorage.setItem(QUALITY_PREF_KEY, value);
-  } catch {
-    /* storage disabled — the choice just isn't remembered */
-  }
-}
-
-/** Quiet period after any automatic rung change before auto may step back up. */
-const AUTO_STEP_UP_COOLDOWN_MS = 90_000;
-/** How often the transcode reports its measured throughput back to the player. */
-const LINK_REPORT_INTERVAL_MS = 5_000;
-/** A fragment smaller than this is too small a sample to divide by. */
-const LINK_SAMPLE_MIN_BYTES = 64 * 1024;
-/**
- * Floor on the time a sample is divided by. A small segment down a fast link can
- * land inside the clock's noise; clamping turns that into a LOWER BOUND on the
- * speed rather than a discarded sample, so a connection that recovers while a
- * low rung is playing still produces the readings that let auto climb back.
- */
-const LINK_SAMPLE_FLOOR_MS = 80;
-
-/** The full `GET /api/v1/subtitles` payload: tracks + live-search context. */
-type SubtitlesResponse = {
-  tracks: SubtitleTrack[];
-  languages?: string[];
-  canSearchOnline?: boolean;
-};
-
-/** One provider hit from `GET /api/v1/subtitles/manual` (live online search). */
-type SubtitleCandidate = {
-  id: string;
-  providerName: string;
-  language: string;
-  release: string;
-  hearingImpaired: boolean;
-};
-
-/** A skippable intro/recap stretch from `GET /api/v1/skip-segments`. */
-type SkipSegment = {
-  type: "intro" | "recap";
-  startSeconds: number;
-  endSeconds: number;
-  label: string;
-};
-
-/** An audio track from `GET /api/v1/audio-tracks` (for multi-audio files). */
-type AudioTrack = {
-  index: number;
-  codec: string;
-  channels: number | null;
-  language: string | null;
-  title: string | null;
-  isDefault: boolean;
-  label: string;
-};
-
-/** Shape of `GET /api/v1/watch-progress` (or `null` when nothing is stored). */
-type WatchProgress = { positionSeconds: number; durationSeconds: number; watched: boolean };
-
-/**
- * A selectable file version (quality) for the current title, from
- * `GET /api/v1/versions`. Movies can have several (e.g. a 1080p + a 4K); episodes
- * return a single entry. `resolution` is a short tag ("4K"/"1080p"); `label` is
- * fuller (e.g. "4K · WEB-DL-2160p").
- */
-type MediaVersion = {
-  fileId: number;
-  resolution: string;
-  label: string;
-  size: number;
-  isPrimary: boolean;
-  durationSec: number | null;
-};
-
-/**
- * Coarse quality tag derived from a raw pixel height. Used only as a fallback
- * chip label when the versions list could not be fetched.
- */
-function qualityTagFromHeight(height: number | null | undefined): string | null {
-  if (height == null) return null;
-  if (height >= 2160) return "4K";
-  if (height >= 1080) return "1080p";
-  if (height >= 720) return "720p";
-  return "SD";
-}
-
-// ---- fullscreen helpers (defensive against browsers without the promise API) ----
-
-function enterFullscreen(el: HTMLElement | null) {
-  try {
-    const p = el?.requestFullscreen?.();
-    if (p && typeof p.catch === "function") p.catch(() => {});
-  } catch {
-    /* fullscreen unsupported or rejected — keep playing windowed */
-  }
-}
-
-function exitFullscreen() {
-  try {
-    if (typeof document !== "undefined" && document.fullscreenElement) {
-      const p = document.exitFullscreen?.();
-      if (p && typeof p.catch === "function") p.catch(() => {});
-    }
-  } catch {
-    /* ignore */
-  }
-}
-
-/**
- * Resume-on-open + throttled progress saving, shared by both player modes so the
- * logic lives in one place and the hook order stays stable regardless of mode.
- *
- * On `loadedmetadata` it fetches the stored resume point and seeks to it (when
- * it is past the intro and before the ~95% "finished" mark). It PUTs progress at
- * most every ~15s during playback, once on `pause`, and once on unmount/close.
- * Every network call fails silently — playback never depends on it.
- */
-/**
- * Minimum watched position before we record a resume point. A mis-click that
- * opens a title for a couple of seconds shouldn't land in Continue Watching.
- */
-const MIN_PROGRESS_SECONDS = 10;
-
-function useWatchProgress(
-  videoRef: React.RefObject<HTMLVideoElement | null>,
-  target: PlaybackTarget,
-  disabled = false,
-  /**
-   * Media-time of the video element's 0:00. A transcode started at `-ss N` has
-   * a shifted timeline, so saves add N and the client-side resume seek is
-   * skipped (the stream already begins at the resume point). `null` = the
-   * offset isn't known yet — stay detached until the owner resolves it.
-   */
-  offsetSeconds: number | null = 0,
-  /**
-   * Real duration of the MEDIA when the caller knows it. An event-HLS
-   * playlist's `video.duration` only spans what ffmpeg has encoded so far —
-   * saving that would understate durations and could falsely trip the
-   * 90%-watched mark on offset streams.
-   */
-  knownDurationSeconds = 0
-) {
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || disabled || offsetSeconds == null) return;
-
-    const offset = offsetSeconds;
-    const key = target.type === "movie" ? "movieId" : "episodeId";
-    let disposed = false;
-    let resumed = false;
-    let lastSave = Date.now(); // defer the first throttled save ~15s so we never store 0
-
-    const save = () => {
-      const cur = video.currentTime;
-      if (!Number.isFinite(cur)) return;
-      const positionSeconds = Math.floor(offset + cur);
-      // Don't store a resume point until a bit has actually been watched — so
-      // briefly opening an episode never shows up in Continue Watching.
-      if (positionSeconds < MIN_PROGRESS_SECONDS) return;
-      const dur = video.duration;
-      const durationSeconds =
-        knownDurationSeconds > 0
-          ? knownDurationSeconds
-          : Math.floor(Number.isFinite(dur) && dur > 0 ? dur + offset : 0);
-      lastSave = Date.now();
-      void apiFetch("/watch-progress", {
-        method: "PUT",
-        body: JSON.stringify({ [key]: target.id, positionSeconds, durationSeconds }),
-      }).catch(() => {});
-    };
-
-    const onLoadedMetadata = () => {
-      if (resumed || offset > 0) return; // offset streams already start at the resume point
-      resumed = true;
-      void apiFetch<WatchProgress | null>(`/watch-progress?${key}=${target.id}`)
-        .then((p) => {
-          if (disposed || !p) return;
-          const dur = video.duration;
-          const beforeEnd = !Number.isFinite(dur) || p.positionSeconds < dur * 0.95;
-          if (p.positionSeconds > 5 && beforeEnd) {
-            try {
-              video.currentTime = p.positionSeconds;
-            } catch {
-              /* seek rejected (e.g. not seekable yet) — start from the top */
-            }
-          }
-        })
-        .catch(() => {});
-    };
-
-    const onTimeUpdate = () => {
-      if (Date.now() - lastSave >= 15_000) save();
-    };
-
-    video.addEventListener("loadedmetadata", onLoadedMetadata);
-    video.addEventListener("timeupdate", onTimeUpdate);
-    video.addEventListener("pause", save);
-    // Metadata may already be loaded before we attached (fast native playback).
-    if (video.readyState >= 1) onLoadedMetadata();
-
-    return () => {
-      disposed = true;
-      video.removeEventListener("loadedmetadata", onLoadedMetadata);
-      video.removeEventListener("timeupdate", onTimeUpdate);
-      video.removeEventListener("pause", save);
-      save(); // final flush on unmount / mode switch / close
-    };
-  }, [videoRef, target.type, target.id, disabled, offsetSeconds, knownDurationSeconds]);
-}
-
-/** Seconds to jump on the ← / → arrow keys. */
-const SEEK_STEP_SECONDS = 10;
-/** Volume change (0–1) per ↑ / ↓ arrow key press. */
+/** Seconds per skip: the ← / → keys, J / L, and the skip buttons. */
+const SKIP_SECONDS = 10;
+/** Seconds per Shift+← / Shift+→. */
+const BIG_SKIP_SECONDS = 30;
+/** Volume change (0–1) per ↑ / ↓ press. */
 const VOLUME_STEP = 0.1;
-
-/** Subtitle-sync nudge, in seconds, per button press / keypress. */
-const SUBTITLE_OFFSET_STEP = 0.1;
-/** Clamp the sync offset so it can never run away. */
+/** Clamp the subtitle sync offset so it can never run away. */
 const SUBTITLE_OFFSET_MAX = 60;
+/** Idle time before the controls fade (they stay while paused or a menu is open). */
+const CONTROLS_HIDE_MS = 3_000;
+const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
-/** e.g. 0 → "0.0s", 0.5 → "+0.5s", -0.3 → "-0.3s". */
-function formatOffset(sec: number): string {
-  return `${sec > 0 ? "+" : ""}${sec.toFixed(1)}s`;
+type MenuId = "stream" | "versions" | "audio" | "subtitles" | "speed";
+
+const noSubscription = () => () => {};
+/** True once rendering on the client: the overlay portals to <body>, which SSR lacks. */
+function useIsClient(): boolean {
+  return useSyncExternalStore(
+    noSubscription,
+    () => true,
+    () => false
+  );
 }
+
+function sameTarget(a: PlaybackTarget, b: PlaybackTarget): boolean {
+  return a.type === b.type && a.id === b.id;
+}
+
+/** Controls that show on activity and fade after a quiet spell. */
+function useAutoHide(ms: number) {
+  const [visible, setVisible] = useState(true);
+  const timer = useRef<number | null>(null);
+  const clear = () => {
+    if (timer.current) window.clearTimeout(timer.current);
+  };
+  const poke = useCallback(() => {
+    setVisible(true);
+    clear();
+    timer.current = window.setTimeout(() => setVisible(false), ms);
+  }, [ms]);
+  const hide = useCallback(() => {
+    clear();
+    setVisible(false);
+  }, []);
+  useEffect(() => {
+    timer.current = window.setTimeout(() => setVisible(false), ms);
+    return clear;
+  }, [ms]);
+  return { visible, poke, hide };
+}
+
+type Controls = ReturnType<typeof useAutoHide>;
 
 /**
  * Immersive, Netflix-style player. It plays a title either by DIRECT play (native
  * `<video>` on the gated stream route) or by TRANSCODE (server-side HLS via
- * ffmpeg, loaded with hls.js). The initial mode is chosen from {@link MediaInfo};
- * an overlay toggle lets the user switch, and a failed direct play offers a
- * one-click transcode fallback.
+ * ffmpeg, loaded with hls.js). The initial mode is chosen from {@link MediaInfo}
+ * and the measured connection; a chip lets the viewer force transcoding, and a
+ * failed direct play offers a one-click fallback.
  *
- * Presentation is a full-window black overlay that fills the whole browser page
- * but stays windowed — the browser chrome/tabs remain visible. Native fullscreen
- * is opt-in only, via the bottom-right maximize button or the `F` key. A top-left
- * Back control returns to the page, and a bottom-right cluster (Direct/Transcode
- * toggle, subtitles, and the fullscreen toggle) auto-hides after a few seconds of
- * no mouse movement. `F` toggles fullscreen; `Esc` exits fullscreen or closes.
+ * Presentation is a full-window black overlay that stays windowed — the browser
+ * chrome remains visible. Native fullscreen is opt-in (button, `F`, or a double
+ * click on the picture). The chrome auto-hides after a few seconds without the
+ * mouse moving, except while paused or a menu is open.
+ *
+ * This shell holds what outlives one title — the episode being played, the
+ * connection's stream size, the viewer's preferences, watch-together — and
+ * renders a {@link TitlePlayback} keyed by title, so moving to another episode
+ * resets everything about the last one simply by remounting.
  *
  * Mount it only while a title is selected so state resets between plays.
  */
@@ -533,407 +163,63 @@ export function VideoPlayerModal({
   onClose: () => void;
   sync?: WatchSync;
 }) {
-  const [forceTranscode, setForceTranscode] = useState(loadForceTranscode);
-  const [mode, setMode] = useState<"direct" | "transcode">(() =>
-    loadForceTranscode() || !canDirectPlay(mediaInfo) ? "transcode" : "direct"
-  );
+  const isClient = useIsClient();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const controls = useAutoHide(CONTROLS_HIDE_MS);
+  const quality = useStreamQuality();
 
-  // The title actually playing. Starts as the opened `target` but, for episodes,
-  // can move to an adjacent episode via prev/next or the auto-advance "Up next"
-  // card. Everything that streams or persists progress reads `current`, not the
-  // `target` prop, so navigating loads the neighbour without remounting the modal.
+  // The title actually playing: the opened `target` at first, then whichever
+  // episode prev/next, "Up next" or the watch-together host moved to.
   const [current, setCurrent] = useState<PlaybackTarget>(target);
   const [currentTitle, setCurrentTitle] = useState<React.ReactNode>(title);
+  const navigate = useCallback((next: PlaybackTarget, label: React.ReactNode) => {
+    setCurrent(next);
+    setCurrentTitle(label);
+  }, []);
 
-  // Adjacent playable episodes (episode targets only) and the auto-advance card
-  // state. `upNextCancelled` suppresses auto-advance for the current episode only.
-  const [neighbors, setNeighbors] = useState<{ prev: Neighbor | null; next: Neighbor | null }>({
-    prev: null,
-    next: null,
-  });
-  const [upNextVisible, setUpNextVisible] = useState(false);
-  const [upNextCancelled, setUpNextCancelled] = useState(false);
-  const [countdown, setCountdown] = useState(UP_NEXT_COUNTDOWN);
+  const [forceTranscode, setForceTranscode] = useState(loadForceTranscode);
+  const [subtitleStyle] = useState<SubtitleStyle>(loadSubtitleStyle);
+  // Remembered subtitle choice, auto-applied to each new title so the viewer
+  // doesn't re-pick e.g. English on every episode.
+  const [subPref, setSubPref] = useState<SubtitlePref | null>(loadSubtitlePref);
+  const rememberSubtitle = useCallback((pref: SubtitlePref) => {
+    setSubPref(pref);
+    saveSubtitlePref(pref);
+  }, []);
 
-  const containerRef = useRef<HTMLDivElement>(null);
-  const hideTimer = useRef<number | null>(null);
-  // The live <video>, registered up from whichever child player is mounted, so
-  // the keyboard shortcuts (seek / volume / mute) can drive it directly.
-  const videoElRef = useRef<HTMLVideoElement | null>(null);
-  // Mirror the live element into state too, so the watch-together host effect can
-  // (re)attach transport listeners whenever the child player remounts.
+  // The live <video>, registered up from whichever child player is mounted.
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
+  const videoElRef = useRef<HTMLVideoElement | null>(null);
   const registerVideo = useCallback((el: HTMLVideoElement | null) => {
     videoElRef.current = el;
     setVideoEl(el);
   }, []);
 
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [controlsVisible, setControlsVisible] = useState(true);
-  const [ccOpen, setCcOpen] = useState(false);
-  const [tracks, setTracks] = useState<SubtitleTrack[]>([]);
-  const [selectedSub, setSelectedSub] = useState(-1); // -1 = off (default)
-  // Live "Search online" state for the CC menu (admins only).
-  const [subLanguages, setSubLanguages] = useState<string[]>([]);
-  const [canSearchOnline, setCanSearchOnline] = useState(false);
-  const [subSearching, setSubSearching] = useState(false);
-  const [subCandidates, setSubCandidates] = useState<SubtitleCandidate[] | null>(null);
-  const [subSearchError, setSubSearchError] = useState<string | null>(null);
-  const [subDownloadingId, setSubDownloadingId] = useState<string | null>(null);
-  // Remembered subtitle choice (localStorage), auto-applied to each new title so
-  // you don't re-pick e.g. English on every episode. Loaded once, up front.
-  const subPrefRef = useRef<SubtitlePref | null>(null);
-  const subPrefReady = useRef(false);
-  if (!subPrefReady.current) {
-    subPrefReady.current = true;
-    subPrefRef.current = loadSubtitlePref();
-  }
-  // Skip Intro / Skip Recap segments (from chapter markers), the current play
-  // position (whole seconds), and a seek request the overlay sends to the video.
-  const [skipSegments, setSkipSegments] = useState<SkipSegment[]>([]);
-  const [playedSeconds, setPlayedSeconds] = useState(0);
-  const seekNonce = useRef(0);
-  const [seekReq, setSeekReq] = useState<{ t: number; n: number } | null>(null);
-  // Transport state for the custom control bar (native <video> controls are off).
-  const [paused, setPaused] = useState(true);
-  const [muted, setMuted] = useState(false);
-  const [volume, setVolume] = useState(1);
-  const [mediaDurationSec, setMediaDurationSec] = useState(0);
-  // Audio-track picker (multi-audio files). `selectedAudio` is the chosen 0:a:index,
-  // or null = the default track. Choosing one forces transcode (to remap audio).
-  const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
-  const [selectedAudio, setSelectedAudio] = useState<number | null>(null);
-  const [audioOpen, setAudioOpen] = useState(false);
-  // The viewer's saved caption appearance, read once when the player opens.
-  const [subtitleStyle] = useState<SubtitleStyle>(() => loadSubtitleStyle());
-  // Subtitle sync offset in seconds (+ = later, − = earlier), nudged live with
-  // the [ / ] keys or the CC-menu buttons. A brief OSD flashes on each change.
-  const [subtitleOffset, setSubtitleOffset] = useState(0);
-  const [offsetOsd, setOffsetOsd] = useState(false);
-  const osdTimer = useRef<number | null>(null);
-
-  // Available file versions (qualities) and the one currently playing. `null`
-  // fileId means "server default/primary" (used until the list resolves, or when
-  // the fetch fails and we treat the title as a single default version).
-  const [versions, setVersions] = useState<MediaVersion[]>([]);
-  const [selectedFileId, setSelectedFileId] = useState<number | null>(null);
-  const [qualityOpen, setQualityOpen] = useState(false);
-
-  // ---- connection-aware streaming ----
-  // How fast this browser can actually pull bytes from THIS server, in kbps.
-  // Seeded from a recent measurement in this tab, so the second title of a sitting
-  // decides instantly; null until one lands, which means "assume nothing" — the
-  // same behaviour as before any of this existed.
-  const [linkKbps, setLinkKbps] = useState<number | null>(() => cachedLinkKbps());
-  // "auto" (follow the link speed) or a rung id the viewer picked by hand.
-  const [qualityPref, setQualityPref] = useState<string>(loadQualityPref);
-  // The rung "auto" has committed to. Deliberately a decision rather than a
-  // reading off the live measurement: a number that wanders across a threshold
-  // twice a minute would restart the stream twice a minute.
-  const [autoQuality, setAutoQuality] = useState<TranscodeQuality>(DEFAULT_TRANSCODE_QUALITY);
-  const lastAutoChangeRef = useRef(0);
-  // Where a restarted transcode session must pick up, set when the rung changes
-  // mid-playback or direct play gives up part-way through.
-  const [restartAt, setRestartAt] = useState<number | null>(null);
-  // Direct play stalled for good and handed over to the transcoder.
-  const [directGaveUp, setDirectGaveUp] = useState(false);
-  const [bitrateOpen, setBitrateOpen] = useState(false);
-  // Set once the viewer picks a mode themselves: their choice then sticks, and
-  // the bandwidth check stops overriding it.
-  const [modeChosenByUser, setModeChosenByUser] = useState(false);
-  // Latest whole-second play position, for restarting a stream where it left off.
-  const playedSecondsRef = useRef(0);
-
-  // The rung in force: whatever auto has settled on, or the viewer's own choice.
-  const activeQuality =
-    qualityPref === AUTO_QUALITY ? autoQuality : transcodeQuality(qualityPref);
-  // Mirror for the callbacks below, which must stay stable: rebuilding them on
-  // every rung change would restart the link probe along with them.
-  const autoQualityRef = useRef(autoQuality);
+  // Carry volume and speed onto every new element (a quality change, the next
+  // episode), and remember volume for the next time the player opens.
+  const rateRef = useRef(1);
   useEffect(() => {
-    autoQualityRef.current = autoQuality;
-  }, [autoQuality]);
-
-  // Anything that re-creates the stream — a new rung, a different version or audio
-  // track, switching between direct and transcoded — must record where playback
-  // had got to, or the freshly built stream inherits a stale position (or an older
-  // one from earlier in this sitting) and jumps backwards.
-  const resumeHere = useCallback(() => {
-    setRestartAt(playedSecondsRef.current > 0 ? playedSecondsRef.current : null);
-  }, []);
-
-  /**
-   * A fresh reading of the connection, from the initial probe or from the
-   * segments the transcode is already delivering. This is where "auto" actually
-   * adjusts: down the moment the current rung stops fitting, and back up once
-   * there is comfortable headroom and it has been a while since the last move.
-   *
-   * Moving is not free — one rendition per session means a new session and a
-   * couple of seconds of rebuffering — so going up is deliberately harder than
-   * staying: a wider margin, one rung at a time, and never inside the cooldown.
-   */
-  const applyLinkMeasurement = useCallback(
-    (kbps: number) => {
-      setLinkKbps(kbps);
-      rememberLinkKbps(kbps);
-      const current = autoQualityRef.current;
-      const now = Date.now();
-      let next: TranscodeQuality | null = null;
-      if (!linkCanCarry(qualityTotalKbps(current), kbps)) {
-        const fitting = qualityForLinkKbps(kbps);
-        if (fitting.id !== current.id) next = fitting;
-      } else if (now - lastAutoChangeRef.current >= AUTO_STEP_UP_COOLDOWN_MS) {
-        const up = higherQuality(current.id);
-        if (up && canStepUpTo(up, kbps)) next = up;
-      }
-      if (!next) return;
-      lastAutoChangeRef.current = now;
-      setAutoQuality(next);
-      resumeHere();
-    },
-    [resumeHere]
-  );
-
-  // Measure the link against the very file about to play, once per title, reusing
-  // a recent measurement from this tab. The probe runs ALONGSIDE playback rather
-  // than gating it: a healthy connection finishes it in well under a second and
-  // notices nothing, and it is only on a bad one — where the answer matters — that
-  // it costs a couple of seconds of bandwidth. Once a transcode is running, its
-  // own segment timings take over as the live reading.
-  useEffect(() => {
-    if (cachedLinkKbps() != null) return; // a recent measurement still stands
-    let cancelled = false;
-    const url = `/api/v1/stream/${current.type}/${current.id}${
-      selectedFileId != null ? `?file=${selectedFileId}` : ""
-    }`;
-    void measureLinkKbps(url).then((kbps) => {
-      if (cancelled || kbps == null) return;
-      applyLinkMeasurement(kbps);
-    });
-    return () => {
-      cancelled = true;
+    const el = videoElRef.current; // the element `videoEl` names, as a ref so it can be driven
+    if (!el) return;
+    const saved = loadVolumePref();
+    el.volume = saved.volume;
+    el.muted = saved.muted;
+    // A new source resets playbackRate to defaultPlaybackRate, so set both.
+    el.defaultPlaybackRate = rateRef.current;
+    el.playbackRate = rateRef.current;
+    const onVolume = () => saveVolumePref({ volume: el.volume, muted: el.muted });
+    const onRate = () => {
+      rateRef.current = el.playbackRate;
     };
-  }, [current.type, current.id, selectedFileId, applyLinkMeasurement]);
-
-  // Bitrate of the file that would be direct-played, kbps. The version list gives
-  // the file ACTUALLY playing (so it stays right after navigating to a neighbour
-  // episode); the probed `mediaInfo` covers the moment before that list resolves.
-  const playingVersion =
-    versions.find((v) => v.fileId === selectedFileId) ??
-    versions.find((v) => v.isPrimary) ??
-    versions[0];
-  const sourceKbps =
-    playingVersion?.durationSec && playingVersion.size > 0
-      ? (playingVersion.size * 8) / playingVersion.durationSec / 1000
-      : mediaInfo?.bitrate
-        ? mediaInfo.bitrate / 1000
-        : null;
-
-  // A weak connection is the one failure direct play cannot report: the browser
-  // waits for bytes that arrive slower than they are consumed, raises no error,
-  // and buffers forever. So when the measured link can't carry the file's own
-  // bitrate, don't attempt it — play a transcode sized for the link instead.
-  // Derived rather than stored, so it takes effect on the render a measurement
-  // lands, with no second pass through an effect.
-  const linkBlocksDirect =
-    !modeChosenByUser && sourceKbps != null && !linkCanCarry(sourceKbps, linkKbps);
-  const effectiveMode: "direct" | "transcode" =
-    mode === "direct" && linkBlocksDirect ? "transcode" : mode;
-  // Whether what's playing was cut down to fit the connection — drives the amber
-  // treatment on the quality chip and the note in its menu.
-  const reducedForLink =
-    linkBlocksDirect ||
-    directGaveUp ||
-    (qualityPref === AUTO_QUALITY && autoQuality.id !== DEFAULT_TRANSCODE_QUALITY.id);
-
-  // Drop a rung and resume there, when the stream keeps stalling or direct play
-  // never gets going. False when there is nothing left to give up — the bottom of
-  // the ladder, or a rung the viewer pinned by hand, which is theirs to change.
-  const stepDownQuality = useCallback(() => {
-    if (qualityPref !== AUTO_QUALITY) return false;
-    const next = lowerQuality(autoQualityRef.current.id);
-    if (!next) return false;
-    lastAutoChangeRef.current = Date.now();
-    setAutoQuality(next);
-    resumeHere();
-    return true;
-  }, [qualityPref, resumeHere]);
-
-  // The overlay is portaled to <body>. Without this, the player is a React child
-  // of whatever card opened it, and clicks bubble (through the React tree) to that
-  // card's onClick/Link — which made a click on the video "exit to home".
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
-
-  const barVisible = controlsVisible || ccOpen || qualityOpen || audioOpen || bitrateOpen;
-
-  // Opens windowed (full-page overlay, browser chrome still visible). Native
-  // fullscreen is opt-in via the maximize button / `F` — no auto-request here.
-
-  // Fetch available subtitle tracks (sidecar + embedded) for the current title,
-  // plus the wanted languages and whether this user may search providers live.
-  // Refetches whenever `current` changes (e.g. navigating to a neighbour episode).
-  useEffect(() => {
-    const key = current.type === "movie" ? "movieId" : "episodeId";
-    let active = true;
-    // Clear any prior online-search results when the title changes.
-    setSubCandidates(null);
-    setSubSearchError(null);
-    void apiFetch<SubtitlesResponse>(`/subtitles?${key}=${current.id}`)
-      .then((res) => {
-        if (!active) return;
-        const t = res.tracks ?? [];
-        setTracks(t);
-        setSubLanguages(res.languages ?? []);
-        setCanSearchOnline(!!res.canSearchOnline);
-        // Re-apply the viewer's remembered subtitle choice on the new title.
-        setSelectedSub(matchSubtitlePref(t, subPrefRef.current));
-      })
-      .catch(() => {});
+    el.addEventListener("volumechange", onVolume);
+    el.addEventListener("ratechange", onRate);
     return () => {
-      active = false;
+      el.removeEventListener("volumechange", onVolume);
+      el.removeEventListener("ratechange", onRate);
     };
-  }, [current.type, current.id]);
+  }, [videoEl]);
 
-  // Live provider search from the CC menu ("Search online"). Admin-gated server-side.
-  const runOnlineSearch = useCallback(async () => {
-    const key = current.type === "movie" ? "movieId" : "episodeId";
-    const langs = subLanguages.length > 0 ? subLanguages : ["en"];
-    setSubSearching(true);
-    setSubSearchError(null);
-    setSubCandidates(null);
-    try {
-      const res = await apiFetch<SubtitleCandidate[]>(
-        `/subtitles/manual?${key}=${current.id}&languages=${encodeURIComponent(langs.join(","))}`
-      );
-      setSubCandidates(res);
-      if (res.length === 0) setSubSearchError("No subtitles found from your providers.");
-    } catch (e) {
-      setSubSearchError(e instanceof ApiError ? e.message : "Search failed. Try again.");
-    } finally {
-      setSubSearching(false);
-    }
-  }, [current.type, current.id, subLanguages]);
-
-  // Download a chosen candidate, then refetch tracks and auto-select the new one.
-  const downloadCandidate = useCallback(
-    async (candidate: SubtitleCandidate) => {
-      const key = current.type === "movie" ? "movieId" : "episodeId";
-      setSubDownloadingId(candidate.id);
-      setSubSearchError(null);
-      try {
-        await apiFetch(`/subtitles/manual`, {
-          method: "POST",
-          body: JSON.stringify({ [key]: current.id, candidateId: candidate.id }),
-        });
-        const res = await apiFetch<SubtitlesResponse>(`/subtitles?${key}=${current.id}`);
-        const next = res.tracks ?? [];
-        setTracks(next);
-        // Prefer the freshly-downloaded language among external tracks.
-        const idx = next.findIndex(
-          (t) => t.kind !== "embedded" && t.language === candidate.language
-        );
-        const sel = idx >= 0 ? idx : next.length > 0 ? 0 : -1;
-        setSelectedSub(sel);
-        if (sel >= 0) {
-          const pref: SubtitlePref = { off: false, lang: next[sel].language, kind: next[sel].kind };
-          subPrefRef.current = pref;
-          saveSubtitlePref(pref);
-        }
-        setSubCandidates(null);
-        setCcOpen(false);
-      } catch (e) {
-        setSubSearchError(e instanceof ApiError ? e.message : "Download failed. Try another.");
-      } finally {
-        setSubDownloadingId(null);
-      }
-    },
-    [current.type, current.id]
-  );
-
-  // Select a subtitle track (index, −1 = off) and remember the choice so the next
-  // episode/title auto-applies it.
-  const chooseSubtitle = useCallback(
-    (index: number) => {
-      setSelectedSub(index);
-      const track = index >= 0 ? tracks[index] : undefined;
-      const pref: SubtitlePref = track
-        ? { off: false, lang: track.language, kind: track.kind }
-        : { off: true };
-      subPrefRef.current = pref;
-      saveSubtitlePref(pref);
-    },
-    [tracks]
-  );
-
-  // Fetch the available file versions for the current title. Silent on failure —
-  // we then treat it as a single default version (no picker, fileId stays null).
-  // Refetches whenever `current` changes (e.g. navigating to a neighbour episode).
-  useEffect(() => {
-    const type = current.type === "movie" ? "movie" : "episode";
-    let active = true;
-    void apiFetch<{ versions: MediaVersion[] }>(`/versions?type=${type}&id=${current.id}`)
-      .then((res) => {
-        if (!active) return;
-        const list = res.versions ?? [];
-        setVersions(list);
-        const primary = list.find((v) => v.isPrimary) ?? list[0] ?? null;
-        setSelectedFileId(primary ? primary.fileId : null);
-      })
-      .catch(() => {
-        /* no versions endpoint / error — leave as a single default version */
-      });
-    return () => {
-      active = false;
-    };
-  }, [current.type, current.id]);
-
-  // Fetch the previous/next playable episode for the current episode. Movies have
-  // no neighbours (and `current.type` never changes for a movie target, so the
-  // default {null,null} stands). Refetches whenever `current.id` changes.
-  useEffect(() => {
-    if (current.type !== "episode") return;
-    let active = true;
-    void apiFetch<{ prev: Neighbor | null; next: Neighbor | null }>(
-      `/episodes/${current.id}/neighbors`
-    )
-      .then((res) => {
-        if (active) setNeighbors({ prev: res.prev ?? null, next: res.next ?? null });
-      })
-      .catch(() => {
-        if (active) setNeighbors({ prev: null, next: null });
-      });
-    return () => {
-      active = false;
-    };
-  }, [current.type, current.id]);
-
-  // Navigate to an adjacent episode: point `current` at it and reset every
-  // per-title bit of state so it loads fresh (mode back to a direct-play attempt,
-  // default version, no subtitle selection, no lingering up-next card). The
-  // versions/subtitles/neighbours effects above refetch off the new `current`.
-  const goTo = useCallback((n: Neighbor) => {
-    setCurrent({ type: "episode", id: n.id });
-    setCurrentTitle(neighborLabel(n));
-    setMode(loadForceTranscode() ? "transcode" : "direct");
-    // A new title decides direct-vs-transcode afresh, with no resume offset. The
-    // rung auto has settled on is deliberately carried over: it describes the
-    // connection, which a change of episode does not alter.
-    setRestartAt(null);
-    setDirectGaveUp(false);
-    setModeChosenByUser(false);
-    setSelectedFileId(null);
-    setVersions([]);
-    setSelectedSub(-1);
-    setSubtitleOffset(0);
-    setTracks([]);
-    setNeighbors({ prev: null, next: null });
-    setUpNextVisible(false);
-    setUpNextCancelled(false);
-    setCountdown(UP_NEXT_COUNTDOWN);
-  }, []);
-
-  // ---- watch-together sync ----
+  // ---- watch-together ----
 
   // Whether this player mirrors OUT (host) or IN (joiner). A joiner is explicit
   // (opened by the "Join" UI). Host mode is on when explicitly requested OR the
@@ -943,28 +229,18 @@ export function VideoPlayerModal({
   const isJoiner = sync?.role === "joiner";
   const hostActive = !isJoiner && (sync?.role === "host" || !!me?.shareStreamingActivity);
 
-  // HOST: mirror this player's transport (play / pause / seek) out to joiners.
-  // Attaches to the live <video>, re-attaching when the child player remounts
-  // (episode / quality change). Seeks are throttled so scrubbing doesn't flood.
+  // HOST: mirror play / pause / seek out to joiners. Seeks are debounced on the
+  // trailing edge, so joiners land where a scrub SETTLED, not somewhere on the way.
   useEffect(() => {
     if (!hostActive || !videoEl) return;
-    const postCommand = (command: WatchCommand) => {
-      void apiFetch("/watch-together/sync", {
-        method: "POST",
-        body: JSON.stringify({ command }),
-      }).catch(() => {});
-    };
     let seekTimer: ReturnType<typeof setTimeout> | null = null;
-    const onPlay = () => postCommand({ kind: "play", positionSeconds: videoEl.currentTime });
-    const onPause = () => postCommand({ kind: "pause", positionSeconds: videoEl.currentTime });
-    // Trailing-edge debounce: after a scrub settles, send the FINAL position so
-    // joiners land exactly where the host did (a leading-edge throttle would
-    // drop the last settle position and leave joiners offset).
+    const onPlay = () => postSync({ kind: "play", positionSeconds: videoEl.currentTime });
+    const onPause = () => postSync({ kind: "pause", positionSeconds: videoEl.currentTime });
     const onSeeked = () => {
       if (seekTimer) clearTimeout(seekTimer);
       seekTimer = setTimeout(() => {
         seekTimer = null;
-        postCommand({ kind: "seek", positionSeconds: videoEl.currentTime });
+        postSync({ kind: "seek", positionSeconds: videoEl.currentTime });
       }, 300);
     };
     videoEl.addEventListener("play", onPlay);
@@ -978,8 +254,8 @@ export function VideoPlayerModal({
     };
   }, [hostActive, videoEl]);
 
-  // HOST: when the playing title changes (episode navigation / auto-advance), tell
-  // joiners to follow. Skip the first run — that's the title the joiner already has.
+  // HOST: when the title changes, tell joiners to follow. Not on the first run —
+  // that's the title they already have.
   const firstTitleSync = useRef(true);
   useEffect(() => {
     if (!hostActive) return;
@@ -987,182 +263,275 @@ export function VideoPlayerModal({
       firstTitleSync.current = false;
       return;
     }
-    void apiFetch("/watch-together/sync", {
-      method: "POST",
-      body: JSON.stringify({ command: { kind: "title", target: current, positionSeconds: 0 } }),
-    }).catch(() => {});
+    postSync({ kind: "title", target: current, positionSeconds: 0 });
   }, [current, hostActive]);
 
-  // JOINER: apply a command received from the host. play/pause/seek drive the live
-  // <video>; a title command re-points `current` (resetting per-title state like
-  // goTo). Only joiners attach the incoming subscription, and joiners never attach
-  // the host's transport listeners — so applying a remote command can't re-emit.
-  const applyRemote = useCallback((command: WatchCommand) => {
-    const v = videoElRef.current;
-    const correct = (t: number | undefined) => {
-      if (t == null) return;
-      seekNonce.current += 1;
-      setSeekReq({ t, n: seekNonce.current });
-    };
-    switch (command.kind) {
-      case "play":
-        if (
-          v &&
-          command.positionSeconds != null &&
-          Math.abs(v.currentTime - command.positionSeconds) > 2.5
-        ) {
-          correct(command.positionSeconds);
-        }
-        void v?.play?.().catch(() => {});
-        break;
-      case "pause":
-        if (
-          v &&
-          command.positionSeconds != null &&
-          Math.abs(v.currentTime - command.positionSeconds) > 2.5
-        ) {
-          correct(command.positionSeconds);
-        }
-        v?.pause();
-        break;
-      case "seek":
-        correct(command.positionSeconds);
-        break;
-      case "title":
-        if (command.target) {
-          setCurrent(command.target);
-          setCurrentTitle("Watching together");
-          setMode(loadForceTranscode() ? "transcode" : "direct");
-          setSelectedFileId(null);
-          setVersions([]);
-          setSelectedSub(-1);
-          setSubtitleOffset(0);
-          setTracks([]);
-          setNeighbors({ prev: null, next: null });
-          setUpNextVisible(false);
-          setUpNextCancelled(false);
-          setCountdown(UP_NEXT_COUNTDOWN);
-        }
-        break;
-    }
-  }, []);
-
-  // JOINER: subscribe to targeted `watch.sync` events. Always mounted (stable hook
-  // order); the callback no-ops unless this player is a joiner.
+  // JOINER: apply a command from the host. Joiners never attach the host's
+  // transport listeners, so applying one can't echo back out.
   const onWatchEvent = useCallback(
     (e: { type: string; [key: string]: unknown }) => {
-      if (isJoiner && e.type === "watch.sync" && e.command) {
-        applyRemote(e.command as WatchCommand);
+      if (!isJoiner || e.type !== "watch.sync" || !e.command) return;
+      const command = e.command as WatchCommand;
+      const v = videoElRef.current;
+      const correct = () => {
+        const t = command.positionSeconds;
+        if (v && t != null && Math.abs(v.currentTime - t) > 2.5) v.currentTime = t;
+      };
+      switch (command.kind) {
+        case "play":
+          correct();
+          void v?.play().catch(() => {});
+          break;
+        case "pause":
+          correct();
+          v?.pause();
+          break;
+        case "seek":
+          if (v && command.positionSeconds != null) v.currentTime = command.positionSeconds;
+          break;
+        case "title":
+          if (command.target) navigate(command.target, "Watching together");
+          break;
       }
     },
-    [isJoiner, applyRemote]
+    [isJoiner, navigate]
   );
   useEvents(onWatchEvent);
 
-  // JOINER: seek to the host's position at join time (best-effort, once).
-  // Direct play only — in transcode mode the host position goes to the server
-  // as `startSec` instead (an event playlist can't seek to unencoded time).
-  const joinerSeeded = useRef(false);
-  useEffect(() => {
-    if (joinerSeeded.current || sync?.role !== "joiner" || effectiveMode !== "direct") return;
-    const start = sync.startPositionSeconds;
-    if (start == null || start <= 0) return;
-    joinerSeeded.current = true;
-    seekNonce.current += 1;
-    setSeekReq({ t: start, n: seekNonce.current });
-  }, [sync, effectiveMode]);
+  const handleClose = useCallback(() => {
+    exitFullscreen();
+    onClose();
+  }, [onClose]);
 
-  // Fetch skip-intro / skip-recap segments (from chapter markers) for the title.
-  useEffect(() => {
-    const key = current.type === "movie" ? "movieId" : "episodeId";
-    let active = true;
-    setSkipSegments([]);
-    setPlayedSeconds(0);
-    setSeekReq(null); // don't let a pending skip carry into the next title
-    void apiFetch<SkipSegment[]>(`/skip-segments?${key}=${current.id}`)
-      .then((segs) => {
-        if (active) setSkipSegments(Array.isArray(segs) ? segs : []);
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, [current.type, current.id]);
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) exitFullscreen();
+    else enterFullscreen(containerRef.current);
+  }, []);
 
-  // Fetch audio tracks; the picker only appears when there's more than one (which
-  // is exactly when a wrong/silent default track causes "no sound").
-  useEffect(() => {
-    const key = current.type === "movie" ? "movieId" : "episodeId";
-    let active = true;
-    setAudioTracks([]);
-    setSelectedAudio(null);
-    void apiFetch<AudioTrack[]>(`/audio-tracks?${key}=${current.id}`)
-      .then((list) => {
-        if (active) setAudioTracks(Array.isArray(list) ? list : []);
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, [current.type, current.id]);
+  const isOpenedTitle = sameTarget(current, target);
 
-  // Authoritative runtime: a live transcode's <video>.duration only reflects what's
-  // been encoded so far (a few seconds early on), so end-detection must use the
-  // probed duration from /versions (or the mediaInfo prop) instead — otherwise the
-  // "Up next" card fires almost immediately and skips to the next episode.
-  const realDurationSec =
-    (versions.find((v) => v.fileId === selectedFileId)?.durationSec ??
-      versions.find((v) => v.isPrimary)?.durationSec ??
-      versions[0]?.durationSec ??
-      mediaInfo?.durationSec) ||
-    0;
-
-  // Video progress reported up from the active child player: track the position (for
-  // the skip button) and, in the last stretch of an episode that has a next
-  // neighbour (unless dismissed), reveal the auto-advance "Up next" card.
-  const handleTime = useCallback(
-    (currentTime: number, duration?: number) => {
-      const sec = Math.floor(currentTime);
-      playedSecondsRef.current = sec;
-      setPlayedSeconds((prev) => (prev === sec ? prev : sec));
-      // Track the element's duration for the custom seek bar (a live transcode
-      // reports only the encoded-so-far length — the probed duration wins there).
-      if (duration != null && Number.isFinite(duration) && duration > 0) {
-        const d = Math.floor(duration);
-        setMediaDurationSec((prev) => (prev === d ? prev : d));
-      }
-      if (current.type !== "episode" || !neighbors.next || upNextCancelled) return;
-      // Only using the PROBED duration — never the live transcode's <video>.duration
-      // (which starts tiny) — so this can't fire early. If unknown, don't auto-advance.
-      if (realDurationSec > 0 && currentTime >= realDurationSec - UP_NEXT_LEAD_SECONDS) {
-        setUpNextVisible(true);
-      }
-    },
-    [current.type, neighbors.next, upNextCancelled, realDurationSec]
+  const overlay = (
+    <div
+      ref={containerRef}
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black"
+      onMouseMove={controls.poke}
+      // The portal moves this to <body> in the DOM, but React still bubbles events
+      // to the component that rendered the player (e.g. the card you clicked Play
+      // on). Stop them here so a click inside the player never reaches that card.
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      <TitlePlayback
+        key={`${current.type}-${current.id}`}
+        target={current}
+        title={currentTitle}
+        // Probed info describes the title the player was opened on, not its neighbours.
+        mediaInfo={isOpenedTitle ? mediaInfo : null}
+        startAt={isJoiner && isOpenedTitle ? sync.startPositionSeconds : undefined}
+        isJoiner={isJoiner}
+        forceTranscode={forceTranscode}
+        onForceTranscode={(on) => {
+          setForceTranscode(on);
+          saveForceTranscode(on);
+        }}
+        quality={quality}
+        subtitleStyle={subtitleStyle}
+        subPref={subPref}
+        onSubPref={rememberSubtitle}
+        controls={controls}
+        videoEl={videoEl}
+        videoRef={videoElRef}
+        onVideoEl={registerVideo}
+        onNavigate={navigate}
+        onClose={handleClose}
+        onToggleFullscreen={toggleFullscreen}
+      />
+    </div>
   );
 
-  // The segment the viewer is currently inside (if any) → drives the skip button.
-  const activeSkip =
-    skipSegments.find((s) => playedSeconds >= s.startSeconds && playedSeconds < s.endSeconds) ??
-    null;
+  return isClient ? createPortal(overlay, document.body) : null;
+}
 
-  // The video finished. If a next episode exists and auto-advance wasn't cancelled,
-  // jump straight to it; otherwise leave the default end-of-video behaviour. Ignore
-  // a premature 'ended' from a live transcode stalling at its encoded edge (position
-  // nowhere near the real runtime) so it doesn't skip mid-episode.
-  const handleEnded = useCallback(() => {
-    if (realDurationSec > 0 && playedSeconds < realDurationSec - 15) return;
-    if (current.type === "episode" && neighbors.next && !upNextCancelled) {
-      goTo(neighbors.next);
-    }
-  }, [current.type, neighbors.next, upNextCancelled, goTo, realDurationSec, playedSeconds]);
+function postSync(command: WatchCommand): void {
+  void apiFetch("/watch-together/sync", {
+    method: "POST",
+    body: JSON.stringify({ command }),
+  }).catch(() => {});
+}
 
-  // While the "Up next" card is showing, tick a once-per-second wall-clock
-  // countdown (it enters at UP_NEXT_COUNTDOWN — the state default, reset on every
-  // navigation) and auto-advance to the next episode when it reaches zero. The
-  // interval is cleared on hide / unmount / navigation (all flip `upNextVisible`).
+/**
+ * One title's playback: choosing direct play or a transcode (and at what size),
+ * the picture, and the controls. Everything in here belongs to this title and is
+ * thrown away with it.
+ */
+function TitlePlayback({
+  target,
+  title,
+  mediaInfo,
+  startAt,
+  isJoiner,
+  forceTranscode,
+  onForceTranscode,
+  quality,
+  subtitleStyle,
+  subPref,
+  onSubPref,
+  controls,
+  videoEl,
+  videoRef,
+  onVideoEl,
+  onNavigate,
+  onClose,
+  onToggleFullscreen,
+}: {
+  target: PlaybackTarget;
+  title: React.ReactNode;
+  mediaInfo: MediaInfo | null | undefined;
+  /** A watch-together joiner's starting point (the host's position at join). */
+  startAt: number | undefined;
+  isJoiner: boolean;
+  forceTranscode: boolean;
+  onForceTranscode: (on: boolean) => void;
+  quality: StreamQuality;
+  subtitleStyle: SubtitleStyle;
+  subPref: SubtitlePref | null;
+  onSubPref: (pref: SubtitlePref) => void;
+  controls: Controls;
+  /** The live element, to subscribe to (changes re-render)… */
+  videoEl: HTMLVideoElement | null;
+  /** …and the same element, to drive from event handlers. */
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  onVideoEl: (el: HTMLVideoElement | null) => void;
+  onNavigate: (next: PlaybackTarget, label: React.ReactNode) => void;
+  onClose: () => void;
+  onToggleFullscreen: () => void;
+}) {
+  const data = useTitleData(target);
+  const media = useMediaState(videoEl);
+  const { seeker, burst } = useSeeker(videoEl);
+  const isFullscreen = useIsFullscreen();
+  const { poke } = controls;
+  const [openMenu, setOpenMenu] = useState<MenuId | null>(null);
+
+  // ---- what to play ----
+
+  const [mode, setMode] = useState<PlaybackMode>(() =>
+    forceTranscode || !canDirectPlay(mediaInfo) ? "transcode" : "direct"
+  );
+  // Set once the viewer picks a mode themselves: their choice then sticks, and the
+  // bandwidth check stops overriding it.
+  const [modeChosenByUser, setModeChosenByUser] = useState(false);
+  // Direct play stalled for good and handed over to the transcoder.
+  const [directGaveUp, setDirectGaveUp] = useState(false);
+  // Where a re-created stream picks up (a new rung, version, audio track or mode).
+  const [restartAt, setRestartAt] = useState<number | null>(startAt ?? null);
+  // A version or audio track the viewer picked. Null = the server's default (the
+  // primary file, its default track) — deliberately NOT the primary's id once the
+  // version list arrives: the same file under a new key would rebuild the stream.
+  const [fileChoice, setFileChoice] = useState<number | null>(null);
+  const [audioChoice, setAudioChoice] = useState<number | null>(null);
+
+  // Latest whole-second position, for restarting a stream where it left off.
+  const playedSecondsRef = useRef(0);
+  const resumeHere = useCallback(() => {
+    setRestartAt(playedSecondsRef.current > 0 ? playedSecondsRef.current : null);
+  }, []);
+
+  const primary = data.versions.find((v) => v.isPrimary) ?? data.versions[0];
+  const playingVersion = data.versions.find((v) => v.fileId === fileChoice) ?? primary;
+
+  // Measure the link against the very file about to play, once per title, unless
+  // this tab measured recently. It runs ALONGSIDE playback rather than gating it:
+  // a healthy connection finishes in well under a second and notices nothing.
+  // Once a transcode is running, its own segment timings take over.
+  const { measure, stepDown, choose } = quality;
   useEffect(() => {
-    const next = neighbors.next;
+    if (cachedLinkKbps() != null) return;
+    let cancelled = false;
+    const url = `/api/v1/stream/${target.type}/${target.id}${fileChoice != null ? `?file=${fileChoice}` : ""}`;
+    void measureLinkKbps(url).then((kbps) => {
+      if (!cancelled && kbps != null && measure(kbps)) resumeHere();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [target.type, target.id, fileChoice, measure, resumeHere]);
+
+  // The direct-play file's bitrate, kbps: from the version list when it has
+  // resolved, else the probed info.
+  const sourceKbps =
+    playingVersion?.durationSec && playingVersion.size > 0
+      ? (playingVersion.size * 8) / playingVersion.durationSec / 1000
+      : mediaInfo?.bitrate
+        ? mediaInfo.bitrate / 1000
+        : null;
+  // A weak connection is the one failure direct play cannot report: the browser
+  // waits for bytes that arrive slower than they're consumed and buffers forever.
+  // So when the measured link can't carry the file's bitrate, play a transcode
+  // sized for the link instead. Derived, so it applies on the render it's known.
+  const linkBlocksDirect =
+    !modeChosenByUser && sourceKbps != null && !linkCanCarry(sourceKbps, quality.linkKbps);
+  const effectiveMode: PlaybackMode = mode === "direct" && linkBlocksDirect ? "transcode" : mode;
+  const reducedForLink =
+    linkBlocksDirect ||
+    directGaveUp ||
+    (quality.isAuto && quality.autoQuality.id !== DEFAULT_TRANSCODE_QUALITY.id);
+
+  const stepDownQuality = useCallback(() => {
+    const moved = stepDown();
+    if (moved) resumeHere();
+    return moved;
+  }, [stepDown, resumeHere]);
+  const onLinkKbps = useCallback(
+    (kbps: number) => {
+      if (measure(kbps)) resumeHere();
+    },
+    [measure, resumeHere]
+  );
+
+  // ---- position, the end, and what comes next ----
+
+  const [playedSeconds, setPlayedSeconds] = useState(0);
+  const [elementDurationSec, setElementDurationSec] = useState(0);
+  const [upNextVisible, setUpNextVisible] = useState(false);
+  const [upNextCancelled, setUpNextCancelled] = useState(false);
+  const [countdown, setCountdown] = useState(UP_NEXT_COUNTDOWN);
+  const next = data.nextEpisode;
+  const prev = data.prevEpisode;
+
+  // Authoritative runtime: a live transcode's <video>.duration only covers what's
+  // been encoded so far, so the seek bar and end-detection use the probed one.
+  const realDurationSec = (playingVersion?.durationSec ?? mediaInfo?.durationSec) || 0;
+  const durationSec = realDurationSec > 0 ? realDurationSec : elementDurationSec;
+
+  const goTo = useCallback(
+    (n: Neighbor) => onNavigate({ type: "episode", id: n.id }, neighborLabel(n)),
+    [onNavigate]
+  );
+
+  const handleTime = useCallback(
+    (currentTime: number, duration: number) => {
+      const sec = Math.floor(currentTime);
+      playedSecondsRef.current = sec;
+      setPlayedSeconds(sec);
+      if (Number.isFinite(duration) && duration > 0) setElementDurationSec(Math.floor(duration));
+      // Only the PROBED duration: a live transcode's own starts tiny, and the card
+      // would fire at once and skip to the next episode.
+      if (next && !upNextCancelled && realDurationSec > 0) {
+        if (currentTime >= realDurationSec - UP_NEXT_LEAD_SECONDS) setUpNextVisible(true);
+      }
+    },
+    [next, upNextCancelled, realDurationSec]
+  );
+
+  // Ignore a premature 'ended' from a live transcode stalling at its encoded edge.
+  const handleEnded = useCallback(() => {
+    if (realDurationSec > 0 && playedSecondsRef.current < realDurationSec - 15) return;
+    if (next && !upNextCancelled) goTo(next);
+  }, [next, upNextCancelled, goTo, realDurationSec]);
+
+  useEffect(() => {
     if (!upNextVisible || !next) return;
     let remaining = UP_NEXT_COUNTDOWN;
     const timer = window.setInterval(() => {
@@ -1175,350 +544,369 @@ export function VideoPlayerModal({
       }
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [upNextVisible, neighbors.next, goTo]);
+  }, [upNextVisible, next, goTo]);
 
-  // Keep the max/min icon in sync with the actual fullscreen state.
-  useEffect(() => {
-    const onChange = () => setIsFullscreen(!!document.fullscreenElement);
-    onChange();
-    document.addEventListener("fullscreenchange", onChange);
-    return () => document.removeEventListener("fullscreenchange", onChange);
-  }, []);
+  const activeSkip =
+    data.skipSegments.find(
+      (s) => playedSeconds >= s.startSeconds && playedSeconds < s.endSeconds
+    ) ?? null;
 
-  const showControls = useCallback(() => {
-    setControlsVisible(true);
-    if (hideTimer.current) window.clearTimeout(hideTimer.current);
-    hideTimer.current = window.setTimeout(() => setControlsVisible(false), 3000);
-  }, []);
+  // ---- subtitles ----
 
-  useEffect(() => {
-    showControls();
-    return () => {
-      if (hideTimer.current) window.clearTimeout(hideTimer.current);
-    };
-  }, [showControls]);
-
-  // Pick a stream-quality rung by hand, or hand the choice back to "auto".
-  // Naming a rung means "encode it at this size", which only a transcode can do;
-  // "auto" returns to the normal decision (direct play unless the measured link
-  // or the file's own codecs rule it out).
-  const chooseQuality = useCallback(
-    (id: string) => {
-      setQualityPref(id);
-      saveQualityPref(id);
-      setBitrateOpen(false);
-      if (id === AUTO_QUALITY) {
-        // Re-decide from the latest reading rather than resuming whatever rung
-        // auto was last on, which may be minutes and a network ago.
-        setAutoQuality(qualityForLinkKbps(linkKbps));
-        lastAutoChangeRef.current = Date.now();
-        setDirectGaveUp(false);
-        setModeChosenByUser(false);
-        setMode(loadForceTranscode() || !canDirectPlay(mediaInfo) ? "transcode" : "direct");
-      } else {
-        resumeHere();
-        setModeChosenByUser(true);
-        setMode("transcode");
-      }
-      showControls();
+  const [subChoice, setSubChoice] = useState<number | null>(null);
+  // Until the viewer picks, follow their remembered preference.
+  const selectedSub = subChoice ?? matchSubtitlePref(data.tracks, subPref);
+  const chooseSubtitle = useCallback(
+    (index: number, tracks: SubtitleTrack[] = data.tracks) => {
+      setSubChoice(index);
+      const track = tracks[index];
+      onSubPref(track ? { off: false, lang: track.language, kind: track.kind } : { off: true });
     },
-    [linkKbps, mediaInfo, resumeHere, showControls]
+    [data.tracks, onSubPref]
+  );
+  const subtitleSearch = useSubtitleSearch(
+    target,
+    data.subtitleLanguages,
+    data.reloadSubtitles,
+    (tracks, index) => {
+      chooseSubtitle(index, tracks);
+      setOpenMenu(null);
+    }
   );
 
-  const handleClose = useCallback(() => {
-    exitFullscreen();
-    onClose();
-  }, [onClose]);
-
-  const toggleFullscreen = useCallback(() => {
-    if (document.fullscreenElement) exitFullscreen();
-    else enterFullscreen(containerRef.current);
-    showControls();
-  }, [showControls]);
-
-  // Flash the subtitle-offset OSD for ~1.2s so keyboard nudges give feedback.
+  // Sync offset (+ = later), nudged with [ / ] or the CC menu; a brief OSD confirms.
+  const [subtitleOffset, setSubtitleOffset] = useState(0);
+  const [offsetOsd, setOffsetOsd] = useState(false);
+  const osdTimer = useRef<number | null>(null);
   const flashOffset = useCallback(() => {
     setOffsetOsd(true);
     if (osdTimer.current) window.clearTimeout(osdTimer.current);
     osdTimer.current = window.setTimeout(() => setOffsetOsd(false), 1200);
   }, []);
-
+  useEffect(
+    () => () => {
+      if (osdTimer.current) window.clearTimeout(osdTimer.current);
+    },
+    []
+  );
   const nudgeOffset = useCallback(
     (delta: number) => {
       setSubtitleOffset((o) => {
         const clamped = Math.min(SUBTITLE_OFFSET_MAX, Math.max(-SUBTITLE_OFFSET_MAX, o + delta));
-        return Math.round(clamped * 10) / 10; // keep to one decimal, no float drift
+        return Math.round(clamped * 10) / 10; // one decimal, no float drift
       });
       flashOffset();
     },
     [flashOffset]
   );
 
-  const resetOffset = useCallback(() => {
-    setSubtitleOffset(0);
-    flashOffset();
-  }, [flashOffset]);
+  // ---- menus ----
 
-  useEffect(() => {
-    return () => {
-      if (osdTimer.current) window.clearTimeout(osdTimer.current);
-    };
-  }, []);
+  const toggleMenu = (id: MenuId) => {
+    setOpenMenu((m) => (m === id ? null : id));
+    poke();
+  };
+  const barVisible = controls.visible || openMenu != null || media.paused;
 
-  // ---- keyboard media controls (operate on the live <video> directly) ----
+  const chooseQuality = (id: string) => {
+    choose(id);
+    setOpenMenu(null);
+    resumeHere();
+    if (id === AUTO_QUALITY) {
+      // Back to the normal decision: direct play unless the link or codecs rule it out.
+      setDirectGaveUp(false);
+      setModeChosenByUser(false);
+      setMode(forceTranscode || !canDirectPlay(mediaInfo) ? "transcode" : "direct");
+    } else {
+      // Naming a rung means "encode it at this size", which only a transcode does.
+      setModeChosenByUser(true);
+      setMode("transcode");
+    }
+  };
 
-  // Seek by a relative offset, clamped to [0, duration]; reveals the controls
-  // so the native scrubber shows the new position.
-  const seekBy = useCallback(
-    (deltaSeconds: number) => {
-      const v = videoElRef.current;
-      if (!v) return;
-      const dur = Number.isFinite(v.duration) ? v.duration : Infinity;
-      v.currentTime = Math.max(0, Math.min(dur, v.currentTime + deltaSeconds));
-      showControls();
-    },
-    [showControls]
-  );
+  const toggleForceTranscode = () => {
+    const on = !forceTranscode;
+    onForceTranscode(on);
+    // An explicit choice wins from here on: the bandwidth check stops moving the
+    // viewer off the mode they asked for.
+    setModeChosenByUser(true);
+    setDirectGaveUp(false);
+    resumeHere();
+    setMode(on || !canDirectPlay(mediaInfo) ? "transcode" : "direct");
+    poke();
+  };
 
-  // Nudge volume (0–1). A volume-up also unmutes, matching most players.
-  const changeVolume = useCallback(
-    (delta: number) => {
-      const v = videoElRef.current;
-      if (!v) return;
-      if (delta > 0) v.muted = false;
-      v.volume = Math.max(0, Math.min(1, Math.round((v.volume + delta) * 100) / 100));
-      showControls();
-    },
-    [showControls]
-  );
-
-  const toggleMute = useCallback(() => {
-    const v = videoElRef.current;
-    if (!v) return;
-    v.muted = !v.muted;
-    showControls();
-  }, [showControls]);
+  // ---- transport ----
 
   const togglePlay = useCallback(() => {
-    const v = videoElRef.current;
+    const v = videoRef.current;
     if (!v) return;
     if (v.paused) void v.play().catch(() => {});
     else v.pause();
-    showControls();
-  }, [showControls]);
+    poke();
+  }, [videoRef, poke]);
+
+  const seekBy = useCallback(
+    (delta: number) => {
+      seeker.seekBy(delta);
+      poke();
+    },
+    [seeker, poke]
+  );
 
   const seekTo = useCallback(
     (t: number) => {
-      const v = videoElRef.current;
-      if (!v) return;
-      try {
-        v.currentTime = Math.max(0, t);
-      } catch {
-        /* not seekable yet — ignore */
-      }
-      showControls();
+      seeker.seekTo(t);
+      poke();
     },
-    [showControls]
+    [seeker, poke]
   );
 
-  const setVolumeTo = useCallback(
-    (v01: number) => {
-      const v = videoElRef.current;
-      if (!v) return;
-      const clamped = Math.max(0, Math.min(1, v01));
-      v.muted = clamped === 0;
-      v.volume = clamped;
-      showControls();
+  /** Set the volume; turning it up (or dragging the slider) also unmutes. */
+  const setVolume = useCallback(
+    (volume: number, unmute = true) => {
+      const el = videoRef.current;
+      if (!el) return;
+      const v = Math.max(0, Math.min(1, Math.round(volume * 100) / 100));
+      el.volume = v;
+      el.muted = v === 0 || (!unmute && el.muted);
+      poke();
     },
-    [showControls]
+    [videoRef, poke]
   );
 
-  // Mirror the live <video>'s transport state into React so the custom bar's
-  // play/pause + volume UI stays in sync whatever changed it (keyboard, remote
-  // watch-together commands, autoplay policies). Also: clicking the video
-  // itself toggles play/pause, like every mainstream player.
-  useEffect(() => {
-    const v = videoEl;
+  const toggleMute = useCallback(() => {
+    const v = videoRef.current;
     if (!v) return;
-    const sync = () => {
-      setPaused(v.paused);
-      setMuted(v.muted);
-      setVolume(v.volume);
-    };
-    const onClick = () => {
-      if (v.paused) void v.play().catch(() => {});
-      else v.pause();
-      showControls();
-    };
-    // Initial read deferred a frame (the element may already be mid-autoplay).
-    const raf = requestAnimationFrame(sync);
-    v.addEventListener("play", sync);
-    v.addEventListener("pause", sync);
-    v.addEventListener("volumechange", sync);
-    v.addEventListener("click", onClick);
-    return () => {
-      cancelAnimationFrame(raf);
-      v.removeEventListener("play", sync);
-      v.removeEventListener("pause", sync);
-      v.removeEventListener("volumechange", sync);
-      v.removeEventListener("click", onClick);
-    };
-  }, [videoEl, showControls]);
+    v.muted = !v.muted;
+    // Unmuting at zero would stay silent.
+    if (!v.muted && v.volume === 0) v.volume = 0.5;
+    poke();
+  }, [videoRef, poke]);
 
-  // F toggles fullscreen. Esc is deliberately layered so it never closes the
-  // player by surprise: an open dropdown closes first, then fullscreen exits,
-  // and only a bare Esc (nothing open, not fullscreen) actually closes it.
-  // [ / ] nudge subtitle sync earlier / later (only while a subtitle is on).
+  const setRate = useCallback(
+    (rate: number) => {
+      const v = videoRef.current;
+      if (!v) return;
+      v.defaultPlaybackRate = rate;
+      v.playbackRate = rate;
+      poke();
+    },
+    [videoRef, poke]
+  );
+
+  // Taps and clicks on the picture. A mouse click toggles play and a double click
+  // fullscreen, as on every desktop player; a tap shows or hides the controls,
+  // since a finger can't hover to reveal them.
+  const pointerType = useRef("mouse");
+  const onPictureClick = (e: React.MouseEvent) => {
+    if (!(e.target instanceof HTMLVideoElement)) return;
+    if (pointerType.current === "touch") {
+      if (controls.visible) controls.hide();
+      else poke();
+      return;
+    }
+    togglePlay();
+  };
+  const onPictureDoubleClick = (e: React.MouseEvent) => {
+    if (e.target instanceof HTMLVideoElement && pointerType.current !== "touch")
+      onToggleFullscreen();
+  };
+
+  // ---- keyboard ----
+  //
+  // Esc is layered so it never closes the player by surprise: an open menu closes
+  // first, then fullscreen exits, and only a bare Esc closes the player.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // Never hijack typing (e.g. a future search field) or modified shortcuts.
+      // Never hijack typing or modified shortcuts.
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       if (e.altKey || e.ctrlKey || e.metaKey) return;
 
-      if (e.key === "f" || e.key === "F") {
+      const handled = (fn: () => void) => {
         e.preventDefault();
-        toggleFullscreen();
-      } else if (e.key === "Escape") {
-        if (ccOpen || qualityOpen || audioOpen || bitrateOpen) {
-          setCcOpen(false);
-          setQualityOpen(false);
-          setAudioOpen(false);
-          setBitrateOpen(false);
-        } else if (document.fullscreenElement) {
-          exitFullscreen();
-        } else {
-          handleClose();
+        fn();
+      };
+      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      const step = e.shiftKey ? BIG_SKIP_SECONDS : SKIP_SECONDS;
+      switch (key) {
+        case "Escape":
+          if (openMenu) setOpenMenu(null);
+          else if (document.fullscreenElement) exitFullscreen();
+          else onClose();
+          return;
+        case " ":
+        case "k":
+          return handled(togglePlay);
+        case "ArrowLeft":
+        case "j":
+          return handled(() => seekBy(-step));
+        case "ArrowRight":
+        case "l":
+          return handled(() => seekBy(step));
+        case "Home":
+          return handled(() => seekTo(0));
+        case "End":
+          return handled(() => durationSec > 0 && seekTo(durationSec - 1));
+        case "ArrowUp":
+          return handled(() => setVolume((media.muted ? 0 : media.volume) + VOLUME_STEP));
+        case "ArrowDown":
+          return handled(() => setVolume(media.volume - VOLUME_STEP, false));
+        case "m":
+          return handled(toggleMute);
+        case "f":
+          return handled(onToggleFullscreen);
+        case "c":
+          return handled(() => {
+            // Toggle captions: off, or back to the remembered language (else the first).
+            if (selectedSub >= 0) chooseSubtitle(-1);
+            else if (data.tracks.length > 0) {
+              const preferred =
+                subPref && !subPref.off ? matchSubtitlePref(data.tracks, subPref) : -1;
+              chooseSubtitle(preferred >= 0 ? preferred : 0);
+            }
+            poke();
+          });
+        case "<":
+        case ">": {
+          const i = PLAYBACK_RATES.indexOf(media.playbackRate);
+          const at = i < 0 ? PLAYBACK_RATES.indexOf(1) : i;
+          const nextRate =
+            PLAYBACK_RATES[
+              Math.max(0, Math.min(PLAYBACK_RATES.length - 1, at + (key === ">" ? 1 : -1)))
+            ];
+          return handled(() => setRate(nextRate));
         }
-      } else if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        seekBy(-SEEK_STEP_SECONDS);
-      } else if (e.key === "ArrowRight") {
-        e.preventDefault();
-        seekBy(SEEK_STEP_SECONDS);
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        changeVolume(VOLUME_STEP);
-      } else if (e.key === "ArrowDown") {
-        e.preventDefault();
-        changeVolume(-VOLUME_STEP);
-      } else if (e.key === "m" || e.key === "M") {
-        e.preventDefault();
-        toggleMute();
-      } else if (e.key === " " || e.key === "k" || e.key === "K") {
-        e.preventDefault();
-        togglePlay();
-      } else if (e.key === "[" && selectedSub >= 0) {
-        e.preventDefault();
-        nudgeOffset(-SUBTITLE_OFFSET_STEP);
-      } else if (e.key === "]" && selectedSub >= 0) {
-        e.preventDefault();
-        nudgeOffset(SUBTITLE_OFFSET_STEP);
+        case "[":
+        case "]":
+          if (selectedSub < 0) return;
+          return handled(() =>
+            nudgeOffset(key === "[" ? -SUBTITLE_OFFSET_STEP : SUBTITLE_OFFSET_STEP)
+          );
+        case "n":
+          if (e.shiftKey && next) handled(() => goTo(next));
+          return;
+        case "p":
+          if (e.shiftKey && prev) handled(() => goTo(prev));
+          return;
       }
+      // 0–9 jump to that tenth of the runtime, as on YouTube.
+      if (/^[0-9]$/.test(key) && durationSec > 0)
+        handled(() => seekTo((Number(key) / 10) * durationSec));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [
-    toggleFullscreen,
-    handleClose,
-    nudgeOffset,
-    selectedSub,
-    ccOpen,
-    qualityOpen,
-    audioOpen,
-    bitrateOpen,
-    seekBy,
-    changeVolume,
-    toggleMute,
+    openMenu,
+    onClose,
     togglePlay,
+    seekBy,
+    seekTo,
+    durationSec,
+    setVolume,
+    toggleMute,
+    onToggleFullscreen,
+    selectedSub,
+    chooseSubtitle,
+    data.tracks,
+    subPref,
+    media.playbackRate,
+    media.muted,
+    media.volume,
+    setRate,
+    nudgeOffset,
+    next,
+    prev,
+    goTo,
+    poke,
   ]);
 
-  // The currently-playing version (if the list resolved) and the label for the
-  // always-on quality chip. Prefer the selected version's short tag; otherwise
-  // fall back to a tag derived from the probed height; hide it if nothing known.
-  const selectedVersion = versions.find((v) => v.fileId === selectedFileId) ?? null;
-  const qualityChip = selectedVersion?.resolution ?? qualityTagFromHeight(mediaInfo?.video?.height);
+  // ---- chips ----
 
-  // Seek-bar length: the probed real runtime when known (a live transcode's
-  // element duration only covers what's encoded so far), else the element's.
-  const displayDurationSec = realDurationSec > 0 ? realDurationSec : mediaDurationSec;
+  const qualityChip = playingVersion?.resolution ?? qualityTagFromHeight(mediaInfo?.video?.height);
+  const shownTime = burst?.pending ? burst.target : playedSeconds;
+  const canPip =
+    typeof document !== "undefined" &&
+    document.pictureInPictureEnabled &&
+    !!videoEl?.requestPictureInPicture;
 
-  const overlay = (
+  const playerProps = {
+    target,
+    tracks: data.tracks,
+    selectedSub,
+    subtitleStyle,
+    subtitleOffset,
+    onTime: handleTime,
+    onEnded: handleEnded,
+    onVideoEl,
+    disableProgress: isJoiner,
+  };
+
+  return (
     <div
-      ref={containerRef}
       className={cn(
-        "fixed inset-0 z-[60] flex items-center justify-center bg-black",
+        "absolute inset-0 flex items-center justify-center",
         !barVisible && "cursor-none"
       )}
-      onMouseMove={showControls}
-      // The portal moves this to <body> in the DOM, but React still bubbles events
-      // to the component that rendered the player (e.g. the card you clicked Play
-      // on). Stop clicks here so a click inside the player — including the one that
-      // refocuses the window — never reaches that card and closes/navigates it.
-      onClick={(e) => e.stopPropagation()}
-      onMouseDown={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => {
+        pointerType.current = e.pointerType;
+      }}
+      onClick={onPictureClick}
+      onDoubleClick={onPictureDoubleClick}
     >
-      {/* Keying by the selected fileId remounts the player when the version
-          changes, which re-inits the source (and, via the shared hooks, saves the
-          old position then resumes it on the newly-loaded stream). */}
       {effectiveMode === "direct" ? (
         <DirectPlayer
-          key={`${current.type}-${current.id}-${selectedFileId ?? "default"}`}
-          target={current}
-          fileId={selectedFileId}
-          tracks={tracks}
-          selectedSub={selectedSub}
-          subtitleStyle={subtitleStyle}
-          subtitleOffset={subtitleOffset}
+          key={`direct-${fileChoice ?? "default"}`}
+          {...playerProps}
+          fileId={fileChoice}
+          startAt={restartAt}
           onFallback={() => {
             resumeHere();
             setMode("transcode");
           }}
           onTooSlow={() => {
-            // The file is arriving slower than it plays and the browser will
-            // never say so. Hand over to a transcode sized for the link, picking
-            // up wherever direct play got to.
+            // The file arrives slower than it plays and the browser will never say
+            // so: hand over to a transcode sized for the link, from where it got to.
             resumeHere();
             setDirectGaveUp(true);
             setMode("transcode");
           }}
-          onTime={handleTime}
-          onEnded={handleEnded}
-          seekReq={seekReq}
-          onVideoEl={registerVideo}
-          disableProgress={isJoiner}
         />
       ) : (
         <TranscodePlayer
-          key={`${current.type}-${current.id}-${selectedFileId ?? "default"}-a${selectedAudio ?? "def"}-q${activeQuality.id}`}
-          target={current}
-          fileId={selectedFileId}
-          tracks={tracks}
-          selectedSub={selectedSub}
-          subtitleStyle={subtitleStyle}
-          subtitleOffset={subtitleOffset}
-          onTime={handleTime}
-          onEnded={handleEnded}
-          seekReq={seekReq}
-          audioTrack={selectedAudio}
-          onVideoEl={registerVideo}
-          disableProgress={isJoiner}
-          initialStartSec={
-            isJoiner ? (sync?.startPositionSeconds ?? 0) : (restartAt ?? undefined)
-          }
-          quality={activeQuality}
+          key={`hls-${fileChoice ?? "default"}-a${audioChoice ?? "def"}-q${quality.active.id}`}
+          {...playerProps}
+          fileId={fileChoice}
+          audioTrack={audioChoice}
+          initialStartSec={restartAt ?? (isJoiner ? 0 : undefined)}
+          quality={quality.active}
           onTooSlow={stepDownQuality}
-          onLinkKbps={applyLinkMeasurement}
+          onLinkKbps={onLinkKbps}
           slowHint={
-            qualityPref === AUTO_QUALITY
+            quality.isAuto
               ? "This is already the smallest stream the server makes."
               : "Stream quality is pinned — switch it to Auto and it will find a size that fits."
           }
         />
       )}
 
-      {/* Subtitle-sync OSD — flashes on each [ / ] nudge or button press. */}
+      {media.buffering && (
+        <div className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center">
+          <Spinner className="size-10 text-zinc-200" />
+        </div>
+      )}
+
+      {/* Running total of a burst of skips, and where it lands. */}
+      {burst?.relative && Math.abs(burst.delta) >= 1 && (
+        <div className="pointer-events-none absolute inset-x-0 top-1/4 z-20 flex justify-center">
+          <div className="flex items-baseline gap-2 rounded-lg bg-black/70 px-4 py-2 text-white shadow-lg backdrop-blur">
+            <span className="text-lg font-semibold tabular-nums">{formatSkip(burst.delta)}</span>
+            <span className="text-sm text-zinc-300 tabular-nums">{fmtClock(burst.target)}</span>
+          </div>
+        </div>
+      )}
+
       {offsetOsd && (
         <div className="pointer-events-none absolute inset-x-0 top-1/4 z-20 flex justify-center">
           <div className="rounded-lg bg-black/70 px-4 py-2 text-sm font-medium text-white shadow-lg backdrop-blur">
@@ -1527,50 +915,30 @@ export function VideoPlayerModal({
         </div>
       )}
 
-      {/* Skip Intro / Skip Recap — visible while inside a chapter-derived segment,
-          even when the controls have auto-hidden. Seeks to the segment's end. */}
-      {activeSkip && (
+      {/* Skip Intro / Skip Recap — shown while inside one, even with the controls hidden. */}
+      {activeSkip && !upNextVisible && (
         <button
           type="button"
-          onClick={() => {
-            seekNonce.current += 1;
-            setSeekReq({ t: activeSkip.endSeconds, n: seekNonce.current });
-            showControls();
-          }}
+          onClick={() => seekTo(activeSkip.endSeconds)}
           className="pointer-events-auto absolute right-4 bottom-28 z-20 flex items-center gap-2 rounded-md border border-white/20 bg-black/70 px-4 py-2 text-sm font-semibold text-white shadow-lg backdrop-blur transition-colors hover:bg-black/90"
         >
-          <svg
-            viewBox="0 0 24 24"
-            className="size-4"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M5 4l10 8-10 8V4z" />
-            <path d="M19 5v14" />
-          </svg>
+          <SkipToIcon className="size-4" />
           {activeSkip.label}
         </button>
       )}
 
-      {/* Auto-advance "Up next" card — bottom-right, above the control cluster.
-          Shows in the final stretch (or at end) of an episode that has a next
-          neighbour, unless the viewer cancelled it. Stays visible even when the
-          controls have auto-hidden. */}
-      {current.type === "episode" && upNextVisible && neighbors.next && (
+      {/* Auto-advance "Up next" card, above the control bar, in the final stretch. */}
+      {upNextVisible && next && (
         <div className="pointer-events-auto absolute right-3 bottom-28 z-20 w-72 max-w-[calc(100%-1.5rem)] rounded-lg border border-white/10 bg-zinc-900/95 p-4 shadow-xl backdrop-blur sm:right-4">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-zinc-400">Up next</p>
+          <p className="text-[11px] font-medium tracking-wide text-zinc-400 uppercase">Up next</p>
           <p className="mt-1 line-clamp-2 text-sm font-semibold text-white">
-            {neighborLabel(neighbors.next)}
+            {neighborLabel(next)}
           </p>
           <p className="mt-2 text-xs text-zinc-400" aria-live="polite">
             Playing in {Math.max(0, countdown)}s…
           </p>
           <div className="mt-3 flex items-center gap-2">
-            <Button size="sm" onClick={() => neighbors.next && goTo(neighbors.next)}>
+            <Button size="sm" onClick={() => goTo(next)}>
               Play now
             </Button>
             <Button
@@ -1587,1274 +955,378 @@ export function VideoPlayerModal({
         </div>
       )}
 
-      {/* Top-left: Back button + title. Auto-hides, reappears on mouse move. */}
+      {/* Top: Back + title. */}
       <div
         className={cn(
-          "absolute inset-x-0 top-0 z-10 flex items-center gap-2 bg-gradient-to-b from-black/80 via-black/40 to-transparent px-3 py-3 pb-10 transition-opacity duration-300 sm:px-4 sm:gap-3",
+          "absolute inset-x-0 top-0 z-10 flex items-center gap-2 bg-gradient-to-b from-black/80 via-black/40 to-transparent px-3 py-3 pb-10 transition-opacity duration-300 sm:gap-3 sm:px-4",
           barVisible ? "opacity-100" : "pointer-events-none opacity-0"
         )}
       >
         <button
           type="button"
-          onClick={handleClose}
+          onClick={onClose}
           aria-label="Back"
           className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1.5 font-semibold text-white outline-none transition-colors hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-amber-500/50"
         >
-          <svg
-            viewBox="0 0 24 24"
-            className="size-7 sm:size-8"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M15 18l-6-6 6-6" />
-          </svg>
+          <BackIcon className="size-7 sm:size-8" />
           <span className="text-base sm:text-lg">Back</span>
         </button>
-
         <div className="min-w-0 flex-1 truncate text-base font-semibold text-white sm:text-lg">
-          {currentTitle}
+          {title}
         </div>
       </div>
 
-      {/* THE control bar — replaces the native <video> controls entirely so there
-          is exactly one bar: a full-width scrubber on top, then transport on the
-          left (play/pause, prev/next, volume, time) and the settings cluster
-          (Direct/Transcode, quality, audio, CC, Play-on-TV, fullscreen) on the
-          right. Auto-hides with the rest of the chrome. */}
+      {/* The control bar: scrubber on top, transport on the left, settings on the right. */}
       <div
         className={cn(
-          "pointer-events-none absolute inset-x-0 bottom-0 z-10 transition-opacity duration-300",
-          barVisible ? "opacity-100" : "opacity-0"
+          "absolute inset-x-0 bottom-0 z-10 transition-opacity duration-300",
+          barVisible ? "opacity-100" : "pointer-events-none opacity-0"
         )}
       >
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-36 bg-gradient-to-t from-black/90 via-black/50 to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-black/90 via-black/50 to-transparent" />
 
-        <div
-          className={cn(
-            "absolute inset-x-0 bottom-0 flex flex-col gap-1 px-3 pb-2 sm:px-4",
-            barVisible ? "pointer-events-auto" : "pointer-events-none"
-          )}
-        >
-          <SeekBar value={playedSeconds} max={displayDurationSec} onSeek={seekTo} />
+        <div className="relative flex flex-col gap-1 px-3 pb-2 sm:px-4">
+          <div className="flex items-center gap-3">
+            <SeekBar
+              video={videoEl}
+              duration={durationSec}
+              pendingTime={burst?.pending ? burst.target : null}
+              markers={data.skipSegments}
+              onSeek={seekTo}
+              onActivity={poke}
+            />
+            <span className="shrink-0 text-xs whitespace-nowrap text-zinc-300 tabular-nums">
+              {fmtClock(shownTime)}
+              {durationSec > 0 ? ` / ${fmtClock(durationSec)}` : ""}
+            </span>
+          </div>
 
           <div className="flex flex-wrap items-center gap-1 sm:gap-1.5">
-            {/* Play / pause */}
             <Button
               variant="ghost"
               size="icon"
               onClick={togglePlay}
-              aria-label={paused ? "Play" : "Pause"}
+              aria-label={media.paused ? "Play" : "Pause"}
             >
-              <svg viewBox="0 0 24 24" className="size-6" fill="currentColor" aria-hidden="true">
-                {paused ? <path d="M8 5v14l11-7-11-7z" /> : <path d="M7 5h4v14H7zM13 5h4v14h-4z" />}
-              </svg>
+              {media.paused ? <PlayIcon /> : <PauseIcon />}
             </Button>
-
-            {/* Previous / Next episode (episodes only) — disabled when no neighbour. */}
-            {current.type === "episode" && (
-              <div className="flex items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  disabled={!neighbors.prev}
-                  onClick={() => {
-                    if (neighbors.prev) goTo(neighbors.prev);
-                    showControls();
-                  }}
-                  aria-label="Previous episode"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    className="size-5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M18 6L9 12l9 6V6z" />
-                    <line x1="6" y1="6" x2="6" y2="18" />
-                  </svg>
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  disabled={!neighbors.next}
-                  onClick={() => {
-                    if (neighbors.next) goTo(neighbors.next);
-                    showControls();
-                  }}
-                  aria-label="Next episode"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    className="size-5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M6 6l9 6-9 6V6z" />
-                    <line x1="18" y1="6" x2="18" y2="18" />
-                  </svg>
-                </Button>
-              </div>
-            )}
-
-            {/* Volume: mute toggle + slider (slider hidden on small screens) */}
             <Button
               variant="ghost"
               size="icon"
-              onClick={toggleMute}
-              aria-label={muted ? "Unmute" : "Mute"}
+              onClick={() => seekBy(-SKIP_SECONDS)}
+              aria-label={`Back ${SKIP_SECONDS} seconds`}
+              title={`Back ${SKIP_SECONDS}s (←, J)`}
             >
-              <svg
-                viewBox="0 0 24 24"
-                className="size-5"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M11 5 6 9H2v6h4l5 4V5z" />
-                {muted ? (
-                  <path d="m16 9 6 6M22 9l-6 6" />
-                ) : (
-                  <>
-                    <path d="M15.5 8.5a5 5 0 0 1 0 7" />
-                    <path d="M19 5a9 9 0 0 1 0 14" />
-                  </>
-                )}
-              </svg>
+              <SkipIcon seconds={SKIP_SECONDS} forward={false} className="size-6" />
             </Button>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={muted ? 0 : volume}
-              onChange={(e) => setVolumeTo(Number(e.target.value))}
-              aria-label="Volume"
-              className="hidden h-1 w-20 cursor-pointer accent-amber-500 sm:block"
-            />
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => seekBy(SKIP_SECONDS)}
+              aria-label={`Forward ${SKIP_SECONDS} seconds`}
+              title={`Forward ${SKIP_SECONDS}s (→, L)`}
+            >
+              <SkipIcon seconds={SKIP_SECONDS} forward className="size-6" />
+            </Button>
 
-            {/* Time */}
-            <span className="ml-1 whitespace-nowrap text-[11px] tabular-nums text-zinc-300">
-              {fmtClock(playedSeconds)}
-              {displayDurationSec > 0 ? ` / ${fmtClock(displayDurationSec)}` : ""}
-            </span>
+            {target.type === "episode" && (
+              <>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  disabled={!prev}
+                  onClick={() => prev && goTo(prev)}
+                  aria-label="Previous episode"
+                  title="Previous episode (Shift+P)"
+                >
+                  <PrevEpisodeIcon />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  disabled={!next}
+                  onClick={() => next && goTo(next)}
+                  aria-label="Next episode"
+                  title="Next episode (Shift+N)"
+                >
+                  <NextEpisodeIcon />
+                </Button>
+              </>
+            )}
+
+            <div className="group/volume flex items-center">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={toggleMute}
+                aria-label={media.muted ? "Unmute" : "Mute"}
+              >
+                <VolumeIcon muted={media.muted} level={media.volume} />
+              </Button>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={media.muted ? 0 : media.volume}
+                onChange={(e) => setVolume(Number(e.target.value))}
+                aria-label="Volume"
+                className="hidden h-1 w-20 cursor-pointer accent-amber-500 sm:block"
+              />
+            </div>
 
             <div className="min-w-0 flex-1" />
 
-          {/* Playback mode is chosen automatically, but the chip is a toggle: force
-              transcode to fix a file that plays with no audio (undecodable codec on
-              this device) — transcoding re-encodes to stereo AAC. Remembered per
-              browser and re-applied on the next episode. */}
-          <button
-            type="button"
-            onClick={() => {
-              const next = !forceTranscode;
-              setForceTranscode(next);
-              saveForceTranscode(next);
-              // An explicit choice wins from here on: the bandwidth check stops
-              // moving the viewer off the mode they asked for.
-              setModeChosenByUser(true);
-              setDirectGaveUp(false);
-              resumeHere();
-              setMode(next || !canDirectPlay(mediaInfo) ? "transcode" : "direct");
-              showControls();
-            }}
-            aria-pressed={forceTranscode}
-            title={
-              forceTranscode
-                ? "Transcoding is forced (fixes no-audio / incompatible files). Tap to go back to automatic."
-                : effectiveMode === "transcode"
-                  ? "This file is transcoded automatically for this device. Tap to always transcode."
-                  : "Playing directly. No sound or won't play? Tap to transcode — re-encodes audio to compatible stereo AAC."
-            }
-            className={cn(
-              "rounded-md border px-2 py-1 text-xs font-medium transition-colors",
-              forceTranscode
-                ? "border-amber-500/60 bg-amber-500/15 text-amber-300"
-                : "border-white/15 text-zinc-300 hover:bg-white/10"
-            )}
-          >
-            {effectiveMode === "transcode" ? "Transcoding" : "Direct"}
-          </button>
-
-          {/* Stream quality. This is the control for a weak link to the server:
-              rather than waiting on a stream that cannot arrive in time, ask for
-              a smaller one. "Auto" follows the measured connection speed and
-              steps down on its own when playback keeps stalling. */}
-          <div className="relative">
+            {/* Mode chip: a toggle that forces transcoding, the fix for a file that
+                plays silent here (audio this device can't decode). Remembered. */}
             <button
               type="button"
-              onClick={() => {
-                setBitrateOpen((o) => !o);
-                setCcOpen(false);
-                setQualityOpen(false);
-                setAudioOpen(false);
-                showControls();
-              }}
-              aria-haspopup="menu"
-              aria-expanded={bitrateOpen}
+              onClick={toggleForceTranscode}
+              aria-pressed={forceTranscode}
               title={
-                qualityPref === AUTO_QUALITY
-                  ? linkKbps != null
-                    ? `Stream quality: automatic. Your connection to the server measures ${formatKbps(linkKbps)}.`
-                    : "Stream quality: automatic."
-                  : `Stream quality fixed at ${activeQuality.label}.`
+                forceTranscode
+                  ? "Transcoding is forced (fixes no-audio / incompatible files). Tap to go back to automatic."
+                  : effectiveMode === "transcode"
+                    ? "This file is transcoded automatically for this device. Tap to always transcode."
+                    : "Playing directly. No sound or won't play? Tap to transcode — re-encodes audio to compatible stereo AAC."
               }
-              className={cn(
-                "rounded-md border px-2 py-1 text-xs font-medium transition-colors",
-                reducedForLink
-                  ? "border-amber-500/60 bg-amber-500/15 text-amber-300"
-                  : "border-white/15 text-zinc-300 hover:bg-white/10"
-              )}
+              className={chipClass(forceTranscode)}
             >
-              {qualityPref !== AUTO_QUALITY
-                ? activeQuality.label
-                : effectiveMode === "transcode"
-                  ? `Auto · ${activeQuality.height}p`
-                  : "Auto"}
+              {effectiveMode === "transcode" ? "Transcoding" : "Direct"}
             </button>
-            {bitrateOpen && (
-              <div
-                role="menu"
-                className="absolute right-0 bottom-full mb-2 max-h-64 min-w-56 overflow-auto rounded-md border border-white/10 bg-zinc-900/95 py-1 shadow-xl backdrop-blur"
+
+            {/* Stream quality: the control for a weak link to the server. */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => toggleMenu("stream")}
+                aria-haspopup="menu"
+                aria-expanded={openMenu === "stream"}
+                title={
+                  quality.isAuto
+                    ? quality.linkKbps != null
+                      ? `Stream quality: automatic. Your connection to the server measures ${formatKbps(quality.linkKbps)}.`
+                      : "Stream quality: automatic."
+                    : `Stream quality fixed at ${quality.active.label}.`
+                }
+                className={chipClass(reducedForLink)}
               >
-                <p className="px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
-                  Stream quality
-                </p>
-                <SubtitleMenuItem
-                  label={
-                    linkKbps != null
-                      ? `Auto · connection ${formatKbps(linkKbps)}`
-                      : "Auto · match my connection"
-                  }
-                  active={qualityPref === AUTO_QUALITY}
-                  onSelect={() => chooseQuality(AUTO_QUALITY)}
-                />
-                {TRANSCODE_QUALITIES.map((q) => (
-                  <SubtitleMenuItem
-                    key={q.id}
-                    label={q.label}
-                    active={qualityPref === q.id}
-                    onSelect={() => chooseQuality(q.id)}
+                {!quality.isAuto
+                  ? quality.active.label
+                  : effectiveMode === "transcode"
+                    ? `Auto · ${quality.active.height}p`
+                    : "Auto"}
+              </button>
+              {openMenu === "stream" && (
+                <MenuPanel className="min-w-56">
+                  <MenuHeading>Stream quality</MenuHeading>
+                  <MenuItem
+                    label={
+                      quality.linkKbps != null
+                        ? `Auto · connection ${formatKbps(quality.linkKbps)}`
+                        : "Auto · match my connection"
+                    }
+                    active={quality.isAuto}
+                    onSelect={() => chooseQuality(AUTO_QUALITY)}
                   />
-                ))}
-                {reducedForLink && qualityPref === AUTO_QUALITY && (
-                  <p className="px-3 py-1 text-[11px] text-amber-400/90">
-                    Reduced to {activeQuality.label} — the connection to the server could not carry
-                    more.
-                  </p>
+                  {TRANSCODE_QUALITIES.map((q) => (
+                    <MenuItem
+                      key={q.id}
+                      label={q.label}
+                      active={quality.pref === q.id}
+                      onSelect={() => chooseQuality(q.id)}
+                    />
+                  ))}
+                  {reducedForLink && quality.isAuto && (
+                    <p className="px-3 py-1 text-[11px] text-amber-400/90">
+                      Reduced to {quality.active.label} — the connection to the server could not
+                      carry more.
+                    </p>
+                  )}
+                </MenuPanel>
+              )}
+            </div>
+
+            {qualityChip && (
+              <span
+                className="rounded-md border border-white/15 px-2 py-1 text-xs font-medium text-zinc-200"
+                aria-label={`Current quality ${qualityChip}`}
+              >
+                {qualityChip}
+              </span>
+            )}
+
+            {/* File version picker — only when there's more than one. */}
+            {data.versions.length > 1 && (
+              <div className="relative">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => toggleMenu("versions")}
+                  aria-label="Quality"
+                  aria-haspopup="menu"
+                  aria-expanded={openMenu === "versions"}
+                >
+                  <VersionsIcon />
+                </Button>
+                {openMenu === "versions" && (
+                  <MenuPanel>
+                    {data.versions.map((v) => (
+                      <MenuItem
+                        key={v.fileId}
+                        label={v.label || v.resolution}
+                        active={v.fileId === playingVersion?.fileId}
+                        onSelect={() => {
+                          setOpenMenu(null);
+                          if (v.fileId === playingVersion?.fileId) return;
+                          resumeHere();
+                          setFileChoice(v.isPrimary ? null : v.fileId);
+                        }}
+                      />
+                    ))}
+                  </MenuPanel>
                 )}
               </div>
             )}
-          </div>
 
-          {/* Current-quality chip — always shown when a quality is known. */}
-          {qualityChip && (
-            <span
-              className="rounded-md border border-white/15 px-2 py-1 text-xs font-medium text-zinc-200"
-              aria-label={`Current quality ${qualityChip}`}
-            >
-              {qualityChip}
-            </span>
-          )}
+            {/* Audio-track picker — only for multi-audio files. Choosing one
+                transcodes that stream, fixing a silent or wrong default track. */}
+            {data.audioTracks.length > 1 && (
+              <div className="relative">
+                <Button
+                  variant={audioChoice != null ? "primary" : "ghost"}
+                  size="icon"
+                  onClick={() => toggleMenu("audio")}
+                  aria-label="Audio track"
+                  aria-haspopup="menu"
+                  aria-expanded={openMenu === "audio"}
+                  title="Audio track"
+                >
+                  <AudioTrackIcon />
+                </Button>
+                {openMenu === "audio" && (
+                  <MenuPanel className="min-w-52">
+                    <MenuHeading>Audio</MenuHeading>
+                    {data.audioTracks.map((t) => (
+                      <MenuItem
+                        key={t.index}
+                        label={t.isDefault ? `${t.label} · default` : t.label}
+                        active={audioChoice === t.index || (audioChoice == null && t.isDefault)}
+                        onSelect={() => {
+                          setOpenMenu(null);
+                          resumeHere();
+                          setAudioChoice(t.index);
+                          setMode("transcode"); // remapping audio needs a transcode
+                        }}
+                      />
+                    ))}
+                  </MenuPanel>
+                )}
+              </div>
+            )}
 
-          {/* Quality (version) picker — only when there's more than one version.
-              Menu opens upward so it isn't clipped at the edge. */}
-          {versions.length > 1 && (
+            {/* Playback speed. */}
             <div className="relative">
+              <Button
+                variant={media.playbackRate !== 1 ? "primary" : "ghost"}
+                size="icon"
+                onClick={() => toggleMenu("speed")}
+                aria-label="Playback speed"
+                aria-haspopup="menu"
+                aria-expanded={openMenu === "speed"}
+                title="Playback speed (< / >)"
+              >
+                <SpeedIcon />
+              </Button>
+              {openMenu === "speed" && (
+                <MenuPanel className="min-w-32">
+                  <MenuHeading>Speed</MenuHeading>
+                  {PLAYBACK_RATES.map((r) => (
+                    <MenuItem
+                      key={r}
+                      label={r === 1 ? "Normal" : `${r}×`}
+                      active={media.playbackRate === r}
+                      onSelect={() => {
+                        setRate(r);
+                        setOpenMenu(null);
+                      }}
+                    />
+                  ))}
+                </MenuPanel>
+              )}
+            </div>
+
+            {/* Subtitles (CC) */}
+            <div className="relative">
+              <Button
+                variant={selectedSub >= 0 ? "primary" : "ghost"}
+                size="icon"
+                onClick={() => toggleMenu("subtitles")}
+                aria-label="Subtitles"
+                aria-haspopup="menu"
+                aria-expanded={openMenu === "subtitles"}
+                title="Subtitles (C)"
+              >
+                <span className="text-xs font-bold tracking-tight">CC</span>
+              </Button>
+              {openMenu === "subtitles" && (
+                <SubtitleMenu
+                  tracks={data.tracks}
+                  selected={selectedSub}
+                  onSelect={(i) => {
+                    chooseSubtitle(i);
+                    setOpenMenu(null);
+                    poke();
+                  }}
+                  canSearch={data.canSearchSubtitles}
+                  search={subtitleSearch}
+                  offset={subtitleOffset}
+                  onNudge={(d) => {
+                    nudgeOffset(d);
+                    poke();
+                  }}
+                  onResetOffset={() => {
+                    setSubtitleOffset(0);
+                    flashOffset();
+                    poke();
+                  }}
+                />
+              )}
+            </div>
+
+            <PlayOnTvButton type={target.type} id={target.id} />
+
+            {canPip && (
               <Button
                 variant="ghost"
                 size="icon"
                 onClick={() => {
-                  setQualityOpen((o) => !o);
-                  setCcOpen(false);
-                  showControls();
+                  if (document.pictureInPictureElement)
+                    void document.exitPictureInPicture().catch(() => {});
+                  else void videoRef.current?.requestPictureInPicture().catch(() => {});
                 }}
-                aria-label="Quality"
-                aria-haspopup="menu"
-                aria-expanded={qualityOpen}
+                aria-label="Picture in picture"
+                title="Picture in picture"
               >
-                <svg
-                  viewBox="0 0 24 24"
-                  className="size-5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M12 3l9 5-9 5-9-5 9-5z" />
-                  <path d="M3 13l9 5 9-5" />
-                </svg>
+                <PipIcon />
               </Button>
-              {qualityOpen && (
-                <div
-                  role="menu"
-                  className="absolute right-0 bottom-full mb-2 max-h-64 min-w-44 overflow-auto rounded-md border border-white/10 bg-zinc-900/95 py-1 shadow-xl backdrop-blur"
-                >
-                  {versions.map((v) => (
-                    <SubtitleMenuItem
-                      key={v.fileId}
-                      label={v.label || v.resolution}
-                      active={v.fileId === selectedFileId}
-                      onSelect={() => {
-                        setSelectedFileId(v.fileId);
-                        resumeHere();
-                        setQualityOpen(false);
-                        showControls();
-                      }}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+            )}
 
-          {/* Audio-track picker — only for multi-audio files (JP/EN dubs, commentary).
-              Choosing a track transcodes that specific stream, fixing "no sound"
-              when the default/first track is silent or the wrong one. */}
-          {audioTracks.length > 1 && (
-            <div className="relative">
-              <Button
-                variant={selectedAudio != null ? "primary" : "ghost"}
-                size="icon"
-                onClick={() => {
-                  setAudioOpen((o) => !o);
-                  setCcOpen(false);
-                  setQualityOpen(false);
-                  showControls();
-                }}
-                aria-label="Audio track"
-                aria-haspopup="menu"
-                aria-expanded={audioOpen}
-                title="Audio track"
-              >
-                {/* Headphones — deliberately NOT a speaker/volume icon, so the
-                    audio-TRACK picker isn't mistaken for a second volume control
-                    next to the native <video>'s volume button. */}
-                <svg
-                  viewBox="0 0 24 24"
-                  className="size-5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
-                  <path d="M21 19a2 2 0 0 1-2 2h-1a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h3z" />
-                  <path d="M3 19a2 2 0 0 0 2 2h1a1 1 0 0 0 1-1v-4a1 1 0 0 0-1-1H3z" />
-                </svg>
-              </Button>
-              {audioOpen && (
-                <div
-                  role="menu"
-                  className="absolute right-0 bottom-full mb-2 max-h-64 min-w-52 overflow-auto rounded-md border border-white/10 bg-zinc-900/95 py-1 shadow-xl backdrop-blur"
-                >
-                  <p className="px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
-                    Audio
-                  </p>
-                  {audioTracks.map((t) => (
-                    <SubtitleMenuItem
-                      key={t.index}
-                      label={t.isDefault ? `${t.label} · default` : t.label}
-                      active={selectedAudio === t.index || (selectedAudio == null && t.isDefault)}
-                      onSelect={() => {
-                        setSelectedAudio(t.index);
-                        resumeHere();
-                        setMode("transcode"); // remap audio → transcode required
-                        setAudioOpen(false);
-                        showControls();
-                      }}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Subtitles (CC) — menu opens upward so it isn't clipped at the edge */}
-          <div className="relative">
             <Button
-              variant={selectedSub >= 0 ? "primary" : "ghost"}
+              variant="ghost"
               size="icon"
               onClick={() => {
-                setCcOpen((o) => !o);
-                setAudioOpen(false);
-                setQualityOpen(false);
-                showControls();
+                onToggleFullscreen();
+                poke();
               }}
-              aria-label="Subtitles"
-              aria-haspopup="menu"
-              aria-expanded={ccOpen}
+              aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+              title="Fullscreen (F)"
             >
-              <span className="text-xs font-bold tracking-tight">CC</span>
+              <FullscreenIcon active={isFullscreen} />
             </Button>
-            {ccOpen && (
-              <div
-                role="menu"
-                className="absolute right-0 bottom-full mb-2 max-h-64 min-w-44 overflow-auto rounded-md border border-white/10 bg-zinc-900/95 py-1 shadow-xl backdrop-blur"
-              >
-                <SubtitleMenuItem
-                  label="Off"
-                  active={selectedSub === -1}
-                  onSelect={() => {
-                    chooseSubtitle(-1);
-                    setCcOpen(false);
-                    showControls();
-                  }}
-                />
-                {tracks.length === 0 && (
-                  <p className="px-3 py-2 text-xs text-zinc-500">No subtitles available</p>
-                )}
-                {tracks.map((t, i) => (
-                  <SubtitleMenuItem
-                    key={t.id}
-                    label={t.label}
-                    active={selectedSub === i}
-                    onSelect={() => {
-                      chooseSubtitle(i);
-                      setCcOpen(false);
-                      showControls();
-                    }}
-                  />
-                ))}
-
-                {/* Live provider search — fetch more subtitles on demand (admins). */}
-                {canSearchOnline && (
-                  <div className="mt-1 border-t border-white/10 px-2 pb-1 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void runOnlineSearch();
-                        showControls();
-                      }}
-                      disabled={subSearching}
-                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs font-medium text-zinc-100 transition-colors hover:bg-white/10 disabled:opacity-60"
-                    >
-                      <svg
-                        viewBox="0 0 24 24"
-                        className={cn("size-4 shrink-0", subSearching && "animate-pulse")}
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth={2}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        <circle cx="11" cy="11" r="7" />
-                        <path d="m21 21-4.3-4.3" />
-                      </svg>
-                      {subSearching ? "Searching providers…" : "Search online for subtitles"}
-                    </button>
-                    {subSearchError && (
-                      <p className="px-2 py-1 text-[11px] text-amber-400/90">{subSearchError}</p>
-                    )}
-                    {subCandidates && subCandidates.length > 0 && (
-                      <ul className="mt-1 max-h-40 overflow-auto">
-                        {subCandidates.map((c) => (
-                          <li key={c.id}>
-                            <button
-                              type="button"
-                              onClick={() => void downloadCandidate(c)}
-                              disabled={subDownloadingId !== null}
-                              className="flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left transition-colors hover:bg-white/10 disabled:opacity-60"
-                            >
-                              <span className="min-w-0">
-                                <span className="block truncate text-[11px] text-zinc-100">
-                                  {c.release || c.providerName}
-                                </span>
-                                <span className="block truncate text-[10px] text-zinc-500">
-                                  {c.language.toUpperCase()} · {c.providerName}
-                                  {c.hearingImpaired ? " · SDH" : ""}
-                                </span>
-                              </span>
-                              <span className="shrink-0 text-[10px] font-medium text-amber-300">
-                                {subDownloadingId === c.id ? "…" : "Add"}
-                              </span>
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                )}
-
-                {/* Subtitle-sync timing — nudge the delay earlier / later. */}
-                {selectedSub >= 0 && (
-                  <div className="mt-1 border-t border-white/10 px-3 pb-1 pt-2">
-                    <div className="mb-1.5 flex items-center justify-between">
-                      <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
-                        Timing
-                      </span>
-                      {subtitleOffset !== 0 && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            resetOffset();
-                            showControls();
-                          }}
-                          className="text-[11px] text-zinc-400 hover:text-zinc-200"
-                        >
-                          Reset
-                        </button>
-                      )}
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          nudgeOffset(-SUBTITLE_OFFSET_STEP);
-                          showControls();
-                        }}
-                        aria-label="Subtitles earlier"
-                        className="flex size-7 items-center justify-center rounded border border-white/15 text-base leading-none text-zinc-100 transition-colors hover:bg-white/10"
-                      >
-                        −
-                      </button>
-                      <span className="min-w-14 text-center text-xs font-medium tabular-nums text-zinc-100">
-                        {formatOffset(subtitleOffset)}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          nudgeOffset(SUBTITLE_OFFSET_STEP);
-                          showControls();
-                        }}
-                        aria-label="Subtitles later"
-                        className="flex size-7 items-center justify-center rounded border border-white/15 text-base leading-none text-zinc-100 transition-colors hover:bg-white/10"
-                      >
-                        +
-                      </button>
-                    </div>
-                    <div className="mt-1.5 text-center text-[10px] text-zinc-500">
-                      Shortcut: <kbd className="text-zinc-400">[</kbd> earlier ·{" "}
-                      <kbd className="text-zinc-400">]</kbd> later
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Play on TV — tokenized /tv/watch link for a smart-TV browser / kiosk. */}
-          <PlayOnTvButton type={current.type} id={current.id} />
-
-          {/* Fullscreen toggle (opt-in; also bound to F) */}
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={toggleFullscreen}
-            aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              className="size-5"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              {isFullscreen ? (
-                <path d="M8 3v3a2 2 0 0 1-2 2H3M16 3v3a2 2 0 0 0 2 2h3M8 21v-3a2 2 0 0 0-2-2H3M16 21v-3a2 2 0 0 1 2-2h3" />
-              ) : (
-                <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
-              )}
-            </svg>
-          </Button>
           </div>
         </div>
       </div>
     </div>
-  );
-
-  return mounted ? createPortal(overlay, document.body) : null;
-}
-
-/**
- * The control bar's scrubber. Dragging previews locally and only seeks on
- * release, so scrubbing doesn't fire a seek per pixel; arrow keys on the range
- * commit on key-up (the player's global arrow shortcuts skip inputs).
- */
-function SeekBar({
-  value,
-  max,
-  onSeek,
-}: {
-  value: number;
-  max: number;
-  onSeek: (t: number) => void;
-}) {
-  const [drag, setDrag] = useState<number | null>(null);
-  const boundedMax = Math.max(1, Math.floor(max));
-  const shown = Math.min(Math.floor(drag ?? value), boundedMax);
-  const commit = () => {
-    if (drag != null) {
-      onSeek(drag);
-      setDrag(null);
-    }
-  };
-  return (
-    <input
-      type="range"
-      min={0}
-      max={boundedMax}
-      step={1}
-      value={shown}
-      disabled={max <= 0}
-      onChange={(e) => setDrag(Number(e.target.value))}
-      onPointerUp={commit}
-      onKeyUp={commit}
-      onBlur={commit}
-      aria-label="Seek"
-      className="h-1 w-full cursor-pointer accent-amber-500 disabled:cursor-default"
-    />
-  );
-}
-
-function SubtitleMenuItem({
-  label,
-  active,
-  onSelect,
-}: {
-  label: string;
-  active: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitemradio"
-      aria-checked={active}
-      onClick={onSelect}
-      className={cn(
-        "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-white/10",
-        active ? "text-amber-400" : "text-zinc-200"
-      )}
-    >
-      <span className="w-3 shrink-0 text-amber-400" aria-hidden="true">
-        {active ? "✓" : ""}
-      </span>
-      <span className="truncate">{label}</span>
-    </button>
-  );
-}
-
-/** Apply a one-shot seek request (e.g. from the Skip Intro button) to the video. */
-function useSeekRequest(
-  videoRef: React.RefObject<HTMLVideoElement | null>,
-  seekReq: { t: number; n: number } | null | undefined
-) {
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !seekReq) return;
-    try {
-      video.currentTime = seekReq.t;
-    } catch {
-      /* not seekable yet — ignore */
-    }
-  }, [videoRef, seekReq]);
-}
-
-/** Publish this player's <video> up to the parent (for keyboard media controls). */
-function useRegisterVideo(
-  videoRef: React.RefObject<HTMLVideoElement | null>,
-  onVideoEl?: (el: HTMLVideoElement | null) => void
-) {
-  useEffect(() => {
-    onVideoEl?.(videoRef.current);
-    return () => onVideoEl?.(null);
-  }, [videoRef, onVideoEl]);
-}
-
-/**
- * How long direct play may make no progress before the player says so, and
- * before it gives up. A file that arrives slower than it plays fires no `error`
- * event — the element simply waits for bytes — so these timers are the only
- * signal that a weak connection has stalled the stream for good.
- */
-const SLOW_NOTICE_MS = 8_000;
-const SLOW_HANDOVER_MS = 20_000;
-
-/** Buffer stalls within this window count towards the same slow-link verdict. */
-const STALL_WINDOW_MS = 60_000;
-/** Stalls in that window before the transcode drops to a smaller rung. */
-const STALLS_BEFORE_STEP_DOWN = 3;
-/**
- * Stalls this soon after a seek aren't counted against the link. A seek into time
- * the encoder hasn't reached waits for ffmpeg to restart there, which says nothing
- * about the connection, and a few quick skips used to add up to a rung drop.
- */
-const SEEK_STALL_GRACE_MS = 15_000;
-/**
- * How long a transcode's playhead may sit still, when it should be playing, before
- * the player re-requests what it is waiting for. A load lost across a quick run of
- * seeks otherwise leaves hls.js on its retry schedule, with the picture frozen.
- */
-const STUCK_RELOAD_MS = 10_000;
-
-/** Native direct play with a "Try transcoding" fallback on <video> error, and a
- *  watchdog that hands over to a transcode when the bytes can't keep up. */
-function DirectPlayer({
-  target,
-  fileId,
-  tracks,
-  selectedSub,
-  subtitleStyle,
-  subtitleOffset,
-  onFallback,
-  onTooSlow,
-  onTime,
-  onEnded,
-  seekReq,
-  onVideoEl,
-  disableProgress,
-}: {
-  target: PlaybackTarget;
-  fileId: number | null;
-  tracks: SubtitleTrack[];
-  selectedSub: number;
-  subtitleStyle: SubtitleStyle;
-  subtitleOffset: number;
-  onFallback: () => void;
-  /** Called when playback has stalled long enough that direct play won't recover. */
-  onTooSlow: () => void;
-  onTime?: (currentTime: number, duration: number) => void;
-  onEnded?: () => void;
-  seekReq?: { t: number; n: number } | null;
-  onVideoEl?: (el: HTMLVideoElement | null) => void;
-  disableProgress?: boolean;
-}) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const subtitleSinkRef = useRef<HTMLDivElement>(null);
-  const [errored, setErrored] = useState(false);
-  const [stalled, setStalled] = useState(false);
-  // Held in a ref so a caller passing an inline arrow can't restart the watchdog
-  // (and reset its timers) on every parent render.
-  const tooSlowRef = useRef(onTooSlow);
-  useEffect(() => {
-    tooSlowRef.current = onTooSlow;
-  }, [onTooSlow]);
-
-  // Progress watchdog. "Healthy" is: enough data buffered to keep playing, and
-  // either advancing or deliberately paused. Everything else — buffering that
-  // never completes, a playhead that stops moving — counts against the timers.
-  useEffect(() => {
-    let healthyAt = Date.now();
-    let lastTime = -1;
-    let hasPlayed = false;
-    let handedOver = false;
-    const id = window.setInterval(() => {
-      const v = videoRef.current;
-      if (!v || handedOver) return;
-      const playable = v.readyState >= 3; // HAVE_FUTURE_DATA
-      if (playable && !v.paused) hasPlayed = true;
-      // Paused once playback got going is the viewer's doing, not a stall. Paused
-      // BEFORE that means autoplay is still waiting on data — which is exactly the
-      // case we're watching for.
-      const waiting = !v.paused || (!hasPlayed && !playable);
-      const healthy = playable && (v.paused || v.currentTime > lastTime + 0.05);
-      lastTime = v.currentTime;
-      const now = Date.now();
-      if (!waiting || healthy) {
-        healthyAt = now;
-        setStalled(false);
-        return;
-      }
-      const stuckMs = now - healthyAt;
-      if (stuckMs >= SLOW_HANDOVER_MS) {
-        handedOver = true;
-        tooSlowRef.current();
-      } else if (stuckMs >= SLOW_NOTICE_MS) {
-        setStalled(true);
-      }
-    }, 1_000);
-    return () => window.clearInterval(id);
-  }, []);
-
-  useWatchProgress(videoRef, target, disableProgress);
-  useStyledSubtitles(videoRef, tracks, selectedSub, subtitleOffset, subtitleSinkRef);
-  useSeekRequest(videoRef, seekReq);
-  useRegisterVideo(videoRef, onVideoEl);
-
-  // A specific version streams from `?file=<id>`; the primary/default omits it.
-  const src = `/api/v1/stream/${target.type}/${target.id}${fileId != null ? `?file=${fileId}` : ""}`;
-
-  return (
-    <>
-      <video
-        ref={videoRef}
-        autoPlay
-        className="h-full w-full bg-black object-contain"
-        src={src}
-        onError={() => setErrored(true)}
-        onTimeUpdate={(e) => onTime?.(e.currentTarget.currentTime, e.currentTarget.duration)}
-        onEnded={() => onEnded?.()}
-      >
-        <SubtitleTracks tracks={tracks} />
-      </video>
-      <SubtitleOverlay sinkRef={subtitleSinkRef} style={subtitleStyle} />
-      {stalled && !errored && (
-        <div className="pointer-events-auto absolute inset-x-0 top-20 z-20 flex justify-center px-4">
-          <Callout tone="warning" title="Slow connection" className="max-w-md bg-zinc-900/90">
-            <p>
-              This file is arriving from the server more slowly than it plays. Switching to a
-              stream sized for your connection…
-            </p>
-            <div className="mt-2">
-              <Button size="sm" onClick={() => tooSlowRef.current()}>
-                Switch now
-              </Button>
-            </div>
-          </Callout>
-        </div>
-      )}
-      {errored && (
-        <div className="absolute inset-0 z-0 flex items-center justify-center p-6">
-          <Callout tone="warning" title="Direct play failed" className="max-w-md bg-zinc-900/90">
-            <p>
-              Your browser could not play this file directly. MP4/H.264/AAC plays natively; MKV,
-              HEVC and other formats need transcoding.
-            </p>
-            <div className="mt-2">
-              <Button size="sm" onClick={onFallback}>
-                Try transcoding
-              </Button>
-            </div>
-          </Callout>
-        </div>
-      )}
-    </>
-  );
-}
-
-/**
- * Server-side HLS playback. On mount it POSTs to start a transcode session, then
- * attaches hls.js (or native HLS on Safari) to the `<video>`. On unmount it
- * destroys the hls.js instance and DELETEs the session so the server tears down
- * ffmpeg and reclaims disk.
- */
-function TranscodePlayer({
-  target,
-  fileId,
-  tracks,
-  selectedSub,
-  subtitleStyle,
-  subtitleOffset,
-  onTime,
-  onEnded,
-  seekReq,
-  audioTrack,
-  onVideoEl,
-  disableProgress,
-  initialStartSec,
-  quality,
-  onTooSlow,
-  onLinkKbps,
-  slowHint,
-}: {
-  target: PlaybackTarget;
-  fileId: number | null;
-  tracks: SubtitleTrack[];
-  selectedSub: number;
-  subtitleStyle: SubtitleStyle;
-  subtitleOffset: number;
-  onTime?: (currentTime: number, duration: number) => void;
-  onEnded?: () => void;
-  seekReq?: { t: number; n: number } | null;
-  audioTrack?: number | null;
-  onVideoEl?: (el: HTMLVideoElement | null) => void;
-  disableProgress?: boolean;
-  /** Media-time to start the transcode at — a watch-together joiner's host position,
-   *  or where playback had got to when the stream was re-created (a quality change,
-   *  a hand-over from direct play). Undefined = resume from saved progress. */
-  initialStartSec?: number;
-  /** Bitrate rung the session is pinned to. Changing it remounts this player. */
-  quality: TranscodeQuality;
-  /** Ask for the next rung down. False when there is none left to drop to. */
-  onTooSlow: () => boolean;
-  /** Throughput measured off the segments this session is delivering, kbps. */
-  onLinkKbps: (kbps: number) => void;
-  /** What to tell the viewer when `onTooSlow` had nothing left to give up. */
-  slowHint: string;
-}) {
-  const { type, id } = target;
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const subtitleSinkRef = useRef<HTMLDivElement>(null);
-  const [status, setStatus] = useState<"starting" | "playing" | "error">("starting");
-  const [error, setError] = useState<string | null>(null);
-  // The element is waiting for data (after a seek, or the encoder fell behind).
-  const [buffering, setBuffering] = useState(false);
-  // Set when the stream keeps stalling and there is no lower rung left to try.
-  const [linkTooSlow, setLinkTooSlow] = useState(false);
-  // Held in a ref so the start effect doesn't restart the whole session just
-  // because the parent re-rendered with a new callback identity.
-  const tooSlowRef = useRef(onTooSlow);
-  const linkKbpsRef = useRef(onLinkKbps);
-  useEffect(() => {
-    tooSlowRef.current = onTooSlow;
-    linkKbpsRef.current = onLinkKbps;
-  }, [onTooSlow, onLinkKbps]);
-  // Media-time of the stream's 0:00. null until known — an HLS event playlist
-  // can't seek to unencoded time, so resume must happen server-side via
-  // `startSec` (ffmpeg -ss), never by seeking the <video> after the fact.
-  const [baseOffset, setBaseOffset] = useState<number | null>(
-    initialStartSec != null ? Math.max(0, Math.floor(initialStartSec)) : disableProgress ? 0 : null
-  );
-  const [knownDuration, setKnownDuration] = useState(0);
-
-  useWatchProgress(videoRef, target, disableProgress, baseOffset, knownDuration);
-  useStyledSubtitles(videoRef, tracks, selectedSub, subtitleOffset, subtitleSinkRef);
-  useSeekRequest(videoRef, seekReq);
-  useRegisterVideo(videoRef, onVideoEl);
-
-  useEffect(() => {
-    let cancelled = false;
-    let hls: HlsInstance | null = null;
-    let sessionId: string | null = null;
-    // When the viewer last seeked: stalls right after one are the encoder catching
-    // up to the new spot, not the link (see SEEK_STALL_GRACE_MS).
-    let lastSeekAt = 0;
-    const onSeeking = () => {
-      lastSeekAt = Date.now();
-    };
-    videoRef.current?.addEventListener("seeking", onSeeking);
-
-    // Watchdog: a playhead that should be moving and hasn't for STUCK_RELOAD_MS is
-    // waiting on a load that isn't coming. With data buffered ahead it's a stuck
-    // decoder or a gap at a seam between ffmpeg runs, which a small nudge clears;
-    // with none, re-request from where the playhead is.
-    let lastPos = -1;
-    let stuckSince = Date.now();
-    const watchdog = window.setInterval(() => {
-      const v = videoRef.current;
-      if (!v) return;
-      const now = Date.now();
-      if (v.paused || v.ended || v.currentTime !== lastPos) {
-        lastPos = v.currentTime;
-        stuckSince = now;
-        return;
-      }
-      if (now - stuckSince < STUCK_RELOAD_MS) return;
-      stuckSince = now;
-      const t = v.currentTime;
-      let ahead = 0;
-      for (let i = 0; i < v.buffered.length; i++) {
-        if (v.buffered.start(i) <= t + 0.1 && v.buffered.end(i) > t) ahead = v.buffered.end(i) - t;
-      }
-      if (ahead > 0.5) {
-        v.currentTime = t + 0.1;
-      } else if (hls) {
-        hls.stopLoad();
-        hls.startLoad(t);
-      } else {
-        // Native HLS (Safari): seeking to where it already is makes it re-request.
-        v.currentTime = t;
-      }
-    }, 1_000);
-
-    async function start() {
-      try {
-        // Resolve where to start BEFORE spawning ffmpeg: joiners get the host's
-        // position; otherwise resume from this user's saved progress.
-        let startSec = initialStartSec != null ? Math.max(0, Math.floor(initialStartSec)) : 0;
-        if (initialStartSec == null && !disableProgress) {
-          const key = type === "movie" ? "movieId" : "episodeId";
-          try {
-            const p = await apiFetch<WatchProgress | null>(`/watch-progress?${key}=${id}`);
-            startSec = resumeStartSeconds(p);
-            if (!cancelled && p && p.durationSeconds > 0) setKnownDuration(p.durationSeconds);
-          } catch {
-            /* no saved progress → start from the top */
-          }
-        }
-        if (cancelled) return;
-
-        const res = await apiFetch<{
-          sessionId: string;
-          url: string;
-          seekable?: boolean;
-          durationSec?: number;
-        }>("/transcode", {
-          method: "POST",
-          body: JSON.stringify({
-            type,
-            id,
-            ...(fileId != null ? { fileId } : {}),
-            ...(audioTrack != null ? { audioTrack } : {}),
-            ...(startSec > 0 ? { startSec } : {}),
-            quality: quality.id,
-          }),
-        });
-        // A seekable (VOD) transcode spans the WHOLE runtime, so the element's
-        // 0:00 is the film's 0:00 — no base offset, and the playhead is placed
-        // client-side (below) like direct play. The legacy event-playlist
-        // fallback (runtime unprobeable) still has its timeline shifted by
-        // `startSec`, so it keeps the offset.
-        const seekable = res.seekable === true;
-        setBaseOffset(seekable ? 0 : startSec);
-        if (seekable && res.durationSec && res.durationSec > 0) setKnownDuration(res.durationSec);
-        sessionId = res.sessionId; // capture before any early return so cleanup can DELETE it
-        if (cancelled) return;
-
-        const video = videoRef.current;
-        if (!video) return;
-
-        // Seekable stream + a start position → place the playhead once the
-        // media is ready. ffmpeg was already told to begin encoding there, so
-        // the segments are being produced. (Watch-together joiners don't track
-        // progress, so this is the only thing that puts them at the host's
-        // position; for normal resume it lands on the same second the
-        // watch-progress hook would seek to.)
-        if (seekable && startSec > 0) {
-          const seekOnce = () => {
-            try {
-              video.currentTime = startSec;
-            } catch {
-              /* not seekable yet — the hook's resume seek still applies */
-            }
-          };
-          video.addEventListener("loadedmetadata", seekOnce, { once: true });
-        }
-
-        const { default: Hls } = await import("hls.js");
-        if (cancelled) return;
-
-        if (Hls.isSupported()) {
-          hls = new Hls({
-            enableWorker: true,
-            // Buffer the transcode generously when segments are available, so a
-            // slow encoder that briefly falls behind doesn't starve playback.
-            maxBufferLength: 60,
-            maxMaxBufferLength: 600,
-            maxBufferSize: 200 * 1000 * 1000,
-            backBufferLength: 90,
-            // Segments are encoded ON DEMAND, so the first byte of one the encoder
-            // hasn't reached yet can be twenty seconds away, and down a weak link
-            // the segment then takes far longer to arrive than hls.js's defaults
-            // (10 s to first byte) allow. Those defaults turn a slow connection
-            // into a dead stream: every fragment times out, the retries run out,
-            // and the player reports a failure that was only ever slowness. Wait
-            // it out, with backoff, instead.
-            fragLoadPolicy: {
-              default: {
-                maxTimeToFirstByteMs: 30_000,
-                maxLoadTimeMs: 300_000,
-                timeoutRetry: {
-                  maxNumRetry: 6,
-                  retryDelayMs: 1_000,
-                  maxRetryDelayMs: 8_000,
-                  backoff: "linear",
-                },
-                errorRetry: {
-                  maxNumRetry: 8,
-                  retryDelayMs: 1_000,
-                  maxRetryDelayMs: 8_000,
-                  backoff: "exponential",
-                },
-              },
-            },
-            playlistLoadPolicy: {
-              default: {
-                maxTimeToFirstByteMs: 20_000,
-                maxLoadTimeMs: 60_000,
-                timeoutRetry: {
-                  maxNumRetry: 4,
-                  retryDelayMs: 1_000,
-                  maxRetryDelayMs: 8_000,
-                  backoff: "linear",
-                },
-                errorRetry: {
-                  maxNumRetry: 4,
-                  retryDelayMs: 1_000,
-                  maxRetryDelayMs: 8_000,
-                  backoff: "linear",
-                },
-              },
-            },
-          });
-          // Count CONSECUTIVE fatal errors (reset on any successful fragment): a
-          // fatal error mid-transcode is usually just reaching the encoder's edge
-          // (segment not written yet), so recover a few times before giving up.
-          let consecutiveFatal = 0;
-          // Buffer stalls, counted over a rolling window. Unlike a load failure,
-          // a stall means the segments are arriving fine — just slower than they
-          // play — which no amount of retrying fixes.
-          let stalls = 0;
-          let lastStallAt = 0;
-          let steppedDown = false;
-          // Rolling throughput, smoothed across fragments and reported back so
-          // "auto" keeps tracking the connection for as long as playback lasts.
-          let ewmaKbps = 0;
-          let lastReportAt = 0;
-          const activeHls = hls;
-          activeHls.on(Hls.Events.FRAG_BUFFERED, (_evt, data) => {
-            consecutiveFatal = 0;
-            const now = Date.now();
-            // A whole window of clean playback since the last stall: the link
-            // recovered, so stop telling the viewer it hasn't.
-            if (lastStallAt > 0 && now - lastStallAt > STALL_WINDOW_MS) {
-              setLinkTooSlow(false);
-            }
-            // Time from the FIRST byte, not from the request: a segment the
-            // encoder hasn't reached yet spends its wait before that, and
-            // charging the connection for ffmpeg's time would read as a slow
-            // link and shrink a stream that was never the problem.
-            const stats = data.stats;
-            if (!stats?.loading.first || !stats.loading.end) return;
-            if (stats.loaded < LINK_SAMPLE_MIN_BYTES) return;
-            const ms = Math.max(stats.loading.end - stats.loading.first, LINK_SAMPLE_FLOOR_MS);
-            const sample = (stats.loaded * 8) / ms;
-            ewmaKbps = ewmaKbps === 0 ? sample : ewmaKbps * 0.7 + sample * 0.3;
-            if (now - lastReportAt < LINK_REPORT_INTERVAL_MS) return;
-            lastReportAt = now;
-            linkKbpsRef.current(ewmaKbps);
-          });
-          activeHls.on(Hls.Events.ERROR, (_evt, data) => {
-            if (cancelled || steppedDown) return;
-            if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) {
-              const now = Date.now();
-              if (now - lastSeekAt < SEEK_STALL_GRACE_MS) return;
-              stalls = now - lastStallAt > STALL_WINDOW_MS ? 1 : stalls + 1;
-              lastStallAt = now;
-              if (stalls < STALLS_BEFORE_STEP_DOWN) return;
-              // Dropping a rung restarts the session from here, so this player
-              // is about to be replaced — leave the old one alone.
-              steppedDown = tooSlowRef.current();
-              if (!steppedDown) setLinkTooSlow(true);
-              return;
-            }
-            if (!data.fatal) return;
-            if (consecutiveFatal < 6) {
-              consecutiveFatal += 1;
-              if (data.type === Hls.ErrorTypes.NETWORK_ERROR) activeHls.startLoad();
-              else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) activeHls.recoverMediaError();
-              else {
-                setStatus("error");
-                setError("The transcode stream failed. The file may be unsupported.");
-              }
-              return;
-            }
-            // Out of recovery attempts. If the fragments were failing to load, a
-            // smaller stream is worth trying before calling the playback dead.
-            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && tooSlowRef.current()) {
-              steppedDown = true;
-              return;
-            }
-            setStatus("error");
-            setError("The transcode stream failed. The file may be unsupported or ffmpeg errored.");
-          });
-          hls.loadSource(res.url);
-          hls.attachMedia(video);
-          setStatus("playing");
-          void video.play?.().catch(() => {});
-        } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-          // Safari / iOS play HLS natively.
-          video.src = res.url;
-          setStatus("playing");
-          void video.play?.().catch(() => {});
-        } else {
-          setStatus("error");
-          setError("Your browser cannot play HLS streams.");
-        }
-      } catch (err) {
-        if (cancelled) return;
-        const httpStatus = err instanceof ApiError ? err.status : 0;
-        setStatus("error");
-        if (httpStatus === 503) {
-          setError("Transcoding is unavailable — ffmpeg is not installed on the server.");
-        } else if (httpStatus === 429) {
-          setError("The server is at its transcoding capacity. Close another stream and retry.");
-        } else {
-          setError(err instanceof Error ? err.message : "Failed to start transcoding.");
-        }
-      }
-    }
-
-    void start();
-
-    const video = videoRef.current;
-    return () => {
-      cancelled = true;
-      window.clearInterval(watchdog);
-      video?.removeEventListener("seeking", onSeeking);
-      hls?.destroy();
-      if (sessionId) {
-        // Raw fetch (204, no JSON body) with keepalive so it survives teardown.
-        void fetch(`/api/v1/transcode/${sessionId}`, { method: "DELETE", keepalive: true }).catch(
-          () => {}
-        );
-      }
-    };
-  }, [type, id, fileId, audioTrack, initialStartSec, disableProgress, quality.id]);
-
-  return (
-    <>
-      <video
-        ref={videoRef}
-        autoPlay
-        className="h-full w-full bg-black object-contain"
-        onTimeUpdate={(e) => onTime?.(e.currentTarget.currentTime, e.currentTarget.duration)}
-        onEnded={() => onEnded?.()}
-        onWaiting={() => setBuffering(true)}
-        onSeeking={() => setBuffering(true)}
-        onPlaying={() => setBuffering(false)}
-        onSeeked={(e) => setBuffering(e.currentTarget.readyState < 3)}
-        onCanPlay={() => setBuffering(false)}
-        onPause={() => setBuffering(false)}
-      >
-        <SubtitleTracks tracks={tracks} />
-      </video>
-      <SubtitleOverlay sinkRef={subtitleSinkRef} style={subtitleStyle} />
-      {buffering && status === "playing" && (
-        <div className="pointer-events-none absolute inset-0 z-0 flex items-center justify-center">
-          <Spinner className="size-8 text-zinc-200" />
-        </div>
-      )}
-      {status === "starting" && (
-        <div className="absolute inset-0 z-0 flex flex-col items-center justify-center gap-2 bg-black/70 text-sm text-zinc-300">
-          <Spinner className="size-6" />
-          <span>Starting transcode…</span>
-          {quality.id !== DEFAULT_TRANSCODE_QUALITY.id && (
-            <span className="text-xs text-zinc-500">{quality.label} for your connection</span>
-          )}
-        </div>
-      )}
-      {linkTooSlow && status !== "error" && (
-        <div className="pointer-events-none absolute inset-x-0 top-20 z-20 flex justify-center px-4">
-          <Callout tone="warning" title="Connection too slow" className="max-w-md bg-zinc-900/90">
-            <p>
-              Playback keeps pausing to buffer at {quality.label}. The connection to the server is
-              the limit here, not the file. {slowHint}
-            </p>
-          </Callout>
-        </div>
-      )}
-      {status === "error" && (
-        <div className="absolute inset-0 z-0 flex items-center justify-center p-6">
-          <Callout tone="danger" title="Playback error" className="max-w-md bg-zinc-900/90">
-            {error}
-          </Callout>
-        </div>
-      )}
-    </>
   );
 }
