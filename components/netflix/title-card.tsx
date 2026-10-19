@@ -1,208 +1,125 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
-import { apiFetch, ApiError } from "@/lib/api";
-import { useToast } from "@/components/ui";
-import { VideoPlayerModal } from "@/components/media-player";
 import { cn } from "@/lib/cn";
+import { PlayButton, useInstantPlay } from "./instant-play";
+import { detailHrefFor, useRequestTitle } from "./use-request-title";
 // Type-only import: the route is a server module, erased from the client bundle.
 import type { DiscoverItem } from "@/app/api/v1/discover/route";
 
 /**
- * Netflix-style landscape (16:9) title card. On hover the card scales up, lifts
- * above its neighbours, and reveals an info panel with the primary action.
- * Mirrors PosterCard's availability logic:
- *   available + movie  → ▶ play in a VideoPlayerModal
- *   available + series → ▶ link to the series page
- *   unavailable        → ＋ request (flips to a check locally)
- *   requested          → check (disabled)
+ * A landscape (16:9) title card. Two things to do with it, each one obvious:
+ *   - the card itself opens the title's details page (in-library titles);
+ *   - the ▶ button plays it right away: a movie from where you left off, a series
+ *     from the episode that's next for you.
+ * Titles not in the library get a Request button in place of ▶.
  *
- * The outer wrapper is `w-full` so parents control the width: rows wrap it in a
- * fixed `w-[240px] shrink-0` cell, grids let it fill the grid cell.
+ * Hover lifts the card in place rather than blowing it up over its neighbours,
+ * so rows need no extra room and nothing gets clipped at a screen edge. The
+ * wrapper is `w-full`: rows and grids decide the width.
  */
 export function TitleCard({ item }: { item: DiscoverItem }) {
-  const toast = useToast();
-  const [status, setStatus] = useState(item.status);
-  const [requesting, setRequesting] = useState(false);
-  const [playing, setPlaying] = useState(false);
+  const { status, requesting, request } = useRequestTitle(item);
+  const { play, starting, player } = useInstantPlay();
 
-  const detailHref =
-    item.mediaId != null
-      ? item.mediaType === "movie"
-        ? `/movies/${item.mediaId}`
-        : `/series/${item.mediaId}`
-      : null;
-
-  const canPlayMovie = status === "available" && item.mediaType === "movie" && item.mediaId != null;
+  const detailHref = detailHrefFor(item);
+  const playable = status === "available" && item.mediaId != null;
   const image = item.backdrop ?? item.poster;
-
-  async function request() {
-    setRequesting(true);
-    try {
-      const created = await apiFetch<{ status: string }>("/requests", {
-        method: "POST",
-        body: JSON.stringify({
-          mediaType: item.mediaType,
-          tmdbId: item.tmdbId,
-          title: item.title,
-          year: item.year,
-          posterPath: item.posterPath,
-        }),
-      });
-      setStatus("requested");
-      toast.success(created.status === "pending" ? "Requested" : "Added to your library");
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        setStatus("requested");
-        toast.info("Already requested");
-      } else {
-        toast.error(err instanceof Error ? err.message : "Request failed");
-      }
-    } finally {
-      setRequesting(false);
-    }
-  }
-
-  const circleBase =
-    "flex size-8 shrink-0 items-center justify-center rounded-full text-sm transition-colors";
+  const kind = item.mediaType === "movie" ? "Movie" : "Series";
 
   return (
-    <div className="group relative aspect-video w-full">
-      {/* Scaling layer — transform keeps the row layout from reflowing. The
-          origin defaults to center but is overridden per-column in grids (via the
-          inherited --card-origin) so edge cards scale inward, not off-screen. */}
-      <div
-        style={{ transformOrigin: "var(--card-origin, center)" }}
-        className="absolute inset-0 rounded-md transition-transform duration-300 ease-out group-hover:z-30 group-hover:scale-[1.3] group-focus-within:z-30 group-focus-within:scale-[1.3]"
-      >
-        <div className="relative h-full w-full overflow-hidden rounded-md bg-zinc-900 shadow-lg group-hover:shadow-2xl">
-          {image ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={image} alt="" className="h-full w-full object-cover" loading="lazy" />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center px-2 text-center text-xs text-zinc-500">
+    <div className="group relative w-full">
+      <div className="relative aspect-video overflow-hidden rounded-xl bg-zinc-900 shadow-lg ring-1 ring-white/10 transition duration-300 ease-out group-hover:-translate-y-1 group-hover:shadow-2xl group-hover:shadow-black/60 group-hover:ring-white/30 group-focus-within:ring-white/40">
+        {image ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={image}
+            alt=""
+            loading="lazy"
+            className="h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-zinc-800 to-zinc-900 px-4 text-center text-sm font-medium text-zinc-400">
+            {item.title}
+          </div>
+        )}
+
+        {/* Readability: the title sits on the bottom of the artwork. */}
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent" />
+
+        <StatusPill status={status} />
+
+        {/* The whole card opens the details page. The ▶ / Request buttons sit
+            above this link, not inside it, so each click does one thing. */}
+        {detailHref && (
+          <Link
+            href={detailHref}
+            aria-label={`${item.title} — details`}
+            className="absolute inset-0 z-10 rounded-xl focus-visible:outline-none"
+          >
+            <span className="absolute top-2.5 right-2.5 rounded-full bg-black/60 px-2.5 py-1 text-[11px] font-medium text-white opacity-0 ring-1 ring-white/20 backdrop-blur transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
+              Details
+            </span>
+          </Link>
+        )}
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-end gap-3 p-3 sm:p-4">
+          <div className="min-w-0 flex-1">
+            <h3 className="truncate text-base font-semibold text-white drop-shadow sm:text-lg">
               {item.title}
-            </div>
-          )}
-
-          {/* Availability corner */}
-          {status === "available" && (
-            <span
-              className="absolute right-1.5 top-1.5 flex size-5 items-center justify-center rounded-full bg-emerald-500 text-[11px] font-bold text-black"
-              aria-label="Available"
-            >
-              ✓
-            </span>
-          )}
-          {status === "requested" && (
-            <span className="absolute right-1.5 top-1.5 rounded bg-amber-500/90 px-1.5 py-0.5 text-[10px] font-semibold text-black">
-              Requested
-            </span>
-          )}
-
-          {/* Always-on name band so titles are identifiable without hovering.
-              Fades out on hover/focus as the info panel below covers this area. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-2 pb-2 pt-8 transition-opacity duration-300 group-hover:opacity-0 group-focus-within:opacity-0">
-            <div className="truncate text-sm font-medium text-white drop-shadow">{item.title}</div>
-            <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-zinc-300">
+            </h3>
+            <p className="mt-0.5 flex items-center gap-1.5 text-xs text-zinc-300">
               {item.year != null && <span>{item.year}</span>}
               {item.year != null && <span className="text-zinc-500">·</span>}
-              <span>{item.mediaType === "movie" ? "Movie" : "Series"}</span>
-            </div>
+              <span>{kind}</span>
+            </p>
           </div>
 
-          {/* Whole-card link to the detail page (in-library titles). Sits above the
-              artwork but below the action buttons (which are z-30 + pointer-events)
-              so Play / Request keep working while the rest of the card opens details. */}
-          {detailHref && (
-            <Link
-              href={detailHref}
-              aria-label={`View details for ${item.title}`}
-              className="absolute inset-0 z-20 rounded-md"
+          {playable && (
+            <PlayButton
+              title={item.title}
+              busy={starting}
+              onClick={() =>
+                void play({ mediaType: item.mediaType, mediaId: item.mediaId!, title: item.title })
+              }
+              className="pointer-events-auto"
             />
           )}
-
-          {/* Hover info panel (over the image, so it adds no height to clip).
-              pointer-events-none lets clicks fall through to the detail link;
-              the action buttons re-enable pointer events for themselves. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 flex translate-y-2 items-center gap-2 bg-gradient-to-t from-black via-black/85 to-transparent px-2 pb-2 pt-8 opacity-0 transition-all duration-300 group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100">
-            {canPlayMovie && (
-              <button
-                type="button"
-                onClick={() => setPlaying(true)}
-                className={cn(circleBase, "pointer-events-auto bg-white text-black hover:bg-white/80")}
-                aria-label={`Play ${item.title}`}
-              >
-                ▶
-              </button>
-            )}
-            {/* In-library titles: a clear "more info" action to the detail page
-                (the whole card links there too). For series this is the primary
-                action — the detail page is where you pick an episode to play. */}
-            {detailHref && (
-              <Link
-                href={detailHref}
-                className={cn(
-                  circleBase,
-                  "pointer-events-auto border border-white/70 text-white hover:border-white hover:bg-white/10"
-                )}
-                aria-label={`More info about ${item.title}`}
-                title="More info"
-              >
-                ⓘ
-              </Link>
-            )}
-            {status === "unavailable" && (
-              <button
-                type="button"
-                onClick={request}
-                disabled={requesting}
-                className={cn(
-                  circleBase,
-                  "pointer-events-auto border border-white/60 text-white hover:border-white disabled:opacity-50"
-                )}
-                aria-label={`Request ${item.title}`}
-              >
-                ＋
-              </button>
-            )}
-            {status === "requested" && (
-              <span
-                className={cn(circleBase, "border border-white/60 text-white")}
-                aria-label="Requested"
-              >
-                ✓
+          {status === "unavailable" && (
+            <button
+              type="button"
+              onClick={request}
+              disabled={requesting}
+              aria-label={`Request ${item.title}`}
+              className="pointer-events-auto inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-white/15 px-3.5 text-sm font-semibold text-white ring-1 ring-white/30 backdrop-blur transition-colors hover:bg-white/25 disabled:opacity-50"
+            >
+              <span aria-hidden className="text-base leading-none">
+                +
               </span>
-            )}
-
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-xs font-semibold text-white">{item.title}</div>
-              <div className="flex items-center gap-1.5 text-[10px] text-zinc-300">
-                {item.year != null && <span>{item.year}</span>}
-                <span className="uppercase tracking-wide">
-                  {item.mediaType === "movie" ? "Movie" : "Series"}
-                </span>
-              </div>
-            </div>
-
-            {status === "available" && (
-              <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-400">
-                <span className="size-1.5 rounded-full bg-emerald-400" />
-                Available
-              </span>
-            )}
-          </div>
+              Request
+            </button>
+          )}
         </div>
       </div>
 
-      {playing && item.mediaId != null && (
-        <VideoPlayerModal
-          target={{ type: "movie", id: item.mediaId }}
-          title={item.title}
-          onClose={() => setPlaying(false)}
-        />
-      )}
+      {player}
     </div>
+  );
+}
+
+/** Top-left availability marker: green when it's yours to watch, amber when asked for. */
+function StatusPill({ status }: { status: DiscoverItem["status"] }) {
+  if (status === "unavailable") return null;
+  const available = status === "available";
+  return (
+    <span
+      className={cn(
+        "pointer-events-none absolute top-2.5 left-2.5 z-20 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold shadow backdrop-blur",
+        available ? "bg-emerald-500/90 text-black" : "bg-amber-500/90 text-black"
+      )}
+    >
+      {available && <span className="size-1.5 rounded-full bg-black/70" />}
+      {available ? "Ready to watch" : "Requested"}
+    </span>
   );
 }

@@ -43,8 +43,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   // A movie/series *detail* page (has an id segment) — these are management
   // surfaces for admins (monitoring, refresh/rescan/remove, per-episode search).
-  const isDetailPage =
-    pathname.startsWith("/movies/") || pathname.startsWith("/series/");
+  const isDetailPage = pathname.startsWith("/movies/") || pathname.startsWith("/series/");
 
   // Management chrome for the admin panel routes (server-side admin-guarded), and
   // for admins on detail pages so the sidebar stays put while managing a title.
@@ -70,7 +69,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <NetflixHeader />
       <main
         className={cn(
-          "min-h-screen bg-[#141414] text-white",
+          // Bottom padding clears the phone tab bar.
+          "min-h-screen bg-[#141414] pb-20 text-white md:pb-0",
           pathname === "/discover" || pathname.startsWith("/discover/") ? "" : "pt-16"
         )}
       >
