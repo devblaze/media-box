@@ -1,24 +1,16 @@
 import { and, eq } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
-import { addMovie, getMovieIdByTmdb } from "@/server/library/movie-service";
-import { addSeries } from "@/server/library/series-service";
-import { coordinatesOnDisk, orderingForImport } from "@/server/library/ordering-audit";
-import {
-  importMovieFileAt,
-  scanMovie,
-  scanSeries,
-  addMovieFileVersion,
-} from "@/server/library/disk-scanner";
+import { adoptCandidate } from "@/server/library/adopt";
 
 /**
  * Background batch import for Library Import "Import all".
  *
  * Runs as a scheduler command so it survives the user leaving the page and emits
  * NO per-file toast — only the command's normal queued/started/completed events.
- * It reuses the exact single-import logic (movie → addMovie + importMovieFileAt;
- * series/anime → addSeries + scanSeries) for every confidently-matched, not-yet-
- * imported candidate of the given type, marking each row imported (or storing its
- * error and continuing) so the persisted unmatched list stays accurate.
+ * It runs {@link adoptCandidate} — the same import the library sync uses — for
+ * every confidently-matched, not-yet-imported candidate of the given type,
+ * marking each row imported (or storing its error and continuing) so the
+ * persisted unmatched list stays accurate.
  */
 export async function libraryImportBatchHandler(payload: unknown): Promise<string> {
   const db = getDb();
@@ -48,49 +40,18 @@ export async function libraryImportBatchHandler(payload: unknown): Promise<strin
       if (row.rootFolderId == null || row.qualityProfileId == null) {
         throw new Error("Scan is missing a root folder or quality profile — rescan and retry");
       }
-
-      // A series/anime scan can surface a movie (anime films in an anime root);
-      // legacy rows have no mediaKind and fall back to what the type implies.
-      const mediaKind = row.mediaKind ?? (type === "movie" ? "movie" : "series");
-
-      if (mediaKind === "movie") {
-        // Already in the library? Attach this file as an extra quality version
-        // (skips same-quality dupes) rather than failing.
-        const existingId = getMovieIdByTmdb(row.suggestedTmdbId);
-        if (existingId) {
-          if (row.videoPath) await addMovieFileVersion(existingId, row.videoPath);
-        } else {
-          const movie = await addMovie({
-            tmdbId: row.suggestedTmdbId,
-            rootFolderId: row.rootFolderId,
-            qualityProfileId: row.qualityProfileId,
-            monitored: true,
-            path: row.path,
-          });
-          // Register the exact file the scanner identified (many movies share a
-          // category folder); otherwise fall back to folder mode.
-          if (row.videoPath) await importMovieFileAt(movie.id, row.videoPath);
-          else await scanMovie(movie.id);
-        }
-      } else {
-        // The folder was sorted by whatever the user ran before (Sonarr, Jellyfin,
-        // Plex) — all of which count TVDB seasons. Pin the ordering that explains
-        // the numbering already on disk BEFORE scanning, so every file matches the
-        // first time instead of landing on a same-numbered episode of the wrong arc.
-        const observed = await coordinatesOnDisk(row.path);
-        const episodeGroupId = await orderingForImport(row.suggestedTmdbId, observed);
-        const series = await addSeries({
-          tmdbId: row.suggestedTmdbId,
-          rootFolderId: row.rootFolderId,
-          qualityProfileId: row.qualityProfileId,
-          monitored: true,
-          path: row.path,
-          isAnime: type === "anime",
-          // undefined = let addSeries decide (anime default); a hit overrides it.
-          episodeGroupId: episodeGroupId ?? undefined,
-        });
-        await scanSeries(series.id);
-      }
+      await adoptCandidate({
+        // A series/anime scan can surface a movie (anime films in an anime root);
+        // legacy rows have no mediaKind and fall back to what the type implies.
+        mediaKind: row.mediaKind ?? (type === "movie" ? "movie" : "series"),
+        type,
+        tmdbId: row.suggestedTmdbId,
+        path: row.path,
+        videoPath: row.videoPath,
+        rootFolderId: row.rootFolderId,
+        qualityProfileId: row.qualityProfileId,
+        monitored: true,
+      });
 
       db.update(schema.scanCandidates)
         .set({ imported: true, error: null })

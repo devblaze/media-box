@@ -472,7 +472,11 @@ Browse/search titles from TMDB (and recently-added library items), annotated wit
 
   Categories: `trending` (default, mixed), `recently-added`, `search`, `popular-movies`/`movies-popular`, `movies-trending`, `movies-top`, `popular-series`/`series-popular`, `series-trending`, `series-top`, `anime-popular`, `anime-new`, `anime-top`, `anime-movies`. `series-*` feeds exclude anime; `anime-*` feeds include only anime.
 
-- **Response:** `200` — array of `DiscoverItem`: `{ tmdbId, mediaType, title, year, poster, posterPath, backdrop, isAnime, overview, status, mediaId }`. Errors: `400` (missing `q` for search); `401` (not signed in); `500`.
+  `search` lists **library** matches first (up to 20, matched on the title with punctuation and case ignored, so `spiderman` finds "Spider-Man"), then up to 20 TMDB movies and 20 TMDB series not already listed. Library matches come from the database, so they're returned even when TMDB is slow or unreachable; if one or both TMDB searches fail, the response carries whatever did succeed. It errors only when TMDB fails and the library has no match.
+
+  TMDB calls time out after 10 s, and search/list responses are cached server-side for 10 minutes.
+
+- **Response:** `200` — array of `DiscoverItem`: `{ tmdbId, mediaType, title, year, poster, posterPath, backdrop, isAnime, overview, status, mediaId }`. Errors: `400` (missing `q` for search); `401` (not signed in); `500` (TMDB failed, or timed out, with nothing to fall back on).
 - **Example:**
   ```bash
   curl -sS "$MEDIABOX_URL/api/v1/discover?category=movies-trending" -H "x-api-key: $MEDIABOX_API_KEY"

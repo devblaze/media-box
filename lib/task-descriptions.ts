@@ -14,14 +14,15 @@ export const TASK_DESCRIPTIONS: Record<string, string> = {
     "Polls your download clients (qBittorrent / TorBox) for progress, updates each download's status, and hands finished downloads off to be imported.",
   RefreshSeries:
     "Refreshes series metadata from TMDB — episode lists, air dates, status, and artwork.",
-  RefreshMovies:
-    "Refreshes movie metadata from TMDB — release dates, status, and artwork.",
+  RefreshMovies: "Refreshes movie metadata from TMDB — release dates, status, and artwork.",
   DiskScan:
     "Scans your library folders on disk for files added, moved, or removed outside media-box and reconciles them with the database.",
   Housekeeping:
     "Tidies the database: removes completed/failed command history older than a week and expired login sessions.",
   ChannelScheduler:
     "Keeps each Live TV channel's schedule filled ~12 hours ahead and grabs any missing upcoming programs.",
+  LibrarySync:
+    "Finds movies and series in your library folders that media-box doesn't know about yet — ones Jellyfin, an .nfo file, or the folder name identifies exactly — and adds them, unmonitored, with their files linked. Also re-links titles whose files sit in a different folder than recorded.",
   LibraryImportBatch:
     "Processes a batch of existing files during a Library Import — matches each to TMDB and adds it to your library.",
   FetchTorboxFiles:

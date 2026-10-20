@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/cn";
 import { useApi } from "@/lib/api";
 import { useEvents } from "@/lib/use-events";
-import { Input } from "@/components/ui";
+import { Input, Spinner } from "@/components/ui";
 import { HeroBillboard } from "./hero-billboard";
 import { NetflixRow } from "./netflix-row";
 import { TitleCard } from "./title-card";
@@ -55,8 +55,11 @@ export function NetflixBrowse({
   const searching = debounced.length > 0;
 
   // SWR keys are null when inactive, which disables the fetch.
+  // Keep the last results up while the next query loads, rather than blanking
+  // the grid on every keystroke; a failed search waits for Retry, not a loop.
   const search = useApi<DiscoverItem[]>(
-    searching ? `/discover?category=search&q=${encodeURIComponent(debounced)}` : null
+    searching ? `/discover?category=search&q=${encodeURIComponent(debounced)}` : null,
+    { keepPreviousData: true, revalidateOnFocus: false, shouldRetryOnError: false }
   );
   const heroFeed = useApi<DiscoverItem[]>(searching ? null : `/discover?category=${heroCategory}`);
   // The hero feed comes from TMDB. Without it (no API key, no internet) or with
@@ -92,7 +95,9 @@ export function NetflixBrowse({
         <SearchResults
           query={debounced}
           items={search.data}
+          loading={search.isLoading}
           error={search.error}
+          onRetry={() => void search.mutate()}
           availableOnly={availableOnly}
         />
       </div>
@@ -170,21 +175,34 @@ const TYPE_LABELS: Record<SearchType, string> = {
 function SearchResults({
   query,
   items,
+  loading,
   error,
+  onRetry,
   availableOnly,
 }: {
   query: string;
+  /** The latest results — the previous query's while this one loads. */
   items: DiscoverItem[] | undefined;
+  loading: boolean;
   error: unknown;
+  onRetry: () => void;
   availableOnly: boolean;
 }) {
   const [type, setType] = useState<SearchType>("all");
 
-  if (error) {
+  if (error && !loading) {
     return (
-      <p className="text-sm text-zinc-400">
-        Search is unavailable — a TMDB API key may be needed in Settings.
-      </p>
+      <div className="flex flex-col items-start gap-3 py-10">
+        <p className="text-lg font-semibold text-zinc-200">Search didn’t work</p>
+        <p className="max-w-xl text-sm text-zinc-400">{searchErrorText(error)}</p>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="rounded-full bg-white px-5 py-2 text-sm font-semibold text-black transition-colors hover:bg-white/85"
+        >
+          Try again
+        </button>
+      </div>
     );
   }
 
@@ -212,6 +230,7 @@ function SearchResults({
     return (
       <>
         {pills}
+        <SlowNotice />
         <div className={RESULTS_GRID}>
           {Array.from({ length: 8 }).map((_, i) => (
             <div key={i} className="aspect-video w-full animate-pulse rounded-xl bg-zinc-800/80" />
@@ -230,7 +249,9 @@ function SearchResults({
 
   return (
     <>
-      <h2 className="mb-4 text-2xl font-bold tracking-tight text-white">Results for “{query}”</h2>
+      <h2 className="mb-4 flex items-center gap-3 text-2xl font-bold tracking-tight text-white">
+        Results for “{query}”{loading && <Spinner className="size-5 text-zinc-400" />}
+      </h2>
       {pills}
       {filtered.length === 0 ? (
         <div className="py-10 text-zinc-400">
@@ -248,5 +269,28 @@ function SearchResults({
         </div>
       )}
     </>
+  );
+}
+
+/** What went wrong, with how to fix it when the server's message doesn't already say. */
+function searchErrorText(error: unknown): string {
+  const message = error instanceof Error && error.message ? error.message.replace(/\.?$/, ".") : "";
+  if (/TMDB API key/i.test(message)) return message;
+  return `${message || "The search service didn’t answer."} Searching online needs a TMDB API key (Manage → General) and a connection to TMDB — your own library is searched either way.`;
+}
+
+/** After a few seconds of placeholders, say what's going on instead of looking frozen. */
+function SlowNotice() {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setSlow(true), 5_000);
+    return () => clearTimeout(t);
+  }, []);
+  if (!slow) return null;
+  return (
+    <p className="mb-4 flex items-center gap-2 text-sm text-zinc-400">
+      <Spinner className="size-4" />
+      Still searching — TMDB is taking a while to answer.
+    </p>
   );
 }

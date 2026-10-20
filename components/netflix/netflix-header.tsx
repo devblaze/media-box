@@ -234,7 +234,7 @@ export function NetflixHeader() {
             media-box
           </Link>
 
-          <nav className="hidden items-center gap-1 text-sm lg:flex">
+          <nav className="hidden items-center gap-0.5 text-sm lg:flex xl:gap-1">
             {NAV.map((n) => {
               const active = isActive(pathname, n);
               return (
@@ -243,7 +243,7 @@ export function NetflixHeader() {
                   href={n.href}
                   aria-current={active ? "page" : undefined}
                   className={cn(
-                    "rounded-full px-3 py-1.5 font-medium transition-colors",
+                    "rounded-full px-2.5 py-1.5 font-medium whitespace-nowrap transition-colors xl:px-3",
                     active
                       ? "bg-white/15 text-white"
                       : "text-zinc-300 hover:bg-white/10 hover:text-white"
@@ -255,7 +255,7 @@ export function NetflixHeader() {
             })}
           </nav>
 
-          <div className="ml-auto flex items-center gap-2 md:gap-3">
+          <div className="ml-auto flex shrink-0 items-center gap-2 md:gap-3">
             {search && (
               <button
                 type="button"
@@ -263,7 +263,7 @@ export function NetflixHeader() {
                 aria-pressed={search.availableOnly}
                 title="Show only titles already in your library"
                 className={cn(
-                  "hidden items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors sm:inline-flex",
+                  "hidden shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium whitespace-nowrap transition-colors sm:inline-flex",
                   search.availableOnly
                     ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-300"
                     : "border-white/25 text-zinc-300 hover:bg-white/10"
@@ -325,7 +325,7 @@ export function NetflixHeader() {
                   className={cn(
                     "h-9 bg-transparent text-sm text-white outline-none transition-all duration-300 ease-out placeholder:text-zinc-500",
                     searchOpen
-                      ? "w-40 pl-1 opacity-100 sm:w-56"
+                      ? "w-40 pl-1 opacity-100 xl:w-56"
                       : "pointer-events-none w-0 opacity-0"
                   )}
                 />

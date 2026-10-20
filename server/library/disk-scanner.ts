@@ -6,33 +6,105 @@ import { parseTitle, parseQuality, parseReleaseGroup } from "@/server/parser/rel
 import { getQuality, type QualityModel } from "@/server/parser/quality";
 import { emitEvent } from "@/server/events/bus";
 
-export const VIDEO_EXTENSIONS = new Set([".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv"]);
-const MIN_VIDEO_SIZE = 50 * 1024 * 1024; // ignore samples/extras under 50 MB
+/** Containers that hold a film or an episode: what Jellyfin plays, less the obscure. */
+export const VIDEO_EXTENSIONS = new Set([
+  ".mkv",
+  ".mp4",
+  ".m4v",
+  ".avi",
+  ".ts",
+  ".m2ts",
+  ".mts",
+  ".wmv",
+  ".webm",
+  ".mov",
+  ".mpg",
+  ".mpeg",
+  ".ogm",
+  ".ogv",
+  ".divx",
+  ".flv",
+]);
+/**
+ * Below this a file is a clip, not an episode. Kept low on purpose: a 22-minute
+ * x265 anime episode can be 40 MB, and a size floor set for samples (the old
+ * 50 MB) quietly dropped whole series. Samples and extras are recognised by name
+ * instead (below).
+ */
+const MIN_VIDEO_SIZE = 10 * 1024 * 1024;
+/** Folders of bonus material (Jellyfin's and Plex's names for them), never episodes. */
+const EXTRAS_DIRS = new Set([
+  "sample",
+  "samples",
+  "extras",
+  "featurettes",
+  "behind the scenes",
+  "deleted scenes",
+  "interviews",
+  "trailers",
+]);
+/** Bonus material marked in the file name instead: Jellyfin's "-trailer"-style suffixes
+ *  (hyphen-joined only, so "Trailer Park Boys" is still a show), and any "sample". */
+const EXTRA_SUFFIX_RE =
+  /-(?:trailer|sample|scene|clip|interview|behindthescenes|featurette|short|other|extra|deleted)\d*$/i;
+const SAMPLE_RE = /\bsample\b/i;
 
+/**
+ * Every film or episode file under `root`, with its size. Follows symlinked
+ * folders (common on Unraid) but never the same real folder twice, so a link
+ * back up the tree can't loop.
+ */
 export async function walkVideoFiles(root: string): Promise<{ absPath: string; size: number }[]> {
   const results: { absPath: string; size: number }[] = [];
-  let entries;
-  try {
-    entries = await fs.readdir(root, { withFileTypes: true });
-  } catch {
-    return results; // folder missing/unreadable — skip quietly, health check reports separately
-  }
-  for (const entry of entries) {
-    const absPath = path.join(root, entry.name);
-    if (entry.isDirectory()) {
-      results.push(...(await walkVideoFiles(absPath)));
-    } else if (VIDEO_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
-      if (/\bsample\b/i.test(entry.name)) continue;
-      const stat = await fs.stat(absPath);
-      if (stat.size >= MIN_VIDEO_SIZE) results.push({ absPath, size: stat.size });
+  const seen = new Set<string>();
+
+  async function walk(dir: string): Promise<void> {
+    let real: string;
+    try {
+      real = await fs.realpath(dir);
+    } catch {
+      return; // folder missing/unreadable — skip quietly, the health check reports it
+    }
+    if (seen.has(real)) return;
+    seen.add(real);
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue; // .AppleDouble, .grab, @eaDir-style junk
+      const absPath = path.join(dir, entry.name);
+      let isDir = entry.isDirectory();
+      let isFile = entry.isFile();
+      if (entry.isSymbolicLink()) {
+        const target = await fs.stat(absPath).catch(() => null); // dangling → skip
+        isDir = target?.isDirectory() ?? false;
+        isFile = target?.isFile() ?? false;
+      }
+      if (isDir) {
+        if (!EXTRAS_DIRS.has(entry.name.toLowerCase())) await walk(absPath);
+        continue;
+      }
+      if (!isFile || !VIDEO_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+      const stem = path.basename(entry.name, path.extname(entry.name));
+      if (SAMPLE_RE.test(stem) || EXTRA_SUFFIX_RE.test(stem)) continue;
+      const stat = await fs.stat(absPath).catch(() => null);
+      if (stat && stat.size >= MIN_VIDEO_SIZE) results.push({ absPath, size: stat.size });
     }
   }
+
+  await walk(root);
   return results;
 }
 
 /** Lowercase, alphanumeric-only, single-spaced — for loose title comparison. */
 function normalizeTitleText(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 /**
@@ -104,10 +176,15 @@ export async function scanSeries(seriesId: number): Promise<number> {
   // really an absolute one. These two make that reading cheap.
   const seasonLengths = new Map<number, number>();
   for (const e of seriesEpisodes) {
-    seasonLengths.set(e.seasonNumber, Math.max(seasonLengths.get(e.seasonNumber) ?? 0, e.episodeNumber));
+    seasonLengths.set(
+      e.seasonNumber,
+      Math.max(seasonLengths.get(e.seasonNumber) ?? 0, e.episodeNumber)
+    );
   }
   const episodeByAbsolute = new Map(
-    seriesEpisodes.filter((e) => e.absoluteNumber != null).map((e) => [e.absoluteNumber!, e] as const)
+    seriesEpisodes
+      .filter((e) => e.absoluteNumber != null)
+      .map((e) => [e.absoluteNumber!, e] as const)
   );
   const taken = new Set<number>();
   const linkedFileIds = new Set<number>();
@@ -284,9 +361,14 @@ export async function scanMovie(movieId: number): Promise<number> {
     : null;
 
   if (existing) {
-    const stillThere = files.some((f) => path.relative(m.path, f.absPath) === existing.relativePath);
+    const stillThere = files.some(
+      (f) => path.relative(m.path, f.absPath) === existing.relativePath
+    );
     if (!stillThere) {
-      db.update(schema.movies).set({ movieFileId: null }).where(eq(schema.movies.id, movieId)).run();
+      db.update(schema.movies)
+        .set({ movieFileId: null })
+        .where(eq(schema.movies.id, movieId))
+        .run();
       db.delete(schema.movieFiles).where(eq(schema.movieFiles.id, existing.id)).run();
     } else {
       return 0;
@@ -314,7 +396,10 @@ export async function scanMovie(movieId: number): Promise<number> {
     })
     .returning({ id: schema.movieFiles.id })
     .get();
-  db.update(schema.movies).set({ movieFileId: fileRow.id }).where(eq(schema.movies.id, movieId)).run();
+  db.update(schema.movies)
+    .set({ movieFileId: fileRow.id })
+    .where(eq(schema.movies.id, movieId))
+    .run();
   emitEvent({ type: "movie.updated", movieId });
   return 1;
 }
@@ -356,7 +441,10 @@ export async function importMovieFileAt(movieId: number, videoAbsPath: string): 
     })
     .returning({ id: schema.movieFiles.id })
     .get();
-  db.update(schema.movies).set({ movieFileId: fileRow.id }).where(eq(schema.movies.id, movieId)).run();
+  db.update(schema.movies)
+    .set({ movieFileId: fileRow.id })
+    .where(eq(schema.movies.id, movieId))
+    .run();
   emitEvent({ type: "movie.updated", movieId });
   return 1;
 }
@@ -388,7 +476,11 @@ export async function addMovieFileVersion(
   if (existing.some((f) => f.relativePath === relativePath)) {
     return { added: false, reason: "file already imported" };
   }
-  if (existing.some((f) => getQuality((f.quality as QualityModel)?.qualityId ?? 0).resolution === newRes)) {
+  if (
+    existing.some(
+      (f) => getQuality((f.quality as QualityModel)?.qualityId ?? 0).resolution === newRes
+    )
+  ) {
     return { added: false, reason: `a ${newRes || "same"}p version already exists` };
   }
 
@@ -419,7 +511,10 @@ export async function addMovieFileVersion(
       ).resolution
     : -1;
   if (!m.movieFileId || newRes > primaryRes) {
-    db.update(schema.movies).set({ movieFileId: fileRow.id }).where(eq(schema.movies.id, movieId)).run();
+    db.update(schema.movies)
+      .set({ movieFileId: fileRow.id })
+      .where(eq(schema.movies.id, movieId))
+      .run();
   }
   emitEvent({ type: "movie.updated", movieId });
   return { added: true };

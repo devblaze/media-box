@@ -1,4 +1,5 @@
 import { getSettings } from "@/server/settings/settings-service";
+import { isBackground } from "@/server/jobs/background";
 
 const BASE = "https://api.themoviedb.org/3";
 export const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
@@ -6,6 +7,14 @@ export const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
 // Token bucket: TMDB allows ~40 requests per 10 seconds; stay under it.
 const BUCKET_SIZE = 35;
 const REFILL_MS = 10_000;
+/**
+ * Tokens background jobs leave for people. A library refresh or sync can run for
+ * many minutes at the full rate; without a reserve, a search typed meanwhile
+ * queues behind it and the page sits on placeholders.
+ */
+const INTERACTIVE_RESERVE = 10;
+/** A TMDB call that hasn't answered by now has failed; say so rather than hang. */
+const TMDB_TIMEOUT_MS = 10_000;
 
 const LIMITER_KEY = Symbol.for("mediabox.tmdbLimiter");
 type Limiter = { tokens: number; lastRefill: number; waiters: (() => void)[] };
@@ -13,19 +22,21 @@ type GlobalWithLimiter = typeof globalThis & { [LIMITER_KEY]?: Limiter };
 
 function getLimiter(): Limiter {
   const g = globalThis as GlobalWithLimiter;
-  if (!g[LIMITER_KEY]) g[LIMITER_KEY] = { tokens: BUCKET_SIZE, lastRefill: Date.now(), waiters: [] };
+  if (!g[LIMITER_KEY])
+    g[LIMITER_KEY] = { tokens: BUCKET_SIZE, lastRefill: Date.now(), waiters: [] };
   return g[LIMITER_KEY];
 }
 
 async function takeToken(): Promise<void> {
   const limiter = getLimiter();
+  const floor = isBackground() ? INTERACTIVE_RESERVE : 0;
   for (;;) {
     const now = Date.now();
     if (now - limiter.lastRefill >= REFILL_MS) {
       limiter.tokens = BUCKET_SIZE;
       limiter.lastRefill = now;
     }
-    if (limiter.tokens > 0) {
+    if (limiter.tokens > floor) {
       limiter.tokens--;
       return;
     }
@@ -42,16 +53,66 @@ export class TmdbError extends Error {
   }
 }
 
-export async function tmdb<T>(path: string, params: Record<string, string | number> = {}): Promise<T> {
+// ---- response cache for browse/search calls ----
+// Searches, lists and per-title extras are what pages ask for again and again
+// (every visit to Home, every keystroke that lands on a query typed before). A
+// few minutes' cache answers those instantly and keeps them off the rate limit.
+// Title details aren't cached: the refresh jobs exist to see them change.
+const CACHEABLE_RE =
+  /^\/(?:search|trending|discover)\/|^\/(?:movie|tv)\/(?:popular|top_rated)$|\/(?:recommendations|images|credits|aggregate_credits)$/;
+const CACHE_TTL_MS = 10 * 60_000;
+const CACHE_MAX = 300;
+const CACHE_KEY = Symbol.for("mediabox.tmdbCache");
+type GlobalWithCache = typeof globalThis & {
+  [CACHE_KEY]?: Map<string, { at: number; value: unknown }>;
+};
+
+function responseCache(): Map<string, { at: number; value: unknown }> {
+  const g = globalThis as GlobalWithCache;
+  g[CACHE_KEY] ??= new Map();
+  return g[CACHE_KEY];
+}
+
+export async function tmdb<T>(
+  path: string,
+  params: Record<string, string | number> = {}
+): Promise<T> {
   const { tmdbApiKey } = getSettings();
   if (!tmdbApiKey) throw new TmdbError("TMDB API key is not configured (Settings → General)");
+
+  const cacheKey = CACHEABLE_RE.test(path)
+    ? `${path}?${new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]))}`
+    : null;
+  const cache = responseCache();
+  if (cacheKey) {
+    const hit = cache.get(cacheKey);
+    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value as T;
+  }
+
   await takeToken();
   const url = new URL(`${BASE}${path}`);
   url.searchParams.set("api_key", tmdbApiKey);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
-  const res = await fetch(url, { cache: "no-store" });
+  let res: Response;
+  try {
+    res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(TMDB_TIMEOUT_MS) });
+  } catch (err) {
+    const timedOut = err instanceof Error && err.name === "TimeoutError";
+    throw new TmdbError(
+      timedOut
+        ? `TMDB didn't answer within ${TMDB_TIMEOUT_MS / 1000} s`
+        : `Could not reach TMDB: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
   if (!res.ok) throw new TmdbError(`TMDB ${path} responded ${res.status}`, res.status);
-  return res.json() as Promise<T>;
+  const value = (await res.json()) as T;
+
+  if (cacheKey) {
+    cache.delete(cacheKey); // re-insert at the end: Map order is the eviction order
+    cache.set(cacheKey, { at: Date.now(), value });
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value!);
+  }
+  return value;
 }
 
 // ---------- typed endpoints ----------
@@ -236,11 +297,9 @@ export interface TmdbTrendingItem {
 }
 
 /** Trending movies + TV for the week (mixed; `person` results are filtered by callers). */
-export const getTrending = () =>
-  tmdb<TmdbSearchResult<TmdbTrendingItem>>("/trending/all/week");
+export const getTrending = () => tmdb<TmdbSearchResult<TmdbTrendingItem>>("/trending/all/week");
 
-export const getPopularMovies = () =>
-  tmdb<TmdbSearchResult<TmdbMovieSummary>>("/movie/popular");
+export const getPopularMovies = () => tmdb<TmdbSearchResult<TmdbMovieSummary>>("/movie/popular");
 
 export const getPopularTv = () => tmdb<TmdbSearchResult<TmdbTvSummary>>("/tv/popular");
 
@@ -249,8 +308,7 @@ export const getTrendingMovies = () =>
 
 export const getTrendingTv = () => tmdb<TmdbSearchResult<TmdbTvSummary>>("/trending/tv/week");
 
-export const getTopRatedMovies = () =>
-  tmdb<TmdbSearchResult<TmdbMovieSummary>>("/movie/top_rated");
+export const getTopRatedMovies = () => tmdb<TmdbSearchResult<TmdbMovieSummary>>("/movie/top_rated");
 
 export const getTopRatedTv = () => tmdb<TmdbSearchResult<TmdbTvSummary>>("/tv/top_rated");
 
@@ -299,7 +357,9 @@ export function logoUrl(path: string | null | undefined, size = "w500"): string 
 export function pickLogo(images: TmdbImages): string | null {
   const logos = images.logos ?? [];
   if (logos.length === 0) return null;
-  const en = logos.filter((l) => l.iso_639_1 === "en").sort((a, b) => (b.width ?? 0) - (a.width ?? 0));
+  const en = logos
+    .filter((l) => l.iso_639_1 === "en")
+    .sort((a, b) => (b.width ?? 0) - (a.width ?? 0));
   const chosen = en[0] ?? logos[0];
   return logoUrl(chosen.file_path);
 }
@@ -321,7 +381,8 @@ export interface TmdbCredits {
 
 export const getMovieCredits = (id: number) => tmdb<TmdbCredits>(`/movie/${id}/credits`);
 /** Aggregate credits surface anime voice actors + per-character roles across seasons. */
-export const getTvAggregateCredits = (id: number) => tmdb<TmdbCredits>(`/tv/${id}/aggregate_credits`);
+export const getTvAggregateCredits = (id: number) =>
+  tmdb<TmdbCredits>(`/tv/${id}/aggregate_credits`);
 
 export function profileUrl(path: string | null | undefined, size = "w185"): string | null {
   return path ? `${TMDB_IMAGE_BASE}/${size}${path}` : null;
