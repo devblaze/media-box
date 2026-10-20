@@ -4,15 +4,24 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { DEFAULT_TRANSCODE_QUALITY } from "@/lib/transcode-quality";
-import { ensureSegment, stopSession, type Session } from "./session-manager";
+import { ensureSegment, stopSession, throttleSession, type Session } from "./session-manager";
 
 // No real ffmpeg: record each spawn's argv and hand back an inert process. A test
 // "encodes" a segment by writing its file.
-const { spawned } = vi.hoisted(() => ({ spawned: [] as string[][] }));
+const { spawned, signals } = vi.hoisted(() => ({
+  spawned: [] as string[][],
+  signals: [] as string[],
+}));
 vi.mock("node:child_process", () => ({
   spawn: vi.fn((_bin: string, args: string[]) => {
     spawned.push(args);
-    const proc = Object.assign(new EventEmitter(), { kill: () => true, stderr: new EventEmitter() });
+    const proc = Object.assign(new EventEmitter(), {
+      kill: (signal?: string) => {
+        signals.push(signal ?? "SIGTERM");
+        return true;
+      },
+      stderr: new EventEmitter(),
+    });
     return proc;
   }),
   execFile: vi.fn(),
@@ -30,6 +39,7 @@ const made: Session[] = [];
 
 beforeEach(() => {
   spawned.length = 0;
+  signals.length = 0;
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "mediabox-seek-"));
 });
 afterEach(() => {
@@ -185,5 +195,63 @@ describe("ensureSegment under seeking", () => {
     expect(spawned).toHaveLength(0);
     gone.abort();
     await p;
+  });
+});
+
+describe("throttling", () => {
+  /** A running session whose (fake) ffmpeg has written `upTo`, started at 0. */
+  function running(upTo: number): Session {
+    const proc = Object.assign(new EventEmitter(), {
+      kill: (signal?: string) => {
+        signals.push(signal ?? "SIGTERM");
+        return true;
+      },
+    });
+    const s = session({ proc: proc as unknown as Session["proc"], runStartedAt: Date.now() - 60_000 });
+    for (let i = 0; i <= upTo; i++) write(i);
+    return s;
+  }
+
+  test("pauses an encoder far ahead of the player, wakes it as the player catches up", () => {
+    const s = running(60);
+    s.lastRequestedSeg = 10; // 50 segments (200 s) ahead
+    throttleSession(s);
+    expect(signals).toEqual(["SIGSTOP"]);
+    expect(s.paused).toBe(true);
+
+    s.lastRequestedSeg = 30; // still 30 ahead: stays paused
+    throttleSession(s);
+    expect(signals).toEqual(["SIGSTOP"]);
+
+    s.lastRequestedSeg = 40; // 20 ahead: back to work
+    throttleSession(s);
+    expect(signals).toEqual(["SIGSTOP", "SIGCONT"]);
+    expect(s.paused).toBe(false);
+  });
+
+  test("a request just past a paused encoder's frontier wakes it at once", async () => {
+    const s = running(60);
+    s.lastRequestedSeg = 5;
+    throttleSession(s);
+    expect(s.paused).toBe(true);
+
+    const p = ensureSegment(s, 62);
+    expect(signals).toEqual(["SIGSTOP", "SIGCONT"]);
+    write(62);
+    expect(await p).toBe(true);
+    expect(spawned).toHaveLength(0); // woken, not restarted
+  });
+
+  test("time spent paused doesn't make the encoder look slow", async () => {
+    // Twenty segments in 60 s of wall time, 50 s of it paused: it encodes at
+    // 2 segments/s, so 6 ahead is a 3 s wait — no restart. (Counted against
+    // all 60 s it would look like 1 segment every 3 s: an 18 s wait, a restart.)
+    const s = running(19);
+    s.pausedMs = 50_000;
+    const p = ensureSegment(s, 25);
+    await sleep(SETTLE_MS);
+    expect(spawned).toHaveLength(0);
+    write(25);
+    expect(await p).toBe(true);
   });
 });

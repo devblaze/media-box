@@ -534,7 +534,7 @@ export default function GeneralSettingsPage() {
           <Field
             label="RAM usage"
             htmlFor="ram-usage-mode"
-            description="How much RAM the streaming cache may take. Unlimited grows on demand into whatever the system has free (a safety headroom is always kept); a Docker memory limit still caps the container."
+            description="How much RAM the streaming cache may take. Unlimited grows on demand into what the system has free. Either way it never takes more than 40% of RAM (or of the container's memory limit) and always leaves a safety margin."
           >
             <Select
               id="ram-usage-mode"
@@ -552,7 +552,7 @@ export default function GeneralSettingsPage() {
             description={
               ramUsageMode === "unlimited"
                 ? "Ignored while RAM usage is Unlimited."
-                : "Read-ahead buffer for direct play. On HDD arrays (Unraid) the prefetcher stays a full budget ahead of playback — set it larger than a typical movie to keep whole files in RAM. 0 disables it."
+                : "RAM kept for direct play. The prefetcher reads up to 1 GiB ahead of playback (enough to ride out a disk spinning up), and what's been read stays cached up to this size, so jumping back is instant. 0 disables it."
             }
           >
             <Input

@@ -3,12 +3,7 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { getSettings } from "@/server/settings/settings-service";
-import {
-  fileIdentity,
-  getStreamCache,
-  unlimitedBudgetBytes,
-  type CachedFile,
-} from "./stream-cache";
+import { fileIdentity, getStreamCache, safeBudgetBytes, type CachedFile } from "./stream-cache";
 
 /**
  * Fallback chunk size when the RAM cache is disabled. Node's 64 KiB default
@@ -44,12 +39,14 @@ function toWebStream(nodeStream: Readable): ReadableStream {
 function bodyFor(file: CachedFile, start: number, end: number): ReadableStream {
   const settings = getSettings();
   const cache = getStreamCache();
-  // "unlimited" RAM mode: the budget tracks free system memory on demand, so
-  // the cache grows into whatever RAM exists and shrinks under pressure.
-  const budgetBytes =
+  // "unlimited" asks for all the room there is; either way the budget is held
+  // under a ceiling (a share of RAM, a safety headroom, the container's limit),
+  // so no setting can let one movie take the machine's memory.
+  const requested =
     settings.ramUsageMode === "unlimited"
-      ? unlimitedBudgetBytes(cache.stats().totalBytes)
+      ? Number.POSITIVE_INFINITY
       : settings.streamRamCacheMb * 1024 * 1024;
+  const budgetBytes = requested > 0 ? safeBudgetBytes(requested, cache.stats().totalBytes) : 0;
   if (budgetBytes > 0) return cache.body(file, start, end, budgetBytes);
   return toWebStream(
     createReadStream(file.absPath, { start, end, highWaterMark: FALLBACK_HIGH_WATER_MARK })
