@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
@@ -38,6 +39,23 @@ const AHEAD_SEGMENTS = 12;
 const MAX_CATCH_UP_SEC = 4;
 /** Segments a run must have written before its pace is trusted for that guess. */
 const PACE_MIN_SEGMENTS = 3;
+/**
+ * Throttling, as Jellyfin does it. Left alone, ffmpeg encodes the whole film as
+ * fast as the machine allows — for a 4K source, every core flat out for most of
+ * an hour, however little of it anyone watches, and on a NAS that starves
+ * everything else (Unraid's shfs, its web UI, other containers). So the encoder
+ * is paused (SIGSTOP) once it is this many segments — 3 minutes — past the last
+ * one a player asked for…
+ */
+const THROTTLE_PAUSE_AHEAD = 45;
+/** …and woken (SIGCONT) when the player is back within this many (100 s). */
+const THROTTLE_RESUME_AHEAD = 25;
+const THROTTLE_TICK_MS = 2_000;
+/**
+ * ffmpeg's CPU priority (nice). It still gets every idle cycle, but the host's
+ * own work — the array, the UI, other services — comes first.
+ */
+const ENCODER_NICE = 10;
 /** How long a segment request waits for its file before giving up. */
 const SEGMENT_WAIT_MS = 20_000;
 const SEGMENT_POLL_MS = 120;
@@ -78,6 +96,14 @@ export interface Session {
   /** A seek restart waiting out {@link RESTART_DEBOUNCE_MS}: where ffmpeg will
    *  start, and how many live requests still want it there. */
   pendingRestart?: { segIndex: number; wanted: number; timer: ReturnType<typeof setTimeout> } | null;
+  /** The segment a player asked for last: where playback is, give or take its buffer. */
+  lastRequestedSeg?: number;
+  /** ffmpeg is stopped (SIGSTOP) because it was far enough ahead of the player. */
+  paused?: boolean;
+  /** ms epoch the current pause began. */
+  pausedAt?: number;
+  /** Time the current run has spent paused, which doesn't count against its pace. */
+  pausedMs?: number;
 }
 
 export interface StartOpts {
@@ -555,7 +581,9 @@ function producedFrontier(session: Session): number {
  */
 function catchUpSeconds(session: Session, segmentsAhead: number): number {
   const written = session.runFrontier - session.encoderStart + 1;
-  const elapsedSec = (Date.now() - session.runStartedAt) / 1000;
+  const now = Date.now();
+  const pausedMs = (session.pausedMs ?? 0) + (session.paused ? now - (session.pausedAt ?? now) : 0);
+  const elapsedSec = (now - session.runStartedAt - pausedMs) / 1000;
   if (written < PACE_MIN_SEGMENTS || elapsedSec <= 0) return 0;
   return segmentsAhead / (written / elapsedSec);
 }
@@ -578,11 +606,20 @@ function spawnEncoder(session: Session, startSegment: number): void {
   );
 
   const proc = spawn(FFMPEG_BIN, args, { stdio: ["ignore", "ignore", "pipe"] });
+  if (proc.pid) {
+    try {
+      os.setPriority(proc.pid, ENCODER_NICE);
+    } catch {
+      // Not permitted here; it runs at normal priority.
+    }
+  }
   session.proc = proc;
   session.encoderStart = startSegment;
   session.runStartedAt = Date.now();
   session.runFrontier = startSegment - 1;
   session.status = "running";
+  session.paused = false;
+  session.pausedMs = 0;
 
   let stderrTail = "";
   proc.stderr?.on("data", (chunk: Buffer) => {
@@ -609,6 +646,41 @@ function spawnEncoder(session: Session, startSegment: number): void {
       });
     }
   });
+}
+
+/** Stop the encoder where it is (SIGSTOP): it holds its place and costs no CPU. */
+function pauseEncoder(session: Session): void {
+  if (session.paused || !session.proc) return;
+  try {
+    if (!session.proc.kill("SIGSTOP")) return;
+  } catch {
+    return;
+  }
+  session.paused = true;
+  session.pausedAt = Date.now();
+}
+
+/** Let a paused encoder carry on (SIGCONT). */
+function resumeEncoder(session: Session): void {
+  if (!session.paused) return;
+  session.paused = false;
+  session.pausedMs = (session.pausedMs ?? 0) + Date.now() - (session.pausedAt ?? Date.now());
+  try {
+    session.proc?.kill("SIGCONT");
+  } catch {
+    // already gone
+  }
+}
+
+/**
+ * Pause or wake the encoder by how far it is ahead of the player (see
+ * {@link THROTTLE_PAUSE_AHEAD}). Exported for tests; the throttle tick runs it.
+ */
+export function throttleSession(session: Session): void {
+  if (!session.proc || session.status !== "running" || session.pendingRestart) return;
+  const ahead = producedFrontier(session) - (session.lastRequestedSeg ?? session.encoderStart);
+  if (!session.paused && ahead >= THROTTLE_PAUSE_AHEAD) pauseEncoder(session);
+  else if (session.paused && ahead < THROTTLE_RESUME_AHEAD) resumeEncoder(session);
 }
 
 /**
@@ -677,6 +749,7 @@ export async function ensureSegment(
   signal?: AbortSignal
 ): Promise<boolean> {
   const file = path.join(session.dir, segName(segIndex));
+  session.lastRequestedSeg = segIndex;
   // Synchronous from here to the decision, so two requests arriving together
   // can't both read the same state and both restart ffmpeg.
   if (fs.existsSync(file)) return true;
@@ -701,7 +774,11 @@ export async function ensureSegment(
   if (!reachesSoon) {
     requestRestart(session, segIndex);
     counting = segIndex;
-  } else if (pending) {
+  } else if (!pending) {
+    // The player has caught up with a throttled encoder: wake it now rather than
+    // on the next tick.
+    resumeEncoder(session);
+  } else {
     pending.wanted += 1;
     counting = pending.segIndex;
   }
@@ -750,6 +827,7 @@ export async function startSession(absPath: string, opts: StartOpts = {}): Promi
   if (!(await ffmpegAvailable())) throw new FfmpegMissingError();
 
   ensureReaper();
+  ensureThrottle();
 
   // No explicit track chosen → transcode the file's DEFAULT audio track (what a
   // browser would play in direct play), not blindly the first one. On dual-audio
@@ -839,6 +917,25 @@ function reap(): void {
       stopSession(s.id);
     }
   }
+}
+
+const THROTTLE_KEY = Symbol.for("mediabox.transcode.throttle");
+
+/** Create the single throttle interval (once per process). */
+function ensureThrottle(): void {
+  const g = globalThis as typeof globalThis & { [THROTTLE_KEY]?: boolean };
+  if (g[THROTTLE_KEY]) return;
+  g[THROTTLE_KEY] = true;
+  const interval = setInterval(() => {
+    for (const s of sessions().values()) {
+      try {
+        throttleSession(s);
+      } catch (err) {
+        console.error("[transcode] throttle failed:", err);
+      }
+    }
+  }, THROTTLE_TICK_MS);
+  interval.unref();
 }
 
 /** Create the single idle-reaper interval (once per process). */

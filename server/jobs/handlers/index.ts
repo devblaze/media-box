@@ -10,6 +10,7 @@ import { wantedSearchHandler } from "./wanted-search";
 import { rssSyncHandler } from "./rss-sync";
 import { subtitleSearchHandler } from "./subtitle-search";
 import { libraryImportBatchHandler } from "./library-import-batch";
+import { librarySyncHandler } from "./library-sync";
 import { channelSchedulerHandler } from "./channel-scheduler";
 import { importDownload } from "@/server/library/importer";
 
@@ -22,6 +23,7 @@ registerHandler("WantedSearch", wantedSearchHandler);
 registerHandler("SubtitleSearch", subtitleSearchHandler);
 registerHandler("QueueMonitor", queueMonitorHandler, "monitor");
 registerHandler("LibraryImportBatch", libraryImportBatchHandler);
+registerHandler("LibrarySync", librarySyncHandler);
 registerHandler("JellyfinSync", async () => {
   const { syncAllUsers } = await import("@/server/jellyfin/jellyfin-sync");
   return syncAllUsers();

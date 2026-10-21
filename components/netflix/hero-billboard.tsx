@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { apiFetch, ApiError } from "@/lib/api";
-import { useToast } from "@/components/ui";
-import { VideoPlayerModal } from "@/components/media-player";
+import { apiFetch } from "@/lib/api";
+import { Spinner } from "@/components/ui";
+import { useInstantPlay } from "./instant-play";
+import { detailHrefFor, useRequestTitle } from "./use-request-title";
 // Type-only import: the route is a server module, erased from the client bundle.
 import type { DiscoverItem } from "@/app/api/v1/discover/route";
 
@@ -70,7 +71,7 @@ export function HeroBillboard({ items }: { items: DiscoverItem[] }) {
 
       {/* Dot indicators, clickable to jump to a title. */}
       {items.length > 1 && (
-        <div className="absolute bottom-28 right-4 z-10 flex items-center gap-2 md:bottom-36 md:right-12">
+        <div className="absolute right-4 bottom-28 z-10 hidden items-center gap-2 sm:flex md:bottom-36 md:right-12">
           {items.map((it, i) => (
             <button
               key={`${it.mediaType}-${it.tmdbId}`}
@@ -92,16 +93,14 @@ export function HeroBillboard({ items }: { items: DiscoverItem[] }) {
 
 /**
  * The bottom-left content for one hero title: branded logo (fetched per tmdbId,
- * falling back to text), meta, overview, and the Play/Request/More Info actions.
- * Mounted with a fresh key per title, so `status`, `logo`, `requesting`, and
- * `playing` all re-initialize for the shown item. Actions mirror PosterCard's
- * availability logic.
+ * falling back to text), meta, overview, and the Play / Request / Details
+ * actions. Play starts the title right here — a series at the episode that's next
+ * for this viewer. Mounted with a fresh key per title, so status, logo and the
+ * player all re-initialize for the shown item.
  */
 function HeroContent({ item }: { item: DiscoverItem }) {
-  const toast = useToast();
-  const [status, setStatus] = useState(item.status);
-  const [requesting, setRequesting] = useState(false);
-  const [playing, setPlaying] = useState(false);
+  const { status, requesting, request } = useRequestTitle(item);
+  const { play, starting, player } = useInstantPlay();
   // Branded title-logo (transparent PNG) fetched on mount; falls back to text.
   const [logo, setLogo] = useState<string | null>(null);
   // Fade the text in on mount so each rotation swap is a soft cross-fade.
@@ -127,48 +126,18 @@ function HeroContent({ item }: { item: DiscoverItem }) {
     };
   }, [item.mediaType, item.tmdbId]);
 
-  const detailHref =
-    item.mediaId != null
-      ? item.mediaType === "movie"
-        ? `/movies/${item.mediaId}`
-        : `/series/${item.mediaId}`
-      : null;
-
-  const canPlayMovie = status === "available" && item.mediaType === "movie" && item.mediaId != null;
-  const canWatchSeries = status === "available" && item.mediaType === "series" && detailHref != null;
+  const detailHref = detailHrefFor(item);
+  const playable = status === "available" && item.mediaId != null;
 
   const availabilityLabel =
-    status === "available" ? "In your library" : status === "requested" ? "Requested" : "Not in library";
+    status === "available"
+      ? "Ready to watch"
+      : status === "requested"
+        ? "Requested"
+        : "Not in library";
 
-  async function request() {
-    setRequesting(true);
-    try {
-      const created = await apiFetch<{ status: string }>("/requests", {
-        method: "POST",
-        body: JSON.stringify({
-          mediaType: item.mediaType,
-          tmdbId: item.tmdbId,
-          title: item.title,
-          year: item.year,
-          posterPath: item.posterPath,
-        }),
-      });
-      setStatus("requested");
-      toast.success(created.status === "pending" ? "Requested" : "Added to your library");
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        setStatus("requested");
-        toast.info("Already requested");
-      } else {
-        toast.error(err instanceof Error ? err.message : "Request failed");
-      }
-    } finally {
-      setRequesting(false);
-    }
-  }
-
-  const playBtn =
-    "inline-flex items-center gap-2 rounded bg-white px-6 py-2 text-base font-semibold text-black transition-colors hover:bg-white/80";
+  const button =
+    "inline-flex h-12 items-center gap-2.5 rounded-full px-7 text-base font-semibold transition-all duration-200 active:scale-95";
 
   return (
     <>
@@ -219,49 +188,67 @@ function HeroContent({ item }: { item: DiscoverItem }) {
         )}
 
         <div className="mt-6 flex flex-wrap items-center gap-3">
-          {canPlayMovie && (
-            <button type="button" onClick={() => setPlaying(true)} className={playBtn}>
-              <span aria-hidden>▶</span> Play
+          {playable && (
+            <button
+              type="button"
+              onClick={() =>
+                void play({ mediaType: item.mediaType, mediaId: item.mediaId!, title: item.title })
+              }
+              disabled={starting}
+              className={`${button} bg-white text-black shadow-lg shadow-black/40 hover:bg-white/85 disabled:cursor-wait`}
+            >
+              {starting ? (
+                <Spinner className="size-5" />
+              ) : (
+                <svg viewBox="0 0 24 24" className="size-5" fill="currentColor" aria-hidden="true">
+                  <path d="M7 4.5v15a1 1 0 0 0 1.52.85l12-7.5a1 1 0 0 0 0-1.7l-12-7.5A1 1 0 0 0 7 4.5z" />
+                </svg>
+              )}
+              Play
             </button>
-          )}
-          {canWatchSeries && detailHref && (
-            <Link href={detailHref} className={playBtn}>
-              <span aria-hidden>▶</span> Play
-            </Link>
           )}
           {status === "unavailable" && (
             <button
               type="button"
               onClick={request}
               disabled={requesting}
-              className="inline-flex items-center gap-2 rounded bg-white/20 px-6 py-2 text-base font-semibold text-white backdrop-blur-sm transition-colors hover:bg-white/30 disabled:opacity-60"
+              className={`${button} bg-white/20 text-white ring-1 ring-white/30 backdrop-blur hover:bg-white/30 disabled:opacity-60`}
             >
-              <span aria-hidden>＋</span> Request
+              <span aria-hidden className="text-xl leading-none">
+                +
+              </span>
+              Request
             </button>
           )}
           {status === "requested" && (
-            <span className="inline-flex items-center gap-2 rounded bg-amber-500/20 px-6 py-2 text-base font-semibold text-amber-300">
+            <span className={`${button} bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/40`}>
               ✓ Requested
             </span>
           )}
           {detailHref && (
             <Link
               href={detailHref}
-              className="inline-flex items-center gap-2 rounded bg-zinc-500/40 px-6 py-2 text-base font-semibold text-white backdrop-blur-sm transition-colors hover:bg-zinc-500/30"
+              className={`${button} bg-zinc-500/40 text-white ring-1 ring-white/15 backdrop-blur hover:bg-zinc-500/55`}
             >
-              <span aria-hidden>ⓘ</span> More Info
+              <svg
+                viewBox="0 0 24 24"
+                className="size-5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 11v5M12 8h.01" />
+              </svg>
+              Details
             </Link>
           )}
         </div>
       </div>
 
-      {playing && item.mediaId != null && (
-        <VideoPlayerModal
-          target={{ type: "movie", id: item.mediaId }}
-          title={item.title}
-          onClose={() => setPlaying(false)}
-        />
-      )}
+      {player}
     </>
   );
 }

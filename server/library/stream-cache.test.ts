@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { StreamCache, computeUnlimitedBudget, fileIdentity } from "./stream-cache";
+import { StreamCache, computeSafeBudget, fileIdentity } from "./stream-cache";
 
 const CHUNK = 1024; // tiny chunks so tests cross boundaries cheaply
 
@@ -135,24 +135,47 @@ describe("prefetch", () => {
   });
 });
 
-describe("computeUnlimitedBudget", () => {
-  const GiB = 1024 * 1024 * 1024;
+describe("read-ahead window", () => {
+  it("reads only the window ahead, however big the budget", async () => {
+    const cache = new StreamCache(CHUNK, 3 * CHUNK);
+    cache.notePosition(identity(), 0, 100 * CHUNK);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(cache.stats().chunkCount).toBe(3);
+  });
+});
 
-  it("grants free memory minus the 1 GiB headroom on small boxes", () => {
-    expect(computeUnlimitedBudget(4 * GiB, 8 * GiB, 0)).toBe(3 * GiB);
+describe("computeSafeBudget", () => {
+  const GiB = 1024 * 1024 * 1024;
+  const box = (totalGiB: number, freeGiB: number, heldGiB = 0) => ({
+    totalBytes: totalGiB * GiB,
+    freeBytes: freeGiB * GiB,
+    heldBytes: heldGiB * GiB,
+    cgroup: null,
   });
 
-  it("uses a 10% headroom on big boxes", () => {
-    // 64 GiB total -> headroom 6.4 GiB (> 1 GiB floor), floored to whole bytes.
-    expect(computeUnlimitedBudget(32 * GiB, 64 * GiB, 0)).toBe(32 * GiB - Math.floor(6.4 * GiB));
+  it("gives a capped request what it asks when there's room", () => {
+    expect(computeSafeBudget(2 * GiB, box(32, 20))).toBe(2 * GiB);
+  });
+
+  it("never lets any setting take more than 40% of RAM", () => {
+    // "Unlimited", or a 100 GB budget set to keep 4K remuxes in RAM.
+    expect(computeSafeBudget(Infinity, box(32, 28))).toBe(Math.floor(32 * GiB * 0.4));
+    expect(computeSafeBudget(100 * GiB, box(32, 28))).toBe(Math.floor(32 * GiB * 0.4));
+  });
+
+  it("keeps out of the safety headroom under memory pressure", () => {
+    // 8 GiB box, 1.5 GiB free: room is 1.5 - 1 (headroom floor) = 0.5 GiB.
+    expect(computeSafeBudget(4 * GiB, box(8, 1.5))).toBe(0.5 * GiB);
+    expect(computeSafeBudget(4 * GiB, box(8, 0))).toBe(0);
   });
 
   it("counts bytes the cache already holds as available to it", () => {
-    // Nearly all RAM used, but 3 GiB of it is ours — eviction can reclaim it.
-    expect(computeUnlimitedBudget(0.5 * GiB, 8 * GiB, 3 * GiB)).toBe(2.5 * GiB);
+    expect(computeSafeBudget(Infinity, box(8, 0.5, 3))).toBe(2.5 * GiB);
   });
 
-  it("never goes negative under memory pressure", () => {
-    expect(computeUnlimitedBudget(0, 8 * GiB, 0)).toBe(0);
+  it("measures against a container's memory limit, not the host's free RAM", () => {
+    // Host has 50 GiB free; the container may use 4 GiB and already uses 2.5.
+    const mem = { ...box(64, 50), cgroup: { limitBytes: 4 * GiB, usageBytes: 2.5 * GiB } };
+    expect(computeSafeBudget(Infinity, mem)).toBe(0.5 * GiB);
   });
 });

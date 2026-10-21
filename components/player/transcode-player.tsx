@@ -46,6 +46,8 @@ const SEEK_STALL_GRACE_MS = 15_000;
  * seeks otherwise leaves hls.js on its retry schedule, with the picture frozen.
  */
 const STUCK_RELOAD_MS = 10_000;
+/** How often an open player tells the server its session is still wanted. */
+const SESSION_KEEPALIVE_MS = 30_000;
 /** Fatal hls.js errors in a row (no fragment landing between) before giving up. */
 const MAX_CONSECUTIVE_FATAL = 6;
 
@@ -137,6 +139,7 @@ export function TranscodePlayer({
     let cancelled = false;
     let hls: HlsInstance | null = null;
     let sessionId: string | null = null;
+    let keepAlive: number | null = null;
     const el = videoRef.current;
     if (!el) return;
     const video: HTMLVideoElement = el; // narrowed for the hoisted helpers below
@@ -292,6 +295,13 @@ export function TranscodePlayer({
           }),
         });
         sessionId = res.sessionId; // capture before any early return so cleanup can DELETE it
+        // The server reaps a session nobody has asked anything of for 90 s. A
+        // paused player with a full buffer asks nothing, so without this a long
+        // pause came back to a dead stream. (A paused session costs nothing: the
+        // server has throttled its encoder to a stop by then.)
+        keepAlive = window.setInterval(() => {
+          void fetch(res.url, { cache: "no-store" }).catch(() => {});
+        }, SESSION_KEEPALIVE_MS);
         // A seekable (VOD) transcode spans the WHOLE runtime, so the element's 0:00
         // is the film's 0:00: no base offset, and the playhead is placed at
         // `startSec` like direct play. The legacy event-playlist fallback (runtime
@@ -347,6 +357,7 @@ export function TranscodePlayer({
     return () => {
       cancelled = true;
       window.clearInterval(watchdog);
+      if (keepAlive) window.clearInterval(keepAlive);
       video.removeEventListener("seeking", onSeeking);
       hls?.destroy();
       if (sessionId) {

@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray, lt, sql } from "drizzle-orm";
 import { getDb, schema } from "@/server/db";
 import { emitEvent } from "@/server/events/bus";
+import { runInBackground } from "./background";
 
 export type CommandHandler = (payload: unknown) => Promise<string | void>;
 
@@ -45,6 +46,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDef[] = [
   { name: "RefreshSeries", intervalMinutes: 720 },
   { name: "RefreshMovies", intervalMinutes: 720 },
   { name: "DiskScan", intervalMinutes: 720 },
+  { name: "LibrarySync", intervalMinutes: 360 },
   { name: "Housekeeping", intervalMinutes: 1440 },
   { name: "ChannelScheduler", intervalMinutes: 1 },
   { name: "JellyfinSync", intervalMinutes: 30 },
@@ -104,7 +106,7 @@ async function runCommand(cmd: { id: number; name: string; payload: unknown }) {
   const started = Date.now();
   try {
     if (!def) throw new Error(`No handler registered for command '${cmd.name}'`);
-    const result = await def.handler(cmd.payload);
+    const result = await runInBackground(async () => def.handler(cmd.payload));
     db.update(schema.commands)
       .set({ status: "completed", endedAt: new Date(), result: result ?? "ok" })
       .where(eq(schema.commands.id, cmd.id))

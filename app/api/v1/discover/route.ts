@@ -117,7 +117,9 @@ function fromTrending(r: TmdbTrendingItem): BaseItem | null {
 
 /** Attach library availability to a set of TMDB titles. */
 function annotate(base: BaseItem[]): DiscoverItem[] {
-  const avail = annotateAvailability(base.map((b) => ({ tmdbId: b.tmdbId, mediaType: b.mediaType })));
+  const avail = annotateAvailability(
+    base.map((b) => ({ tmdbId: b.tmdbId, mediaType: b.mediaType }))
+  );
   return base.map((b) => {
     const a = avail.get(availabilityKey(b.mediaType, b.tmdbId));
     // For a series already in the library, trust the library's isAnime flag over
@@ -192,6 +194,65 @@ function recentlyAdded(): DiscoverItem[] {
   }));
 }
 
+/** Lowercase letters and digits only: "Spider-Man" and "spiderman" compare equal. */
+function squash(s: string): string {
+  return s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+/** Library titles whose name contains the query, closest matches first. */
+function searchLibrary(q: string): DiscoverItem[] {
+  const needle = squash(q);
+  if (!needle) return [];
+  const db = getDb();
+  const movies = db
+    .select({
+      id: schema.movies.id,
+      tmdbId: schema.movies.tmdbId,
+      title: schema.movies.title,
+      year: schema.movies.year,
+      posterPath: schema.movies.posterPath,
+      backdropPath: schema.movies.backdropPath,
+      overview: schema.movies.overview,
+    })
+    .from(schema.movies)
+    .all()
+    .map((r) => ({ ...r, mediaType: "movie" as const, isAnime: false }));
+  const series = db
+    .select({
+      id: schema.series.id,
+      tmdbId: schema.series.tmdbId,
+      title: schema.series.title,
+      year: schema.series.year,
+      posterPath: schema.series.posterPath,
+      backdropPath: schema.series.backdropPath,
+      overview: schema.series.overview,
+      isAnime: schema.series.isAnime,
+    })
+    .from(schema.series)
+    .all()
+    .map((r) => ({ ...r, mediaType: "series" as const }));
+
+  const hits = [...movies, ...series]
+    .map((r) => ({ r, at: squash(r.title).indexOf(needle) }))
+    .filter((h) => h.at >= 0)
+    .sort((a, b) => a.at - b.at || a.r.title.localeCompare(b.r.title))
+    .slice(0, 20)
+    .map(({ r }) => r);
+
+  const base: BaseItem[] = hits.map((r) => ({
+    tmdbId: r.tmdbId,
+    mediaType: r.mediaType,
+    title: r.title,
+    year: r.year,
+    poster: posterUrl(r.posterPath),
+    posterPath: r.posterPath,
+    backdrop: backdropUrl(r.backdropPath),
+    isAnime: r.isAnime,
+    overview: r.overview ?? "",
+  }));
+  return annotate(base);
+}
+
 export async function GET(request: NextRequest) {
   if (!getRequestUser(request)) {
     return NextResponse.json({ error: "Not signed in" }, { status: 401 });
@@ -206,12 +267,23 @@ export async function GET(request: NextRequest) {
     if (category === "search") {
       const q = request.nextUrl.searchParams.get("q")?.trim();
       if (!q) return badRequest("Missing ?q=");
-      const [movies, tv] = await Promise.all([searchMovie(q), searchTv(q)]);
-      const base = [
-        ...movies.results.slice(0, 20).map(fromMovie),
-        ...tv.results.slice(0, 20).map(fromTv),
+      // The library answers from the database, so what you have is found even
+      // when TMDB is slow or unreachable; TMDB adds everything else. Either half
+      // of the TMDB search may fail without sinking the other.
+      const own = searchLibrary(q);
+      const [movies, tv] = await Promise.allSettled([searchMovie(q), searchTv(q)]);
+      if (movies.status === "rejected" && tv.status === "rejected" && own.length === 0) {
+        throw movies.reason;
+      }
+      const tmdbBase = [
+        ...(movies.status === "fulfilled" ? movies.value.results.slice(0, 20).map(fromMovie) : []),
+        ...(tv.status === "fulfilled" ? tv.value.results.slice(0, 20).map(fromTv) : []),
       ].filter((b) => b.title);
-      return ok(annotate(base));
+      const seen = new Set(own.map((i) => availabilityKey(i.mediaType, i.tmdbId)));
+      return ok([
+        ...own,
+        ...annotate(tmdbBase).filter((i) => !seen.has(availabilityKey(i.mediaType, i.tmdbId))),
+      ]);
     }
 
     // TMDB list feeds -> BaseItem[]. Movies / Series / Anime categories.
@@ -227,7 +299,8 @@ export async function GET(request: NextRequest) {
       "anime-popular": async () => (await discoverAnimeTv("popularity.desc")).results.map(fromTv),
       "anime-new": async () => (await discoverAnimeTv("first_air_date.desc")).results.map(fromTv),
       "anime-top": async () => (await discoverAnimeTv("vote_average.desc")).results.map(fromTv),
-      "anime-movies": async () => (await discoverAnimeMovies("popularity.desc")).results.map(fromMovie),
+      "anime-movies": async () =>
+        (await discoverAnimeMovies("popularity.desc")).results.map(fromMovie),
     };
 
     if (feeds[category]) {

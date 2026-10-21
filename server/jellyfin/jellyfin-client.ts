@@ -30,6 +30,9 @@ export interface JellyfinItem {
   /** Episode number (episodes). */
   IndexNumber?: number;
   UserData?: JellyfinUserData;
+  /** Where the item lives on Jellyfin's disk (only when requested via Fields=Path):
+   *  the file for a movie, the folder for a series. */
+  Path?: string;
 }
 
 export interface JellyfinAuthResult {
@@ -180,6 +183,26 @@ export function getSeriesEpisodes(conn: JellyfinConnection, seriesId: string) {
   return jfFetch<{ Items?: JellyfinItem[] }>(
     conn.url,
     `/Shows/${seriesId}/Episodes?${params}`,
+    conn.deviceId,
+    conn.accessToken
+  );
+}
+
+/**
+ * Every movie and series in the libraries this user can see, with their provider
+ * ids and paths: what Jellyfin has identified, title by title.
+ */
+export function getLibraryItems(conn: JellyfinConnection) {
+  const params = new URLSearchParams({
+    Recursive: "true",
+    IncludeItemTypes: "Movie,Series",
+    Fields: "ProviderIds,Path",
+    EnableImages: "false",
+    EnableUserData: "false",
+  });
+  return jfFetch<{ Items?: JellyfinItem[] }>(
+    conn.url,
+    `/Users/${conn.userId}/Items?${params}`,
     conn.deviceId,
     conn.accessToken
   );

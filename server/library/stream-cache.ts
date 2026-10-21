@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import os from "node:os";
 
@@ -7,9 +8,15 @@ import os from "node:os";
  * Media files live on slow storage (HDD arrays behind Unraid's FUSE layer, with
  * spin-ups and parity latency); serving 64 KiB reads straight off them stutters.
  * This cache reads files in large chunks, keeps them in an LRU bounded by the
- * `streamRamCacheMb` setting, and runs a background prefetcher that stays a full
- * budget ahead of the newest read position — so with a budget larger than the
- * file, the whole movie ends up in RAM shortly after playback starts.
+ * `streamRamCacheMb` setting, and runs a background prefetcher that stays up to
+ * {@link READ_AHEAD_BYTES} ahead of the newest read position.
+ *
+ * The read-ahead used to be the whole budget. With a big budget and a 4K remux
+ * (60 GB) that meant tens of gigabytes pulled off the array at full speed into
+ * RAM the moment playback began — enough to stall Unraid's shfs and starve the
+ * box of memory. A gigabyte is over a minute even at remux bitrates: plenty to
+ * ride out a disk spinning up. The budget still decides how much is KEPT, so
+ * jumping back to something already watched stays free.
  *
  * One global cache serves all files/viewers; the byte budget is passed per call
  * (it's a live setting). Chunks are keyed by path+size+mtime, so a replaced or
@@ -17,25 +24,76 @@ import os from "node:os";
  */
 
 const DEFAULT_CHUNK_BYTES = 8 * 1024 * 1024;
-
+/** How far ahead of the viewer the prefetcher reads. */
+export const READ_AHEAD_BYTES = 1024 * 1024 * 1024;
 /**
- * Budget for the "unlimited" RAM mode: everything the system has free, minus a
- * safety headroom (the larger of 1 GiB or 10% of total RAM) so the OS and the
- * rest of media-box never get squeezed. Bytes the cache already holds count as
- * available to it — they'd be freed by its own eviction, not by the OS.
- * Pure so tests can feed synthetic numbers; callers use {@link unlimitedBudgetBytes}.
+ * The most of the machine's RAM the cache may ever hold, however it's set. On
+ * Unraid the OS itself lives in RAM, and the page cache in "free" memory is what
+ * keeps the array responsive: handing all of it to one movie is how a box hangs.
  */
-export function computeUnlimitedBudget(
-  freeBytes: number,
-  totalBytes: number,
-  heldBytes: number
-): number {
-  const headroom = Math.max(1024 * 1024 * 1024, Math.floor(totalBytes * 0.1));
-  return Math.max(0, freeBytes + heldBytes - headroom);
+const MAX_RAM_SHARE = 0.4;
+const GiB = 1024 * 1024 * 1024;
+
+/** What the cache can see of memory: the machine's, and the container's limit if any. */
+export interface MemoryView {
+  totalBytes: number;
+  freeBytes: number;
+  /** Bytes the cache holds now: its own eviction frees them, so they count as room. */
+  heldBytes: number;
+  /** A container memory limit and current usage (cgroup), when one is set. */
+  cgroup: { limitBytes: number; usageBytes: number } | null;
 }
 
-export function unlimitedBudgetBytes(heldBytes: number): number {
-  return computeUnlimitedBudget(os.freemem(), os.totalmem(), heldBytes);
+/**
+ * The budget the cache may actually use: what was asked for (Infinity for the
+ * "unlimited" mode), but never more than {@link MAX_RAM_SHARE} of the RAM it may
+ * use, and never into a safety headroom (the larger of 1 GiB or 10%). A container
+ * memory limit counts as the RAM there is — the host's free memory says nothing
+ * about how close the container is to being killed. Pure, for tests.
+ */
+export function computeSafeBudget(requestedBytes: number, mem: MemoryView): number {
+  const limit = mem.cgroup ? Math.min(mem.cgroup.limitBytes, mem.totalBytes) : mem.totalBytes;
+  const free = mem.cgroup
+    ? Math.min(mem.freeBytes, mem.cgroup.limitBytes - mem.cgroup.usageBytes)
+    : mem.freeBytes;
+  const headroom = Math.max(GiB, Math.floor(limit * 0.1));
+  const room = Math.max(0, free + mem.heldBytes - headroom);
+  return Math.max(0, Math.min(requestedBytes, room, Math.floor(limit * MAX_RAM_SHARE)));
+}
+
+/** A number from a cgroup file, or null ("max", absent, or a no-limit sentinel). */
+function readCgroupNumber(file: string): number | null {
+  try {
+    const raw = readFileSync(file, "utf8").trim();
+    const n = Number(raw);
+    // cgroup v1 reports "no limit" as a huge page-aligned number.
+    return Number.isFinite(n) && n > 0 && n < 2 ** 60 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The container's memory limit and usage (cgroup v2, else v1), or null when unlimited. */
+function cgroupMemory(): MemoryView["cgroup"] {
+  const limit =
+    readCgroupNumber("/sys/fs/cgroup/memory.max") ??
+    readCgroupNumber("/sys/fs/cgroup/memory/memory.limit_in_bytes");
+  if (limit == null) return null;
+  const usage =
+    readCgroupNumber("/sys/fs/cgroup/memory.current") ??
+    readCgroupNumber("/sys/fs/cgroup/memory/memory.usage_in_bytes") ??
+    0;
+  return { limitBytes: limit, usageBytes: usage };
+}
+
+/** {@link computeSafeBudget} against this machine, right now. */
+export function safeBudgetBytes(requestedBytes: number, heldBytes: number): number {
+  return computeSafeBudget(requestedBytes, {
+    totalBytes: os.totalmem(),
+    freeBytes: os.freemem(),
+    heldBytes,
+    cgroup: cgroupMemory(),
+  });
 }
 
 /** Identity of one on-disk file version. Build via `fileIdentity()`. */
@@ -64,7 +122,10 @@ export class StreamCache {
   private totalBytes = 0;
   private diskReads = 0;
 
-  constructor(readonly chunkBytes = DEFAULT_CHUNK_BYTES) {}
+  constructor(
+    readonly chunkBytes = DEFAULT_CHUNK_BYTES,
+    readonly readAheadBytes = READ_AHEAD_BYTES
+  ) {}
 
   stats() {
     return { totalBytes: this.totalBytes, chunkCount: this.chunks.size, diskReads: this.diskReads };
@@ -144,15 +205,17 @@ export class StreamCache {
 
   /**
    * Note the newest byte the player consumed and keep the background prefetcher
-   * running ahead of it — up to a full budget ahead (clamped to EOF). Playback
-   * naturally re-notes as it advances, so the window rolls with the viewer.
+   * running ahead of it — up to the read-ahead window or the budget, whichever is
+   * smaller (clamped to EOF). Playback naturally re-notes as it advances, so the
+   * window rolls with the viewer.
    */
   notePosition(file: CachedFile, offset: number, budgetBytes: number): void {
     if (budgetBytes <= 0 || file.size === 0) return;
     const lastIdx = Math.floor((file.size - 1) / this.chunkBytes);
     const posIdx = Math.min(Math.floor(offset / this.chunkBytes), lastIdx);
+    const windowBytes = Math.min(budgetBytes, this.readAheadBytes);
     const goalIdx = Math.min(
-      posIdx + Math.max(1, Math.floor(budgetBytes / this.chunkBytes)) - 1,
+      posIdx + Math.max(1, Math.floor(windowBytes / this.chunkBytes)) - 1,
       lastIdx
     );
 

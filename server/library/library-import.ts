@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { and, eq } from "drizzle-orm";
 import { getDb, schema, type Db } from "@/server/db";
-import { parseTitle, parseExternalIds } from "@/server/parser/release-parser";
+import { parseTitle, parseExternalIds, type ExternalIds } from "@/server/parser/release-parser";
 import {
   searchMovie,
   searchTv,
@@ -22,6 +22,7 @@ import { aiEnabled } from "@/server/ai/llm";
 import { aiResolveCandidate } from "@/server/ai/media-match";
 import { recordLog } from "@/server/logging/logger";
 import { walkVideoFiles } from "./disk-scanner";
+import { buildIdHints, type IdHints } from "./id-hints";
 
 export type ImportType = "movie" | "series" | "anime";
 
@@ -95,7 +96,10 @@ function isUsableTitle(raw: string): boolean {
  * (e.g. a plain folder "Inception 2010"). Strip it so the TMDB query is the bare
  * title, and use it as the year hint when none was found.
  */
-function stripTrailingYear(title: string, yearHint: number | null): { title: string; year: number | null } {
+function stripTrailingYear(
+  title: string,
+  yearHint: number | null
+): { title: string; year: number | null } {
   const trailing = title.match(/^(.*?)[\s.]+((?:19|20)\d{2})\s*$/);
   if (trailing) {
     return { title: trailing[1].trim(), year: yearHint ?? Number(trailing[2]) };
@@ -125,7 +129,8 @@ function suggestionScore(s: ImportSuggestion, query: string, yearHint: number | 
   if (titleMatches(s, query)) score += 2;
   if (yearHint != null && s.year != null) {
     const diff = Math.abs(yearHint - s.year);
-    if (diff === 0) score += 4; // exact year → the strongest disambiguator
+    if (diff === 0)
+      score += 4; // exact year → the strongest disambiguator
     else if (diff <= 1) score += 2; // ±1 tolerates release-date rounding
   }
   return score;
@@ -208,7 +213,12 @@ async function resolveByExternalIds(
   kind: MediaKind,
   name: string
 ): Promise<ImportSuggestion | null> {
-  const ids = parseExternalIds(name);
+  return resolveIds(kind, parseExternalIds(name));
+}
+
+/** Resolve provider ids (from a name, an NFO, Jellyfin) to the TMDB title they name. */
+async function resolveIds(kind: MediaKind, ids: ExternalIds): Promise<ImportSuggestion | null> {
+  if (ids.tmdbId == null && ids.imdbId == null && ids.tvdbId == null) return null;
   try {
     if (kind === "movie") {
       if (ids.tmdbId) return movieToSuggestion(await getMovieById(ids.tmdbId));
@@ -343,10 +353,7 @@ async function aiRefineCandidate(
       const reclassified = classify(retried, res.searchQuery, res.year);
       // Adopt only when the retry improves on the original: a confident match,
       // or at least some suggestions where there were none before.
-      if (
-        reclassified.status === "matched" ||
-        (suggestions.length === 0 && retried.length > 0)
-      ) {
+      if (reclassified.status === "matched" || (suggestions.length === 0 && retried.length > 0)) {
         return { ...reclassified, suggestions: retried };
       }
     }
@@ -366,7 +373,11 @@ async function aiRefineCandidate(
  * extras, or a dedicated movie folder — collapse into a single candidate whose
  * representative is the largest file.
  */
-async function scanMoviesByFile(db: Db, root: string): Promise<ScanResult> {
+async function scanMoviesByFile(
+  db: Db,
+  root: string,
+  opts: ResolvedScanOptions
+): Promise<ScanResult> {
   const files = await walkVideoFiles(root);
 
   // Skip files already registered to a movie, and don't suggest tmdbIds already in the library.
@@ -452,8 +463,8 @@ async function scanMoviesByFile(db: Db, root: string): Promise<ScanResult> {
   }
 
   const aggs = [...byKey.values()].sort((a, b) => a.title.localeCompare(b.title));
-  const truncated = aggs.length > MAX_CANDIDATES;
-  const limited = aggs.slice(0, MAX_CANDIDATES);
+  const truncated = aggs.length > opts.limit;
+  const limited = aggs.slice(0, opts.limit);
 
   const aiBudget = newAiBudget();
   const candidates: ImportCandidate[] = [];
@@ -464,7 +475,12 @@ async function scanMoviesByFile(db: Db, root: string): Promise<ScanResult> {
     // name ({tmdb-…}, {imdb-tt…}) — an id hit needs no fuzzy matching at all.
     const idSuggestion =
       (await resolveByExternalIds("movie", path.basename(path.dirname(videoPath)))) ??
-      (await resolveByExternalIds("movie", path.basename(videoPath)));
+      (await resolveByExternalIds("movie", path.basename(videoPath))) ??
+      (await resolveHinted(opts.idHints, {
+        kind: "movie",
+        folder: path.dirname(videoPath),
+        videoPath,
+      }));
     if (idSuggestion) {
       candidates.push({
         path: path.dirname(videoPath),
@@ -480,6 +496,7 @@ async function scanMoviesByFile(db: Db, root: string): Promise<ScanResult> {
       });
       continue;
     }
+    if (opts.idsOnly) continue;
 
     let suggestions = (await suggestFor("movie", agg.title, agg.year)).filter(
       (s) => !existingTmdb.has(s.tmdbId)
@@ -521,7 +538,12 @@ async function scanMoviesByFile(db: Db, root: string): Promise<ScanResult> {
  * Series / anime: each immediate subfolder of the root is one title. Parse the
  * folder name, match against TMDB TV, classify.
  */
-async function scanFolders(db: Db, type: ImportType, root: string): Promise<ScanResult> {
+async function scanFolders(
+  db: Db,
+  type: ImportType,
+  root: string,
+  opts: ResolvedScanOptions
+): Promise<ScanResult> {
   let entries;
   try {
     entries = await fs.readdir(root, { withFileTypes: true });
@@ -556,7 +578,7 @@ async function scanFolders(db: Db, type: ImportType, root: string): Promise<Scan
   const candidates: ImportCandidate[] = [];
   let truncated = false;
   for (const d of dirs) {
-    if (candidates.length >= MAX_CANDIDATES) {
+    if (candidates.length >= opts.limit) {
       truncated = true;
       break;
     }
@@ -585,8 +607,21 @@ async function scanFolders(db: Db, type: ImportType, root: string): Promise<Scan
     // since a bare {tmdb-…} is ambiguous between the movie and TV id spaces.
     let idKind: MediaKind | null = null;
     let idSuggestion: ImportSuggestion | null = null;
-    for (const kind of (movieShaped ? ["movie", "series"] : ["series", "movie"]) as MediaKind[]) {
+    const kinds = (movieShaped ? ["movie", "series"] : ["series", "movie"]) as MediaKind[];
+    for (const kind of kinds) {
       idSuggestion = await resolveByExternalIds(kind, d.name);
+      if (idSuggestion) {
+        idKind = kind;
+        break;
+      }
+    }
+    // Then what an NFO or Jellyfin says the folder is.
+    for (const kind of idSuggestion ? [] : kinds) {
+      idSuggestion = await resolveHinted(opts.idHints, {
+        kind,
+        folder: d.path,
+        videoPath: kind === "movie" ? largestVideo.absPath : undefined,
+      });
       if (idSuggestion) {
         idKind = kind;
         break;
@@ -676,10 +711,43 @@ async function scanFolders(db: Db, type: ImportType, root: string): Promise<Scan
  * Movies produce one candidate per movie FILE (recursing category folders); series
  * and anime produce one candidate per immediate subfolder.
  */
-export async function scanLibrary(type: ImportType, root: string): Promise<ScanResult> {
+export interface ScanOptions {
+  /** Where to look up ids for a title (NFOs, Jellyfin). Default: every source available. */
+  idHints?: IdHints;
+  /** Only return titles identified by a provider id — no name guessing, no TMDB search. */
+  idsOnly?: boolean;
+  /** Most candidates to return. Default {@link MAX_CANDIDATES}, so a request can't hang. */
+  limit?: number;
+}
+
+type ResolvedScanOptions = { idHints: IdHints; idsOnly: boolean; limit: number };
+
+export async function scanLibrary(
+  type: ImportType,
+  root: string,
+  options: ScanOptions = {}
+): Promise<ScanResult> {
   const db = getDb();
-  if (type === "movie") return scanMoviesByFile(db, root);
-  return scanFolders(db, type, root);
+  const opts: ResolvedScanOptions = {
+    idHints: options.idHints ?? (await buildIdHints()),
+    idsOnly: options.idsOnly ?? false,
+    limit: options.limit ?? MAX_CANDIDATES,
+  };
+  if (type === "movie") return scanMoviesByFile(db, root, opts);
+  return scanFolders(db, type, root, opts);
+}
+
+/** Ask the hints about a title and resolve what they say. A failing source is no answer. */
+async function resolveHinted(
+  hints: IdHints,
+  target: Parameters<IdHints>[0]
+): Promise<ImportSuggestion | null> {
+  try {
+    const ids = await hints(target);
+    return ids ? await resolveIds(target.kind, ids) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** A stored candidate carries the root folder / quality profile the scan ran with. */
